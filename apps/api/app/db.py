@@ -4,10 +4,17 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
 
 from .config import get_settings
 
 settings = get_settings()
+
+
+class Base(DeclarativeBase):
+    """Base class for durable VibesFactory domain models."""
+
+
 engine = create_async_engine(
     settings.database_url,
     pool_pre_ping=True,

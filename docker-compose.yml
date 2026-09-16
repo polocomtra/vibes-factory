@@ -13,6 +13,9 @@ services:
       VF_CORS_ORIGINS: http://localhost:3000
       VF_OTEL_SERVICE_NAME: vibesfactory-api
       VF_OTEL_CONSOLE_EXPORTER: "false"
+      VF_SUPABASE_URL: ${VF_SUPABASE_URL}
+      VF_SUPABASE_PUBLISHABLE_KEY: ${VF_SUPABASE_PUBLISHABLE_KEY}
+      VF_SUPABASE_JWT_JWKS_URL: ${VF_SUPABASE_JWT_JWKS_URL}
     ports:
       - "8000:8000"
     depends_on:
@@ -26,8 +29,12 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
     ports:
       - "3000:3000"
     depends_on:

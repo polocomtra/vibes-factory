@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     cors_origins: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     otel_service_name: str = "vibesfactory-api"
     otel_console_exporter: bool = False
+    supabase_url: str | None = None
+    supabase_publishable_key: str | None = None
+    supabase_jwt_jwks_url: str | None = None
+    supabase_auth_timeout_seconds: float = 5.0
 
     @field_validator("cors_origins", mode="before")
     @classmethod

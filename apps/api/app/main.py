@@ -15,6 +15,7 @@ from .errors import error_response, register_exception_handlers
 from .logging import configure_logging
 from .middleware import request_id_middleware
 from .telemetry import initialize_telemetry
+from .workspaces.routes import router as workspace_router
 
 settings = get_settings()
 configure_logging(settings)
@@ -45,6 +46,7 @@ app.add_middleware(
 )
 app.middleware("http")(request_id_middleware)
 register_exception_handlers(app)
+app.include_router(workspace_router)
 
 
 @app.get("/health", tags=["system"])

@@ -3,7 +3,7 @@
 from typing import Any
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette import status
@@ -45,6 +45,26 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             details={"issues": exc.errors()},
         )
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(
+        request: Request, exc: HTTPException
+    ) -> JSONResponse:
+        detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+        code = detail.get("code", "HTTP_ERROR")
+        message = detail.get("message", "The request could not be completed.")
+        details = detail.get("details", {})
+        response = error_response(
+            request,
+            code=code,
+            message=message,
+            status_code=exc.status_code,
+            details=details,
+        )
+        if exc.headers:
+            for key, value in exc.headers.items():
+                response.headers[key] = value
+        return response
 
     @app.exception_handler(Exception)
     async def internal_exception_handler(

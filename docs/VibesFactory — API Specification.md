@@ -618,7 +618,25 @@ Response item:
 }
 ```
 
-Advanced invitation APIs may be deferred.
+The MVP returns all members for an authorized workspace member. The owner is listed first.
+
+## POST `/v1/workspaces/{workspace_id}/members`
+
+Owner-only. Adds an existing VibesFactory user by email; invitation email for users who have not signed in is deferred to a later phase.
+
+Request:
+
+```json
+{
+  "email": "user@example.com"
+}
+```
+
+Response `201` uses the member response item above. Returns `404 USER_NOT_FOUND_FOR_MEMBERSHIP` when the email is not registered and `409 WORKSPACE_MEMBER_ALREADY_EXISTS` for an existing membership.
+
+## DELETE `/v1/workspaces/{workspace_id}/members/{user_id}`
+
+Owner-only. Removes a non-owner member and returns `204`. The workspace owner cannot be removed.
 
 ---
 
