@@ -1,0 +1,1 @@
+"""VibesFactory API application package."""

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibesfactory-api"
+version = "0.1.0"
+description = "VibesFactory production-inspired Agentic AI Platform API"
+requires-python = ">=3.11"
+dependencies = [
+  "alembic>=1.13,<2.0",
+  "asyncpg>=0.29,<1.0",
+  "fastapi>=0.115,<1.0",
+  "opentelemetry-api>=1.27,<2.0",
+  "opentelemetry-sdk>=1.27,<2.0",
+  "pydantic-settings>=2.6,<3.0",
+  "sqlalchemy[asyncio]>=2.0,<3.0",
+  "structlog>=24.4,<26.0",
+  "uvicorn[standard]>=0.32,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.27,<1.0",
+  "mypy>=1.13,<2.0",
+  "pytest>=8.3,<9.0",
+  "pytest-asyncio>=0.24,<1.0",
+  "ruff>=0.8,<1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["../.."]
+include = ["apps*"]
+
+[tool.pytest.ini_options]
+testpaths = ["../../tests"]
+pythonpath = ["../.."]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["app", "../../tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = []

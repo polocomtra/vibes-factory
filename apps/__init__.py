@@ -1,0 +1,2 @@
+"""VibesFactory application namespace."""
+
