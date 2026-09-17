@@ -823,6 +823,7 @@ INDEX root_run_id
 | status | VARCHAR(32) |
 | input | JSONB NULL |
 | output | JSONB NULL |
+| usage | JSONB |
 | error | JSONB NULL |
 | attributes | JSONB |
 | started_at | TIMESTAMPTZ |
@@ -832,6 +833,7 @@ Span types:
 
 ```text
 RUN
+CONTEXT_BUILD
 MODEL
 TOOL
 RETRIEVAL
@@ -850,6 +852,13 @@ INDEX(parent_span_id)
 INDEX(run_id, started_at)
 INDEX(span_type, started_at)
 ```
+
+Phase 4 creates `sessions`, `messages`, `runs`, `traces`, and `spans` in
+migration `0004_runtime_vertical_slice` and adds per-span usage in
+`0005_span_usage_breakdown`. The initial runtime persists one root `RUN` span,
+one `CONTEXT_BUILD` span, and one child `MODEL` span per synchronous
+execution. Provider credentials are never persisted in these tables;
+`estimated_cost` remains nullable until model pricing is implemented.
 
 Large payload policy:
 

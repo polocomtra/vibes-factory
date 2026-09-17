@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     supabase_jwt_jwks_url: str | None = None
     supabase_auth_timeout_seconds: float = 5.0
     model_provider_timeout_seconds: float = 60.0
+    gemini_api_key: SecretStr | None = None
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
     azure_openai_deployment_name: str = "gpt-5.6-luna"

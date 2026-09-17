@@ -1250,6 +1250,11 @@ GeminiProvider
 OpenAIProvider
 ```
 
+The Gemini adapter uses Google's official `google-genai` Python SDK with the
+async `client.aio.interactions.create` call. Its backend-only credential is
+loaded from `VF_GEMINI_API_KEY`; SDK response text and `usage_metadata` are
+normalized into the platform-owned `ModelResponse` and `ModelUsage` contracts.
+
 ---
 
 ## Provider Registry
@@ -1309,6 +1314,8 @@ for deterministic runtime testing.
 ---
 
 # 15. Phase 4 — Runtime Vertical Slice v1
+
+**Status:** Implemented
 
 ## Goal
 
@@ -1681,6 +1688,17 @@ Inspect model trace
 ```
 
 This phase must be considered a major project checkpoint.
+
+### Phase 4 implementation record
+
+The synchronous runtime vertical slice is implemented with migration
+`0004_runtime_vertical_slice` plus `0005_span_usage_breakdown`, persisted
+sessions/messages/runs/traces/spans, immutable `AgentVersion` execution,
+normalized provider failures, and the authenticated playground route
+`/agents/{agentId}/playground`. Phase 4 now records a
+`RUN → CONTEXT_BUILD → MODEL` span hierarchy with normalized per-span usage
+and input estimates. It intentionally does not include SSE, tools, MCP,
+knowledge, memory, workflows, or multi-agent execution.
 
 ---
 

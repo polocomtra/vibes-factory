@@ -1,4 +1,9 @@
-"""Static provider/model capabilities for the Phase 3 catalog."""
+"""Active provider/model capabilities exposed by the platform catalog.
+
+Provider adapters remain available in the registry even when a model is not
+currently exposed here. Re-enabling a model should be a catalog/configuration
+change, not a runtime architecture change.
+"""
 
 from dataclasses import dataclass
 from typing import Final
@@ -31,58 +36,6 @@ MODEL_CATALOG: Final[tuple[ModelDefinition, ...]] = (
         1_050_000,
         128_000,
         True,
-    ),
-    ModelDefinition(
-        "google",
-        "gemini-2.5-flash",
-        "Gemini 2.5 Flash",
-        {
-            "tool_calling": True,
-            "streaming": True,
-            "structured_output": True,
-            "vision": True,
-            "reasoning": False,
-        },
-        1_048_576,
-        65_536,
-    ),
-    ModelDefinition(
-        "openai",
-        "gpt-4.1-mini",
-        "GPT-4.1 Mini",
-        {
-            "tool_calling": True,
-            "streaming": True,
-            "structured_output": True,
-            "vision": True,
-            "reasoning": False,
-        },
-        1_047_576,
-        32_768,
-    ),
-    ModelDefinition(
-        "deepseek",
-        "deepseek-flash",
-        "DeepSeek Flash",
-        {
-            "tool_calling": True,
-            "streaming": True,
-            "structured_output": True,
-            "vision": False,
-            "reasoning": True,
-        },
-    ),
-    ModelDefinition(
-        "deepseek",
-        "deepseek-v4-pro",
-        "DeepSeek V4 Pro",
-        {
-            "tool_calling": True,
-            "streaming": True,
-            "structured_output": True,
-            "vision": False,
-            "reasoning": True,
-        },
     ),
 )
 

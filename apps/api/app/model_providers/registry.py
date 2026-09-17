@@ -18,10 +18,12 @@ class ModelProviderRegistry:
         self,
         *,
         timeout: float = 60.0,
+        gemini_api_key: SecretStr | None = None,
         azure_openai_api_key: SecretStr | None = None,
         azure_openai_base_url: str | None = None,
     ) -> None:
         self.timeout = timeout
+        self.gemini_api_key = gemini_api_key
         self.azure_openai_api_key = azure_openai_api_key
         self.azure_openai_base_url = azure_openai_base_url
 
@@ -29,6 +31,7 @@ class ModelProviderRegistry:
     def from_settings(cls, settings: Settings) -> "ModelProviderRegistry":
         return cls(
             timeout=settings.model_provider_timeout_seconds,
+            gemini_api_key=settings.gemini_api_key,
             azure_openai_api_key=settings.azure_openai_api_key,
             azure_openai_base_url=settings.azure_openai_base_url,
         )
@@ -54,6 +57,10 @@ class ModelProviderRegistry:
     def builtin_api_key(self, provider: str) -> str:
         """Resolve an environment credential without exposing it to API callers."""
 
+        if provider.strip().lower() == "google" and self.gemini_api_key:
+            value = self.gemini_api_key.get_secret_value()
+            if value.strip():
+                return value
         if provider.strip().lower() == "azure_openai" and self.azure_openai_api_key:
             value = self.azure_openai_api_key.get_secret_value()
             if value.strip():

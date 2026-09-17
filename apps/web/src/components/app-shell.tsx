@@ -261,9 +261,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { preference, resolvedTheme, updatePreference } = useTheme();
   const pathname = usePathname();
   const router = useRouter();
-  const [activeItem, setActiveItem] = useState(
-    pathname.startsWith("/agents") ? "Agents" : pathname === "/settings" ? "Settings" : "Dashboard",
-  );
+  const getActiveItem = (path: string) => {
+    if (path === "/playground" || path.includes("/playground")) return "Playground";
+    if (path === "/traces" || path.includes("/traces")) return "Traces";
+    if (path.startsWith("/agents")) return "Agents";
+    if (path === "/settings") return "Settings";
+    return "Dashboard";
+  };
+  const [activeItem, setActiveItem] = useState(getActiveItem(pathname));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -271,7 +276,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
 
   useEffect(() => {
-    setActiveItem(pathname.startsWith("/agents") ? "Agents" : pathname === "/settings" ? "Settings" : "Dashboard");
+    setActiveItem(getActiveItem(pathname));
   }, [pathname]);
 
   useEffect(() => {
@@ -307,6 +312,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setMobileOpen(false);
     if (label === "Dashboard") router.push("/");
     if (label === "Agents") router.push("/agents");
+    if (label === "Playground") router.push("/playground");
+    if (label === "Traces") router.push("/traces");
     if (label === "Settings") router.push("/settings");
   };
 
@@ -315,8 +322,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return `${activeItem} is ready for the next milestone.`;
   }, [activeItem]);
 
+  const runtimeLayout = pathname.includes("/playground");
+  const shellClass = ["app-shell", sidebarCollapsed ? "sidebar-collapsed" : "", runtimeLayout ? "runtime-shell" : ""].filter(Boolean).join(" ");
+
   return (
-    <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+    <div className={shellClass}>
       <div className={mobileOpen ? "sidebar-overlay visible" : "sidebar-overlay"} onClick={() => setMobileOpen(false)} />
       <aside className={sidebarCollapsed ? "sidebar collapsed" : "sidebar"} data-mobile-open={mobileOpen}>
         <div className="sidebar-topline">
@@ -397,7 +407,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        <div className="content-frame">
+        <div className={runtimeLayout ? "content-frame runtime-content-frame" : "content-frame"}>
           <div className="sr-only">{activeDescription}</div>
           {children}
         </div>

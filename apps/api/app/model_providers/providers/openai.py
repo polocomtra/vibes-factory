@@ -164,7 +164,7 @@ class OpenAIProvider:
             }
             if request.system_instruction:
                 kwargs["instructions"] = request.system_instruction
-            if request.temperature is not None:
+            if request.temperature is not None and request.provider != "azure_openai":
                 kwargs["temperature"] = request.temperature
             if request.max_output_tokens:
                 kwargs["max_output_tokens"] = request.max_output_tokens

@@ -3,7 +3,6 @@ from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 
-import httpx
 import pytest
 from openai import AsyncOpenAI
 
@@ -39,6 +38,14 @@ class FakeOpenAIClient:
         self.close = AsyncMock()
 
 
+class FakeGeminiClient:
+    def __init__(self, response: object) -> None:
+        self.aio = SimpleNamespace(
+            interactions=SimpleNamespace(create=AsyncMock(return_value=response)),
+            aclose=AsyncMock(),
+        )
+
+
 @pytest.mark.asyncio
 async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None:
     response = SimpleNamespace(
@@ -55,9 +62,10 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
         client_factory=factory,
     )
 
-    result = await provider.generate(
-        request("azure_openai", "gpt-5.6-luna"), "temporary-key"
+    azure_request = request("azure_openai", "gpt-5.6-luna").model_copy(
+        update={"temperature": 0.2}
     )
+    result = await provider.generate(azure_request, "temporary-key")
 
     assert result.content == "OK"
     assert result.usage is not None and result.usage.total_tokens == 3
@@ -66,6 +74,7 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
     assert kwargs["model"] == "gpt-5.6-luna"
     assert kwargs["store"] is False
     assert kwargs["input"] == "hello"
+    assert "temperature" not in kwargs
     client.close.assert_awaited_once()
 
 
@@ -130,31 +139,54 @@ async def test_deepseek_maps_chat_completion_and_forces_non_streaming() -> None:
 
 @pytest.mark.asyncio
 async def test_gemini_normalizes_text_usage_and_model_finish_reason() -> None:
-    transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            200,
-            json={
-                "responseId": "resp_1",
-                "modelVersion": "gemini-2.5-flash",
-                "candidates": [
-                    {"content": {"parts": [{"text": "OK"}]}, "finishReason": "STOP"}
-                ],
-                "usageMetadata": {
-                    "promptTokenCount": 2,
-                    "candidatesTokenCount": 1,
-                    "totalTokenCount": 3,
-                },
-            },
-        )
+    response = SimpleNamespace(
+        output_text="OK",
+        id="interaction_1",
+        model="gemini-2.5-flash",
+        status="completed",
+        usage=SimpleNamespace(
+            total_input_tokens=2,
+            total_output_tokens=1,
+            total_tokens=3,
+        ),
     )
-    async with httpx.AsyncClient(transport=transport) as client:
-        result = await GeminiProvider(http_client=client).generate(
-            request("google", "gemini-2.5-flash"), "temporary-key"
-        )
+    client = FakeGeminiClient(response)
+    provider = GeminiProvider(client_factory=lambda **kwargs: client)
+    result = await provider.generate(request("google", "gemini-2.5-flash"), "temporary-key")
 
     assert result.content == "OK"
-    assert result.finish_reason == "STOP"
-    assert result.provider_metadata["responseId"] == "resp_1"
+    assert result.finish_reason is None
+    assert result.provider_metadata["interactionId"] == "interaction_1"
+    assert result.usage is not None and result.usage.total_tokens == 3
+    client.aio.interactions.create.assert_awaited_once()
+    kwargs = client.aio.interactions.create.await_args.kwargs
+    assert kwargs["model"] == "gemini-2.5-flash"
+    assert kwargs["input"][0] == {
+        "type": "user_input",
+        "content": [{"type": "text", "text": "hello"}],
+    }
+    assert kwargs["generation_config"]["max_output_tokens"] == 8
+    assert kwargs["store"] is False
+    assert kwargs["stream"] is False
+    client.aio.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gemini_3_8_omits_legacy_temperature_parameter() -> None:
+    response = SimpleNamespace(
+        output_text="OK",
+    )
+    client = FakeGeminiClient(response)
+    provider = GeminiProvider(client_factory=lambda **kwargs: client)
+    gemini_request = request("google", "gemini-3.8-flash").model_copy(
+        update={"temperature": 0.2}
+    )
+
+    await provider.generate(gemini_request, "temporary-key")
+
+    kwargs = client.aio.interactions.create.await_args.kwargs
+    assert "temperature" not in kwargs
+    assert "temperature" not in kwargs["generation_config"]
 
 
 def test_registry_rejects_invalid_azure_base_url() -> None:
@@ -179,17 +211,24 @@ def test_connection_probe_uses_azure_compatible_output_limit() -> None:
 def test_azure_model_is_backend_default_and_uses_configured_endpoint() -> None:
     from pydantic import SecretStr
 
-    from apps.api.app.model_providers.catalog import list_models
+    from apps.api.app.model_providers.catalog import find_model, list_models
 
     default = next(model for model in list_models() if model.is_default)
     registry = ModelProviderRegistry(
+        gemini_api_key=SecretStr("gemini-environment-key"),
         azure_openai_api_key=SecretStr("environment-key"),
         azure_openai_base_url="https://resource.services.ai.azure.com/openai/v1",
     )
 
     assert (default.provider, default.name) == ("azure_openai", "gpt-5.6-luna")
+    assert [(model.provider, model.name) for model in list_models()] == [
+        ("azure_openai", "gpt-5.6-luna")
+    ]
+    assert find_model("google", "gemini-3.8-flash") is None
     assert registry.builtin_api_key("azure_openai") == "environment-key"
+    assert registry.builtin_api_key("google") == "gemini-environment-key"
     assert registry.resolve("azure_openai").provider_id == "azure_openai"
+    assert registry.resolve("google").provider_id == "google"
 
 
 @pytest.mark.asyncio

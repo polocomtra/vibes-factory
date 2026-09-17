@@ -50,4 +50,26 @@ VF_AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5.6-luna
 
 The API key is never sent to the browser or stored in AgentDraft/AgentVersion. Agent creation stores only the provider and model configuration; model execution will consume the configured environment credential in the runtime milestone.
 
+### Gemini runtime model
+
+The Gemini provider integration remains available in the backend registry, but
+its models are temporarily hidden from the active catalog while only Luna is
+enabled. When a Gemini key is available, re-enable the desired catalog entry
+and configure its backend-only Google AI Studio key in `.env`:
+
+```bash
+VF_GEMINI_API_KEY=your_gemini_api_key
+```
+
+Gemini calls use Google's official `google-genai` Python SDK `Interactions` API.
+The key is read only by the API process and is never sent to the browser,
+persisted in agent configuration, or included in runtime traces. Phase 4 uses
+the non-streaming async variant; SSE streaming remains deferred to Phase 5.
+
+Gemini 3.8 Flash requests intentionally omit the legacy `temperature` field;
+older agent configurations remain readable and continue to run with the
+model's supported defaults.
+
+Reference: [Google AI Studio Gemini API getting started](https://ai.google.dev/gemini-api/docs/get-started).
+
 For local development, PostgreSQL runs in Docker on host port `15432` so it does not conflict with a native PostgreSQL installation. The local API uses `127.0.0.1:15432` by default.

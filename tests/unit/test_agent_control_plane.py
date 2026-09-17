@@ -21,8 +21,8 @@ def valid_create_payload() -> AgentCreateRequest:
         slug="research-agent",
         instructions="Research technical topics accurately.",
         model={
-            "provider": "Google",
-            "name": "Gemini-2.5-Flash",
+            "provider": "Azure_OpenAI",
+            "name": "GPT-5.6-Luna",
             "config": {"temperature": 0.2},
         },
     )
@@ -31,8 +31,8 @@ def valid_create_payload() -> AgentCreateRequest:
 def test_model_configuration_normalizes_catalog_identifiers() -> None:
     model = valid_create_payload().model
 
-    assert model.provider == "google"
-    assert model.name == "gemini-2.5-flash"
+    assert model.provider == "azure_openai"
+    assert model.name == "gpt-5.6-luna"
     assert find_model(model.provider, model.name) is not None
 
 
@@ -72,8 +72,8 @@ def test_snapshot_contains_future_binding_slots() -> None:
     assert snapshot["schema_version"] == 1
     assert snapshot["instructions"] == payload.instructions
     assert snapshot["model"] == {
-        "provider": "google",
-        "name": "gemini-2.5-flash",
+        "provider": "azure_openai",
+        "name": "gpt-5.6-luna",
         "config": {"temperature": 0.2},
         "reasoning_options": {},
         "provider_options": {},

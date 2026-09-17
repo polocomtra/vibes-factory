@@ -43,8 +43,10 @@ def normalize_sdk_exception(error: Exception) -> ProviderError:
 
     name = type(error).__name__.lower()
     status_code = getattr(error, "status_code", None)
+    if not isinstance(status_code, int):
+        status_code = getattr(error, "code", None)
     request_id = getattr(error, "request_id", None)
-    if "authentication" in name or "permission" in name:
+    if "authentication" in name or "permission" in name or status_code in (401, 403):
         return ProviderError(
             "PROVIDER_AUTHENTICATION_FAILED",
             "The provider credentials were rejected.",

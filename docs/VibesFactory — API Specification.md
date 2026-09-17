@@ -923,6 +923,16 @@ Example:
 
 Model names should come from configured platform registry rather than arbitrary user input where possible.
 
+The Google runtime adapter is implemented behind the platform provider
+registry, but Google models are temporarily hidden from the active catalog;
+the currently exposed catalog contains only `azure_openai / gpt-5.6-luna`.
+When enabled, the adapter calls Google's official GenAI SDK `Interactions` API
+with a platform-owned, non-streaming request; provider conversation storage is
+disabled because VibesFactory owns session persistence.
+Runtime calls use the backend-only `VF_GEMINI_API_KEY` credential and the
+official `google-genai` Python SDK; credentials are never part of an agent
+draft/version or API response.
+
 ---
 
 # 33. Validate Agent Draft
@@ -1077,6 +1087,10 @@ Safer MVP contract:
   "agent_version_id": "uuid"
 }
 ```
+
+Phase 4 requires `session_id` and `agent_version_id`. The runtime accepts only
+text input and always executes the referenced published `AgentVersion`; draft
+state and implicit version selection are not accepted by this endpoint.
 
 Response:
 
@@ -2667,6 +2681,50 @@ Same runtime logic as authenticated streaming endpoint.
 
 # 119. Traces
 
+## GET `/v1/traces`
+
+List persisted traces visible to the authenticated user across their workspace memberships.
+
+Query parameters:
+
+```text
+agent_id
+agent          # matches agent name or slug
+status         # RUNNING | COMPLETED | FAILED
+started_after
+started_before
+limit
+cursor
+```
+
+The response follows the standard collection contract and includes the owning agent, run/session IDs, timestamps, duration, safe input/output previews, and normalized error code. Credentials, provider secrets, and raw exceptions are never included.
+
+```json
+{
+  "data": [
+    {
+      "id": "trace_uuid",
+      "agent_id": "agent_uuid",
+      "agent_name": "Research Agent",
+      "agent_version_id": "version_uuid",
+      "run_id": "run_uuid",
+      "session_id": "session_uuid",
+      "status": "COMPLETED",
+      "started_at": "...",
+      "completed_at": "...",
+      "duration_ms": 920,
+      "input_text": "Hello",
+      "output_text": "Hi there",
+      "error_code": null
+    }
+  ],
+  "pagination": {
+    "next_cursor": null,
+    "has_more": false
+  }
+}
+```
+
 ## GET `/v1/runs/{run_id}/trace`
 
 Response:
@@ -2715,6 +2773,12 @@ Response item:
   "started_at": "...",
   "completed_at": "...",
   "duration_ms": 920,
+  "usage": {
+    "input_tokens": 1030,
+    "output_tokens": 214,
+    "total_tokens": 1244,
+    "cached_input_tokens": 0
+  },
   "attributes": {
     "provider": "google",
     "model": "..."
@@ -2735,7 +2799,13 @@ input
 output
 error
 attributes
+usage
 ```
+
+`usage` is a normalized per-span token breakdown. A `CONTEXT_BUILD` span uses
+`input_tokens_estimated: true` when the value comes from the platform tokenizer
+estimate rather than provider-reported usage. Provider credentials and raw
+provider exceptions must not be present in any span payload.
 
 Do not expose unbounded payloads.
 
