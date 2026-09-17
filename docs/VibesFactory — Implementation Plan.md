@@ -1117,6 +1117,35 @@ Publish v2
 Inspect v1 and v2 independently
 ```
 
+### Phase 2 delivery detail
+
+Phase 2 is a control-plane-only vertical slice. It does not call model
+providers or execute runtime, tools, knowledge, memory, guardrails, or
+workflows. The implementation adds `agents`, `agent_drafts`, and immutable
+`agent_versions` tables through migration `0003_agent_control_plane`.
+
+Agent creation is workspace-scoped and transactionally creates the Agent
+identity plus its single current AgentDraft. Draft edits use last-write-wins
+with `updated_at` and `updated_by`; slug is create-only. Agent deletion means
+archive, not hard deletion. `OWNER` and `MEMBER` retain the MVP permissions to
+read, create, update, and publish agents.
+
+Publishing locks the Agent row, validates the draft against a platform-owned
+static model catalog, copies instructions/model/runtime/memory configuration
+into a new AgentVersion, stores a complete snapshot with empty future binding
+arrays, increments the version number, and commits atomically. Published
+versions have no update or delete API.
+
+The Phase 2 API includes Agent CRUD, draft read/update/validation, version
+publish/list/detail, and `GET /v1/models`. The model catalog contains no
+vendor SDK imports; Gemini/OpenAI adapters belong to Phase 3. Frontend work
+includes the Agents list, creation form, detail editor, model configuration,
+runtime/memory configuration placeholders, publish flow, and read-only
+version inspection in both approved themes.
+
+The database schema records `agent_versions.change_note` to keep the publish
+API contract and persistence model aligned.
+
 ---
 
 # 14. Phase 3 — Model Provider Layer

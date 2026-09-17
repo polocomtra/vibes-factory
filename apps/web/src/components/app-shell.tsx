@@ -261,7 +261,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { preference, resolvedTheme, updatePreference } = useTheme();
   const pathname = usePathname();
   const router = useRouter();
-  const [activeItem, setActiveItem] = useState(pathname === "/settings" ? "Settings" : "Dashboard");
+  const [activeItem, setActiveItem] = useState(
+    pathname.startsWith("/agents") ? "Agents" : pathname === "/settings" ? "Settings" : "Dashboard",
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [email, setEmail] = useState("");
@@ -269,7 +271,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
 
   useEffect(() => {
-    setActiveItem(pathname === "/settings" ? "Settings" : "Dashboard");
+    setActiveItem(pathname.startsWith("/agents") ? "Agents" : pathname === "/settings" ? "Settings" : "Dashboard");
   }, [pathname]);
 
   useEffect(() => {
@@ -304,6 +306,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setActiveItem(label);
     setMobileOpen(false);
     if (label === "Dashboard") router.push("/");
+    if (label === "Agents") router.push("/agents");
     if (label === "Settings") router.push("/settings");
   };
 

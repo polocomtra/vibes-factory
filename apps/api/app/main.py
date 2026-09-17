@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 from starlette import status
 
+from .agents.routes import router as agent_router
 from .config import get_settings
 from .db import check_database, dispose_engine
 from .errors import error_response, register_exception_handlers
@@ -47,6 +48,7 @@ app.add_middleware(
 app.middleware("http")(request_id_middleware)
 register_exception_handlers(app)
 app.include_router(workspace_router)
+app.include_router(agent_router)
 
 
 @app.get("/health", tags=["system"])

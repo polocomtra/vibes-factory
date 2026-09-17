@@ -16,6 +16,7 @@ import {
   Timer,
   Workflow,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 import { AppShell } from "../components/app-shell";
 
@@ -41,6 +42,7 @@ const agents = [
 ];
 
 function PageHeader() {
+  const router = useRouter();
   return (
     <div className="page-header">
       <div>
@@ -50,7 +52,7 @@ function PageHeader() {
       </div>
       <div className="header-controls">
         <button className="select-button" type="button">Last 7 days <ChevronDown size={15} aria-hidden="true" /></button>
-        <button className="button primary-button" type="button"><Plus size={16} aria-hidden="true" />New agent</button>
+        <button className="button primary-button" type="button" onClick={() => router.push("/agents/new")}><Plus size={16} aria-hidden="true" />New agent</button>
       </div>
     </div>
   );

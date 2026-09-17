@@ -438,6 +438,7 @@ Agent versions are immutable published snapshots.
 | runtime_config | JSONB | NOT NULL |
 | memory_config | JSONB | NOT NULL |
 | snapshot | JSONB | NOT NULL |
+| change_note | TEXT | NULL |
 | created_by | UUID | FK users |
 | created_at | TIMESTAMPTZ | NOT NULL |
 
