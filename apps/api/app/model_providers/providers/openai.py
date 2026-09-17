@@ -1,13 +1,19 @@
 """OpenAI Responses API adapters, including Azure custom endpoints."""
 
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from inspect import isawaitable
 from typing import Any
 
 from openai import AsyncOpenAI
 
-from ..contracts import ModelRequest, ModelResponse, ModelToolCall, ModelUsage
+from ..contracts import (
+    ModelRequest,
+    ModelResponse,
+    ModelStreamEvent,
+    ModelToolCall,
+    ModelUsage,
+)
 from ..errors import ProviderError, normalize_sdk_exception
 
 
@@ -153,42 +159,104 @@ class OpenAIProvider:
             kwargs["base_url"] = self.base_url
         return self.client_factory(**kwargs)
 
+    @staticmethod
+    def _response_kwargs(request: ModelRequest) -> dict[str, object]:
+        kwargs: dict[str, object] = {
+            "model": request.model,
+            "input": _response_input(request),
+            "store": False,
+            "stream": request.stream,
+        }
+        if request.system_instruction:
+            kwargs["instructions"] = request.system_instruction
+        if request.temperature is not None and request.provider != "azure_openai":
+            kwargs["temperature"] = request.temperature
+        if request.max_output_tokens:
+            kwargs["max_output_tokens"] = request.max_output_tokens
+        if request.tools:
+            kwargs["tools"] = [
+                {
+                    "type": "function",
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": tool.parameters,
+                }
+                for tool in request.tools
+            ]
+        if request.response_schema:
+            kwargs["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": "response",
+                    "strict": True,
+                    "schema": request.response_schema,
+                }
+            }
+        return kwargs
+
     async def generate(self, request: ModelRequest, api_key: str) -> ModelResponse:
         client: AsyncOpenAI | None = None
         try:
             client = self._client(api_key)
-            kwargs: dict[str, object] = {
-                "model": request.model,
-                "input": _response_input(request),
-                "store": False,
-            }
-            if request.system_instruction:
-                kwargs["instructions"] = request.system_instruction
-            if request.temperature is not None and request.provider != "azure_openai":
-                kwargs["temperature"] = request.temperature
-            if request.max_output_tokens:
-                kwargs["max_output_tokens"] = request.max_output_tokens
-            if request.tools:
-                kwargs["tools"] = [
-                    {
-                        "type": "function",
-                        "name": tool.name,
-                        "description": tool.description,
-                        "parameters": tool.parameters,
-                    }
-                    for tool in request.tools
-                ]
-            if request.response_schema:
-                kwargs["text"] = {
-                    "format": {
-                        "type": "json_schema",
-                        "name": "response",
-                        "strict": True,
-                        "schema": request.response_schema,
-                    }
-                }
-            response = await client.responses.create(**kwargs)  # type: ignore[call-overload]
+            response = await client.responses.create(
+                **self._response_kwargs(request)
+            )  # type: ignore[call-overload]
             return _parse_responses_output(response)
+        except ProviderError:
+            raise
+        except Exception as error:
+            raise normalize_sdk_exception(error) from None
+        finally:
+            await _close_client(client)
+
+    async def stream(
+        self, request: ModelRequest, api_key: str
+    ) -> AsyncIterator[ModelStreamEvent]:
+        """Stream Responses API text deltas through the platform contract."""
+
+        if not request.stream:
+            raise ProviderError(
+                "MODEL_REQUEST_INVALID",
+                "A streaming provider request must set stream=true.",
+            )
+        client: AsyncOpenAI | None = None
+        completed = False
+        try:
+            client = self._client(api_key)
+            stream = await client.responses.create(
+                **self._response_kwargs(request)
+            )  # type: ignore[call-overload]
+            async for event in stream:
+                event_type = _value(event, "type")
+                if event_type == "response.output_text.delta":
+                    delta = _value(event, "delta")
+                    if isinstance(delta, str) and delta:
+                        yield ModelStreamEvent(type="text_delta", text=delta)
+                elif event_type == "response.completed":
+                    response = _value(event, "response")
+                    if response is None:
+                        raise ProviderError(
+                            "PROVIDER_INVALID_RESPONSE",
+                            "The provider returned no completed response.",
+                        )
+                    completed = True
+                    yield ModelStreamEvent(
+                        type="completed", response=_parse_responses_output(response)
+                    )
+                elif event_type in {
+                    "response.failed",
+                    "response.incomplete",
+                    "error",
+                }:
+                    raise ProviderError(
+                        "PROVIDER_INVALID_RESPONSE",
+                        "The provider did not complete the response.",
+                    )
+            if not completed:
+                raise ProviderError(
+                    "PROVIDER_INVALID_RESPONSE",
+                    "The provider stream ended without a completed response.",
+                )
         except ProviderError:
             raise
         except Exception as error:

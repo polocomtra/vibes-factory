@@ -63,8 +63,9 @@ VF_GEMINI_API_KEY=your_gemini_api_key
 
 Gemini calls use Google's official `google-genai` Python SDK `Interactions` API.
 The key is read only by the API process and is never sent to the browser,
-persisted in agent configuration, or included in runtime traces. Phase 4 uses
-the non-streaming async variant; SSE streaming remains deferred to Phase 5.
+persisted in agent configuration, or included in runtime traces. The
+authenticated playground now uses the Phase 5 SSE endpoint for the active Azure
+OpenAI model; Gemini streaming remains outside the active catalog scope.
 
 Gemini 3.8 Flash requests intentionally omit the legacy `temperature` field;
 older agent configurations remain readable and continue to run with the

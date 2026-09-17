@@ -1,12 +1,13 @@
 """Provider registry and request validation."""
 
+from typing import cast
 from urllib.parse import urlparse
 
 from pydantic import SecretStr
 
 from ..config import Settings
 from .catalog import find_model
-from .contracts import ModelProvider, ModelRequest
+from .contracts import ModelProvider, ModelRequest, StreamingModelProvider
 from .errors import ProviderError
 from .providers.deepseek import DeepSeekProvider
 from .providers.gemini import GeminiProvider
@@ -54,6 +55,18 @@ class ModelProviderRegistry:
             "MODEL_REQUEST_INVALID", "The requested provider is not supported."
         )
 
+    def resolve_streaming(
+        self, provider: str, *, base_url: str | None = None
+    ) -> StreamingModelProvider:
+        resolved = self.resolve(provider, base_url=base_url)
+        stream = getattr(resolved, "stream", None)
+        if not callable(stream):
+            raise ProviderError(
+                "MODEL_CAPABILITY_UNSUPPORTED",
+                "The requested provider does not support streaming.",
+            )
+        return cast(StreamingModelProvider, resolved)
+
     def builtin_api_key(self, provider: str) -> str:
         """Resolve an environment credential without exposing it to API callers."""
 
@@ -89,16 +102,16 @@ class ModelProviderRegistry:
 
     @staticmethod
     def validate_request(request: ModelRequest) -> None:
-        if request.stream:
-            raise ProviderError(
-                "MODEL_CAPABILITY_UNSUPPORTED",
-                "Streaming is not supported until Phase 5.",
-            )
         definition = find_model(request.provider, request.model)
         if definition is None:
             # Custom models are deliberately accepted by test connection only.
             return
         capabilities = definition.capabilities
+        if request.stream and not capabilities.get("streaming", False):
+            raise ProviderError(
+                "MODEL_CAPABILITY_UNSUPPORTED",
+                "This model does not support streaming.",
+            )
         if request.tools and not capabilities.get("tool_calling", False):
             raise ProviderError(
                 "MODEL_CAPABILITY_UNSUPPORTED",

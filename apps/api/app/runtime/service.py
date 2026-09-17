@@ -1,6 +1,7 @@
 """The first synchronous AgentRuntime vertical slice."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -28,6 +29,7 @@ from .context import ContextBuilder, ContextBuildResult
 from .contracts import (
     AgentRunRequest,
     AgentRunResult,
+    RuntimeStreamEvent,
     TextInput,
     TokenUsage,
 )
@@ -64,6 +66,7 @@ def _safe_model_input(model_request: ModelRequest) -> dict[str, object]:
         "messages": [message.model_dump() for message in model_request.messages],
         "temperature": model_request.temperature,
         "max_output_tokens": model_request.max_output_tokens,
+        "stream": model_request.stream,
     }
 
 
@@ -291,6 +294,7 @@ class AgentRuntime:
                 run_id=run.id,
                 trace_id=trace.id,
             ) from None
+
         except Exception:
             normalized = RuntimeExecutionError(
                 "RUN_FAILED",
@@ -314,6 +318,310 @@ class AgentRuntime:
                 trace_id=trace.id,
             ) from None
 
+    async def stream(
+        self, request: AgentRunRequest
+    ) -> AsyncIterator[RuntimeStreamEvent]:
+        """Run the Phase 4 lifecycle while yielding normalized text events."""
+
+        self._validate_request(request)
+        run, trace, root_span, user_message = await self._start_run(request)
+        context_span: Span | None = None
+        model_span: Span | None = None
+
+        # _start_run commits RUNNING before this event is exposed to clients.
+        yield RuntimeStreamEvent(
+            event="run.started",
+            data={
+                "run_id": str(run.id),
+                "trace_id": str(trace.id),
+                "agent_version_id": str(request.agent_version.id),
+            },
+        )
+
+        try:
+            context_span = Span(
+                id=uuid4(),
+                trace_id=trace.id,
+                parent_span_id=root_span.id,
+                run_id=run.id,
+                span_type=SpanType.CONTEXT_BUILD,
+                name="context.build",
+                status=SpanStatus.RUNNING,
+                input={
+                    "instructions": request.agent_version.instructions,
+                    "history": [
+                        message.model_dump() for message in request.session.messages
+                    ],
+                    "current_input": request.input.model_dump(),
+                },
+                attributes={
+                    "history_message_count": len(request.session.messages),
+                    "provider": request.agent_version.model_provider,
+                    "model": request.agent_version.model_name,
+                },
+                started_at=datetime.now(UTC),
+            )
+            self.session.add(context_span)
+            await self.session.commit()
+
+            context = self.context_builder.build(request)
+            context_span.status = SpanStatus.COMPLETED
+            context_span.output = {
+                "message_count": len(context.request.messages),
+                "input_token_estimate": context.input_token_estimate,
+            }
+            context_span.usage = {
+                "input_tokens": context.input_token_estimate,
+                "total_tokens": context.input_token_estimate,
+                "input_tokens_estimated": True,
+            }
+            context_span.completed_at = datetime.now(UTC)
+            await self.session.commit()
+
+            if context.input_token_estimate > request.execution_budget.max_total_tokens:
+                raise RuntimeExecutionError(
+                    "RUN_LIMIT_EXCEEDED",
+                    "Agent execution exceeded its configured token limit.",
+                    status_code=422,
+                    details={"budget": "max_total_tokens"},
+                )
+            if request.execution_budget.max_steps < 1:
+                raise RuntimeExecutionError(
+                    "RUN_LIMIT_EXCEEDED",
+                    "Agent execution exceeded its configured step limit.",
+                    status_code=422,
+                    details={"budget": "max_steps"},
+                )
+            if request.execution_budget.max_model_calls < 1:
+                raise RuntimeExecutionError(
+                    "RUN_LIMIT_EXCEEDED",
+                    "Agent execution exceeded its configured model-call limit.",
+                    status_code=422,
+                    details={"budget": "max_model_calls"},
+                )
+
+            stream_request = context.request.model_copy(update={"stream": True})
+            model_span = Span(
+                id=uuid4(),
+                trace_id=trace.id,
+                parent_span_id=root_span.id,
+                run_id=run.id,
+                span_type=SpanType.MODEL,
+                name=f"{request.agent_version.model_provider}.generate",
+                status=SpanStatus.RUNNING,
+                input=_safe_model_input(stream_request),
+                attributes={
+                    "provider": stream_request.provider,
+                    "model": stream_request.model,
+                    "input_token_estimate": context.input_token_estimate,
+                    "stream": True,
+                },
+                usage={
+                    "input_tokens": context.input_token_estimate,
+                    "input_tokens_estimated": True,
+                },
+                started_at=datetime.now(UTC),
+            )
+            self.session.add(model_span)
+            await self.session.commit()
+
+            self.registry.validate_request(stream_request)
+            provider = self.registry.resolve_streaming(
+                request.agent_version.model_provider
+            )
+            api_key = self.registry.builtin_api_key(
+                request.agent_version.model_provider
+            )
+            final_response: ModelResponse | None = None
+            accumulated_text: list[str] = []
+            async with asyncio.timeout(request.execution_budget.timeout_seconds):
+                async for event in provider.stream(stream_request, api_key):
+                    if event.type == "text_delta":
+                        if event.text:
+                            accumulated_text.append(event.text)
+                            yield RuntimeStreamEvent(
+                                event="message.delta",
+                                data={
+                                    "run_id": str(run.id),
+                                    "delta": event.text,
+                                },
+                            )
+                    elif event.type == "completed":
+                        final_response = event.response
+
+            if final_response is None:
+                raise RuntimeExecutionError(
+                    "PROVIDER_INVALID_RESPONSE",
+                    "The provider stream ended without a completed response.",
+                    status_code=502,
+                )
+            streamed_text = "".join(accumulated_text)
+            if streamed_text and final_response.content != streamed_text:
+                raise RuntimeExecutionError(
+                    "PROVIDER_INVALID_RESPONSE",
+                    "The streamed response did not match its final content.",
+                    status_code=502,
+                )
+            if final_response.tool_calls:
+                raise RuntimeExecutionError(
+                    "MODEL_CAPABILITY_UNSUPPORTED",
+                    "Tool calls are not supported in the Phase 5 runtime.",
+                    status_code=422,
+                )
+            if not final_response.content and not accumulated_text:
+                raise RuntimeExecutionError(
+                    "PROVIDER_INVALID_RESPONSE",
+                    "The provider returned no text content.",
+                    status_code=502,
+                )
+
+            usage = _usage(final_response)
+            if (
+                usage.total_tokens is not None
+                and usage.total_tokens > request.execution_budget.max_total_tokens
+            ):
+                raise RuntimeExecutionError(
+                    "RUN_LIMIT_EXCEEDED",
+                    "Agent execution exceeded its configured token limit.",
+                    status_code=422,
+                    details={"budget": "max_total_tokens"},
+                )
+
+            await self._complete_run(
+                request,
+                run,
+                trace,
+                root_span,
+                context_span,
+                model_span,
+                user_message,
+                context,
+                final_response,
+                usage,
+            )
+            message_id = await self.session.scalar(
+                select(Message.id)
+                .where(
+                    Message.run_id == run.id,
+                    Message.role == MessageRole.ASSISTANT,
+                )
+                .order_by(Message.sequence_no.desc())
+                .limit(1)
+            )
+            if message_id is None:
+                raise RuntimeExecutionError(
+                    "INTERNAL_ERROR",
+                    "The assistant message was not persisted.",
+                    status_code=500,
+                )
+            yield RuntimeStreamEvent(
+                event="message.completed",
+                data={"run_id": str(run.id), "message_id": str(message_id)},
+            )
+            yield RuntimeStreamEvent(
+                event="run.completed",
+                data={
+                    "run_id": str(run.id),
+                    "status": RunStatus.COMPLETED.value,
+                    "usage": usage.model_dump(exclude_none=True),
+                    "estimated_cost": (
+                        str(run.estimated_cost)
+                        if run.estimated_cost is not None
+                        else None
+                    ),
+                },
+            )
+        except RuntimeExecutionError as error:
+            await self._fail_run(
+                run.id,
+                trace.id,
+                root_span.id,
+                context_span.id if context_span else None,
+                model_span.id if model_span else None,
+                error,
+            )
+            yield RuntimeStreamEvent(
+                event="run.failed",
+                data={
+                    "run_id": str(run.id),
+                    "error": {"code": error.code, "message": error.message},
+                },
+            )
+        except ProviderError as error:
+            normalized = RuntimeExecutionError(
+                error.code,
+                error.safe_message,
+                status_code=_provider_status(error),
+            )
+            await self._fail_run(
+                run.id,
+                trace.id,
+                root_span.id,
+                context_span.id if context_span else None,
+                model_span.id if model_span else None,
+                normalized,
+            )
+            yield RuntimeStreamEvent(
+                event="run.failed",
+                data={
+                    "run_id": str(run.id),
+                    "error": {"code": normalized.code, "message": normalized.message},
+                },
+            )
+        except TimeoutError:
+            normalized = RuntimeExecutionError(
+                "PROVIDER_TIMEOUT",
+                "The provider request timed out.",
+                status_code=504,
+            )
+            await self._fail_run(
+                run.id,
+                trace.id,
+                root_span.id,
+                context_span.id if context_span else None,
+                model_span.id if model_span else None,
+                normalized,
+            )
+            yield RuntimeStreamEvent(
+                event="run.failed",
+                data={
+                    "run_id": str(run.id),
+                    "error": {"code": normalized.code, "message": normalized.message},
+                },
+            )
+        except asyncio.CancelledError:
+            await self._cancel_run(
+                run.id,
+                trace.id,
+                root_span.id,
+                context_span.id if context_span else None,
+                model_span.id if model_span else None,
+            )
+            raise
+        except Exception:
+            normalized = RuntimeExecutionError(
+                "RUN_FAILED",
+                "The agent run failed unexpectedly.",
+                status_code=500,
+            )
+            logger.error(
+                "runtime_stream_failed", code=normalized.code, run_id=str(run.id)
+            )
+            await self._fail_run(
+                run.id,
+                trace.id,
+                root_span.id,
+                context_span.id if context_span else None,
+                model_span.id if model_span else None,
+                normalized,
+            )
+            yield RuntimeStreamEvent(
+                event="run.failed",
+                data={
+                    "run_id": str(run.id),
+                    "error": {"code": normalized.code, "message": normalized.message},
+                },
+            )
     @staticmethod
     def _validate_request(request: AgentRunRequest) -> None:
         if not (
@@ -557,6 +865,50 @@ class AgentRuntime:
                 span.error_json = {"code": error.code, "message": error.message}
                 span.completed_at = now
         if trace is not None:
+            trace.status = TraceStatus.FAILED
+            trace.completed_at = now
+        await self.session.commit()
+
+    async def _cancel_run(
+        self,
+        run_id: UUID,
+        trace_id: UUID,
+        root_span_id: UUID,
+        context_span_id: UUID | None,
+        model_span_id: UUID | None,
+    ) -> None:
+        """Close a stream cleanly when the HTTP client disconnects."""
+
+        await self.session.rollback()
+        run = await self.session.get(Run, run_id)
+        trace = await self.session.get(Trace, trace_id)
+        root_span = await self.session.get(Span, root_span_id)
+        context_span = (
+            await self.session.get(Span, context_span_id) if context_span_id else None
+        )
+        model_span = (
+            await self.session.get(Span, model_span_id) if model_span_id else None
+        )
+        now = datetime.now(UTC)
+        if run is not None and run.status in {
+            RunStatus.QUEUED,
+            RunStatus.RUNNING,
+            RunStatus.WAITING_TOOL,
+            RunStatus.WAITING_APPROVAL,
+        }:
+            run.status = RunStatus.CANCELLED
+            run.error_code = "RUN_CANCELLED"
+            run.error_message = "The streaming client disconnected."
+            run.completed_at = now
+        for span in (root_span, context_span, model_span):
+            if span is not None and span.status == SpanStatus.RUNNING:
+                span.status = SpanStatus.FAILED
+                span.error_json = {
+                    "code": "RUN_CANCELLED",
+                    "message": "The streaming client disconnected.",
+                }
+                span.completed_at = now
+        if trace is not None and trace.status == TraceStatus.RUNNING:
             trace.status = TraceStatus.FAILED
             trace.completed_at = now
         await self.session.commit()

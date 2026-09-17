@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 from openai import AsyncOpenAI
 
-from apps.api.app.model_providers.contracts import ModelMessage, ModelRequest
+from apps.api.app.model_providers.contracts import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+)
 from apps.api.app.model_providers.errors import ProviderError
 from apps.api.app.model_providers.fake import FakeModelProvider
 from apps.api.app.model_providers.providers.deepseek import DeepSeekProvider
@@ -75,6 +79,48 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
     assert kwargs["store"] is False
     assert kwargs["input"] == "hello"
     assert "temperature" not in kwargs
+    client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_azure_stream_normalizes_text_deltas_and_completed_response() -> None:
+    completed = SimpleNamespace(
+        output_text="Hello world",
+        output=[],
+        usage=SimpleNamespace(input_tokens=2, output_tokens=2, total_tokens=4),
+        status="completed",
+        model="gpt-5.6-luna",
+    )
+
+    async def events():
+        yield SimpleNamespace(type="response.output_text.delta", delta="Hello ")
+        yield SimpleNamespace(type="response.output_text.delta", delta="world")
+        yield SimpleNamespace(type="response.completed", response=completed)
+
+    client = FakeOpenAIClient(events())
+    factory = cast(Callable[..., AsyncOpenAI], lambda **kwargs: client)
+    provider = AzureOpenAIProvider(
+        base_url="https://resource.services.ai.azure.com/openai/v1",
+        client_factory=factory,
+    )
+    stream_request = request("azure_openai", "gpt-5.6-luna").model_copy(
+        update={"stream": True}
+    )
+
+    normalized = [
+        event async for event in provider.stream(stream_request, "temporary-key")
+    ]
+
+    assert [event.type for event in normalized] == [
+        "text_delta",
+        "text_delta",
+        "completed",
+    ]
+    assert [event.text for event in normalized[:2]] == ["Hello ", "world"]
+    assert normalized[-1].response is not None
+    assert normalized[-1].response.content == "Hello world"
+    kwargs = client.responses.create.await_args.kwargs
+    assert kwargs["stream"] is True
     client.close.assert_awaited_once()
 
 
@@ -237,3 +283,20 @@ async def test_fake_provider_uses_platform_contract_without_network() -> None:
     result = await provider.generate(request("fake"), "ignored")
     assert result.content == "OK"
     assert provider.requests == [request("fake")]
+
+
+@pytest.mark.asyncio
+async def test_fake_provider_stream_is_deterministic() -> None:
+    provider = FakeModelProvider(
+        response_factory=lambda _: ModelResponse(content="stream me", finish_reason="STOP"),
+        stream_chunk_size=3,
+    )
+    stream_request = request("fake").model_copy(update={"stream": True})
+
+    events = [event async for event in provider.stream(stream_request, "ignored")]
+
+    assert [event.text for event in events[:-1]] == ["str", "eam", " me"]
+    assert events[-1].type == "completed"
+    assert events[-1].response is not None
+    assert events[-1].response.content == "stream me"
+    assert provider.stream_requests == [stream_request]

@@ -4,6 +4,7 @@ The contracts intentionally contain no credential fields. A key is supplied to
 ``generate`` for the lifetime of one call and is never part of a model request.
 """
 
+from collections.abc import AsyncIterator
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -60,14 +61,6 @@ class ModelRequest(BaseModel):
             raise ValueError("response_schema must describe a JSON object")
         return value
 
-    @field_validator("stream")
-    @classmethod
-    def reject_streaming(cls, value: bool) -> bool:
-        if value:
-            raise ValueError("streaming is not supported until Phase 5")
-        return value
-
-
 class ModelToolCall(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -95,8 +88,29 @@ class ModelResponse(BaseModel):
     provider_metadata: dict[str, object] = Field(default_factory=dict)
 
 
+class ModelStreamEvent(BaseModel):
+    """Provider-neutral events emitted during one model stream."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    type: Literal["text_delta", "completed"]
+    text: str | None = None
+    response: ModelResponse | None = None
+
+
 class ModelProvider(Protocol):
     provider_id: str
 
     async def generate(self, request: ModelRequest, api_key: str) -> ModelResponse:
         """Generate one non-streaming response using an in-memory API key."""
+
+
+class StreamingModelProvider(Protocol):
+    """Optional streaming capability implemented by providers that support it."""
+
+    provider_id: str
+
+    def stream(
+        self, request: ModelRequest, api_key: str
+    ) -> AsyncIterator[ModelStreamEvent]:
+        """Yield normalized text and terminal response events."""

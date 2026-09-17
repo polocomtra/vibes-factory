@@ -1704,6 +1704,8 @@ knowledge, memory, workflows, or multi-agent execution.
 
 # 25. Phase 5 — Streaming
 
+**Status:** Implemented
+
 ## Goal
 
 Improve runtime UX without changing domain logic.
@@ -1753,6 +1755,18 @@ agent.completed
 Streaming must not bypass persistence.
 
 Final assistant message and Run record must be consistent with non-stream execution.
+
+### Phase 5 implementation record
+
+Phase 5 adds the authenticated SSE runtime endpoint and native Azure OpenAI
+stream normalization, with deterministic FakeModelProvider streaming coverage.
+The runtime persists the Phase 4 run/trace/message lifecycle before publishing
+stream events, persists the final assistant message before completion events,
+and normalizes provider failures and client disconnects without adding a
+database migration. The playground now consumes POST-based SSE streams with
+batched deltas, canonical reload after completion, and accessible live status
+feedback. Tools, RAG, memory, public deployment streaming, and reconnect/resume
+remain deferred to their later milestones.
 
 ---
 

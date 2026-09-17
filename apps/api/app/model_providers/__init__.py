@@ -6,9 +6,11 @@ from .contracts import (
     ModelProvider,
     ModelRequest,
     ModelResponse,
+    ModelStreamEvent,
     ModelTool,
     ModelToolCall,
     ModelUsage,
+    StreamingModelProvider,
 )
 from .fake import FakeModelProvider
 from .registry import ModelProviderRegistry
@@ -21,6 +23,8 @@ __all__ = [
     "ModelProviderRegistry",
     "ModelRequest",
     "ModelResponse",
+    "ModelStreamEvent",
+    "StreamingModelProvider",
     "ModelTool",
     "ModelToolCall",
     "ModelUsage",

@@ -1,6 +1,7 @@
 """SQLAlchemy persistence models for the VibesFactory control plane."""
 
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
@@ -437,7 +438,7 @@ class Run(Base):
     usage: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}", nullable=False
     )
-    estimated_cost: Mapped[float | None] = mapped_column(
+    estimated_cost: Mapped[Decimal | None] = mapped_column(
         Numeric(18, 8), nullable=True
     )
     metadata_json: Mapped[dict[str, Any]] = mapped_column(

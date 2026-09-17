@@ -1,8 +1,10 @@
-"""Authenticated run creation and inspection routes."""
+"""Authenticated run creation, streaming and inspection routes."""
 
+import json
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +63,55 @@ def _run_response(run: Run) -> RunResponse:
     )
 
 
+async def _build_runtime_request(
+    payload: RunCreateRequest,
+    agent: Agent,
+    user: User,
+    session: AsyncSession,
+) -> AgentRunRequest:
+    version = await _load_version(session, agent, payload.agent_version_id)
+    conversation = await _load_owned_session(session, agent, payload.session_id, user)
+    messages = await session.scalars(
+        select(Message)
+        .where(Message.session_id == conversation.id)
+        .order_by(Message.sequence_no.asc())
+    )
+    history = tuple(
+        SessionMessage(
+            role=item.role.value,
+            content=str(item.content.get("text", "")),
+        )
+        for item in messages.all()
+        if item.content.get("text")
+    )
+    budget = ExecutionBudget.model_validate(version.runtime_config)
+    return AgentRunRequest(
+        workspace_id=agent.workspace_id,
+        agent_version=AgentVersionRuntimeConfig(
+            id=version.id,
+            agent_id=version.agent_id,
+            workspace_id=version.workspace_id,
+            instructions=version.instructions,
+            model_provider=version.model_provider,
+            model_name=version.model_name,
+            model_options=version.model_config,
+        ),
+        session=RuntimeSession(
+            id=conversation.id,
+            agent_id=conversation.agent_id,
+            workspace_id=conversation.workspace_id,
+            messages=history,
+        ),
+        input=payload.input,
+        execution_budget=budget,
+    )
+
+
+def _sse(event: str, data: dict[str, object], sequence: int) -> str:
+    encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return f"id: {sequence}\nevent: {event}\ndata: {encoded}\n\n"
+
+
 async def _load_version(
     session: AsyncSession, agent: Agent, version_id: UUID
 ) -> AgentVersion:
@@ -99,43 +150,8 @@ async def create_run(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> RunResponse:
-    version = await _load_version(session, agent, payload.agent_version_id)
-    conversation = await _load_owned_session(session, agent, payload.session_id, user)
-    messages = await session.scalars(
-        select(Message)
-        .where(Message.session_id == conversation.id)
-        .order_by(Message.sequence_no.asc())
-    )
-    history = tuple(
-        SessionMessage(
-            role=item.role.value,
-            content=str(item.content.get("text", "")),
-        )
-        for item in messages.all()
-        if item.content.get("text")
-    )
     try:
-        budget = ExecutionBudget.model_validate(version.runtime_config)
-        request = AgentRunRequest(
-            workspace_id=agent.workspace_id,
-            agent_version=AgentVersionRuntimeConfig(
-                id=version.id,
-                agent_id=version.agent_id,
-                workspace_id=version.workspace_id,
-                instructions=version.instructions,
-                model_provider=version.model_provider,
-                model_name=version.model_name,
-                model_options=version.model_config,
-            ),
-            session=RuntimeSession(
-                id=conversation.id,
-                agent_id=conversation.agent_id,
-                workspace_id=conversation.workspace_id,
-                messages=history,
-            ),
-            input=payload.input,
-            execution_budget=budget,
-        )
+        request = await _build_runtime_request(payload, agent, user, session)
         runtime_result = await AgentRuntime(
             session,
             ModelProviderRegistry.from_settings(get_settings()),
@@ -162,6 +178,38 @@ async def create_run(
             },
         )
     return _run_response(result)
+
+
+@router.post("/agents/{agent_id}/runs:stream")
+async def stream_run(
+    payload: RunCreateRequest,
+    agent: Agent = Depends(require_agent_access),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Stream an authenticated run without bypassing runtime persistence."""
+
+    request = await _build_runtime_request(payload, agent, user, session)
+    runtime = AgentRuntime(
+        session,
+        ModelProviderRegistry.from_settings(get_settings()),
+    )
+
+    async def event_stream():
+        sequence = 0
+        async for runtime_event in runtime.stream(request):
+            sequence += 1
+            yield _sse(runtime_event.event, runtime_event.data, sequence)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/runs/{run_id}", response_model=RunResponse)

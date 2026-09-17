@@ -86,3 +86,18 @@ class AgentRunResult(BaseModel):
     estimated_cost: float | None = None
     started_at: datetime
     completed_at: datetime
+
+
+class RuntimeStreamEvent(BaseModel):
+    """The small event envelope shared by the runtime and SSE transport."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    event: Literal[
+        "run.started",
+        "message.delta",
+        "message.completed",
+        "run.completed",
+        "run.failed",
+    ]
+    data: dict[str, object]

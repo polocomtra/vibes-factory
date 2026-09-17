@@ -28,7 +28,7 @@ function SessionItem({ session, selected, onSelect, onContinue }: { session: Ses
         <span className="playground-session-icon"><Clock3 size={15} aria-hidden="true" /></span>
         <span className="playground-session-copy"><strong>{session.title || "Untitled session"}</strong><small>Last activity {dateLabel(session.last_activity_at)}</small><code>{session.id.slice(0, 8)}…</code></span>
       </button>
-      <button className="button secondary-button session-continue-button" type="button" onClick={onContinue}>Continue session</button>
+      <button className="button primary-button session-continue-button" type="button" onClick={onContinue}>Continue session</button>
     </div>
   );
 }
@@ -156,7 +156,7 @@ function PlaygroundLauncherContent() {
           </section>
 
           <section className="panel playground-picker-panel session-picker-panel" aria-labelledby="session-picker-title">
-            <div className="panel-heading"><div><span className="panel-kicker">Step 02</span><h2 id="session-picker-title">Choose a session</h2><p className="panel-copy">{selectedAgent ? `Continue ${selectedAgent.name} with its saved context.` : "Select an agent to load its sessions."}</p></div><Clock3 size={18} aria-hidden="true" /></div>
+            <div className="panel-heading"><div><span className="panel-kicker">Step 02</span><h2 id="session-picker-title">Choose a session</h2><p className="panel-copy">{selectedAgent ? `Continue ${selectedAgent.name} with its saved context.` : "Select an agent to load its sessions."}</p></div>{selectedAgent && selectedAgent.latest_version_number > 0 ? <button className="button primary-button session-header-create-button" type="button" onClick={() => void startNewSession()} disabled={busy || sessionsLoading}><Plus size={14} aria-hidden="true" />{busy ? "Creating…" : "Create new session"}</button> : <Clock3 size={18} aria-hidden="true" />}</div>
             {!selectedAgent ? <div className="playground-picker-empty"><Bot size={24} aria-hidden="true" /><strong>Select an agent</strong><span>Its sessions will appear here.</span></div> : selectedAgent.latest_version_number === 0 ? <div className="playground-picker-empty"><CircleAlert size={24} aria-hidden="true" /><strong>Publish a version first</strong><span>This agent only has mutable draft state.</span><button className="text-button" type="button" onClick={() => router.push(`/agents/${selectedAgent.id}`)}>Open agent configuration →</button></div> : sessionsLoading ? <div className="playground-picker-empty"><LoaderCircle className="spin" size={20} aria-hidden="true" /><span>Loading sessions…</span></div> : <div className="session-list" aria-label={`${selectedAgent.name} sessions`}>{sessions.length === 0 ? <div className="playground-picker-empty compact"><Clock3 size={24} aria-hidden="true" /><strong>No sessions yet</strong><span>Start a new conversation for this agent.</span><button className="button primary-button session-create-button" type="button" onClick={() => void startNewSession()} disabled={busy}><Plus size={15} aria-hidden="true" />{busy ? "Creating…" : "Create new session"}</button></div> : sessions.map((session) => <SessionItem key={session.id} session={session} selected={session.id === selectedSessionId} onSelect={() => setSelectedSessionId(session.id)} onContinue={() => router.push(`/agents/${selectedAgent.id}/playground?session_id=${session.id}`)} />)}</div>}
           </section>
         </main>
