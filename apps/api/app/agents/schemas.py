@@ -93,7 +93,7 @@ class AgentCreateRequest(BaseModel):
     )
     description: str | None = Field(default=None, max_length=10_000)
     instructions: str = Field(min_length=1, max_length=100_000)
-    model: ModelConfiguration
+    model: ModelConfiguration | None = None
     runtime_config: RuntimeConfiguration = Field(default_factory=RuntimeConfiguration)
     memory_config: MemoryConfiguration = Field(default_factory=MemoryConfiguration)
 
@@ -177,6 +177,9 @@ class ModelResponse(BaseModel):
     name: str
     display_name: str
     capabilities: dict[str, bool]
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    is_default: bool = False
 
 
 class AgentDraftResponse(BaseModel):
@@ -189,6 +192,8 @@ class AgentDraftResponse(BaseModel):
 
 
 class AgentVersionSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: UUID
     agent_id: UUID
     version_number: int

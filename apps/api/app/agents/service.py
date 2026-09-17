@@ -8,12 +8,13 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Agent, AgentDraft, AgentStatus, AgentVersion
-from .catalog import find_model
+from .catalog import find_model, get_default_model
 from .schemas import (
     AgentCreateRequest,
     AgentDraftUpdateRequest,
     AgentUpdateRequest,
     DraftValidationIssue,
+    ModelConfiguration,
     RuntimeConfiguration,
 )
 
@@ -105,7 +106,11 @@ async def create_agent(
     user_id: UUID,
     payload: AgentCreateRequest,
 ) -> Agent:
-    if find_model(payload.model.provider, payload.model.name) is None:
+    selected_model = payload.model or ModelConfiguration(
+        provider=get_default_model().provider,
+        name=get_default_model().name,
+    )
+    if find_model(selected_model.provider, selected_model.name) is None:
         raise AgentServiceError(
             "MODEL_NOT_FOUND",
             "The selected model is not available in the platform catalog.",
@@ -138,9 +143,9 @@ async def create_agent(
         AgentDraft(
             agent_id=agent.id,
             instructions=payload.instructions,
-            model_provider=payload.model.provider,
-            model_name=payload.model.name,
-            model_config=payload.model.model_dump(exclude={"provider", "name"}),
+            model_provider=selected_model.provider,
+            model_name=selected_model.name,
+            model_config=selected_model.model_dump(exclude={"provider", "name"}),
             runtime_config=payload.runtime_config.model_dump(),
             memory_config=payload.memory_config.model_dump(),
             updated_by=user_id,

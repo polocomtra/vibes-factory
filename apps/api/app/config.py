@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import field_validator
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     supabase_publishable_key: str | None = None
     supabase_jwt_jwks_url: str | None = None
     supabase_auth_timeout_seconds: float = 5.0
+    model_provider_timeout_seconds: float = 60.0
+    azure_openai_api_key: SecretStr | None = None
+    azure_openai_base_url: str | None = None
+    azure_openai_deployment_name: str = "gpt-5.6-luna"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

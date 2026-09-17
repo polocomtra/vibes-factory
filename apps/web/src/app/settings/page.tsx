@@ -9,6 +9,8 @@ import {
 } from "react";
 import {
   Check,
+  Cloud,
+  KeyRound,
   LoaderCircle,
   Mail,
   Plus,
@@ -20,6 +22,10 @@ import {
 
 import { AppShell } from "../../components/app-shell";
 import { apiFetch, readApiError } from "../../lib/api";
+import {
+  ModelProviderId,
+  testModelConnection,
+} from "../../lib/model-providers";
 
 type Workspace = {
   id: string;
@@ -56,7 +62,15 @@ export default function SettingsPage() {
   const [newWorkspaceSlug, setNewWorkspaceSlug] = useState("");
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
   const [memberEmail, setMemberEmail] = useState("");
-  const [activeTab, setActiveTab] = useState<"workspace" | "members">("workspace");
+  const [activeTab, setActiveTab] = useState<"workspace" | "members" | "model-test">("workspace");
+  const [provider, setProvider] = useState<ModelProviderId>("azure_openai");
+  const [modelName, setModelName] = useState("gpt-5.6-luna");
+  const [deploymentName, setDeploymentName] = useState("gpt-5.6-luna");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [modelTestBusy, setModelTestBusy] = useState(false);
+  const [modelTestResult, setModelTestResult] = useState<Awaited<ReturnType<typeof testModelConnection>> | null>(null);
+  const [modelTestError, setModelTestError] = useState<string | null>(null);
   const [memberLoading, setMemberLoading] = useState(false);
   const [memberBusyId, setMemberBusyId] = useState<string | null>(null);
   const [confirmingMemberId, setConfirmingMemberId] = useState<string | null>(null);
@@ -230,6 +244,48 @@ export default function SettingsPage() {
     setMemberBusyId(null);
   }
 
+  function selectProvider(value: ModelProviderId) {
+    setProvider(value);
+    setModelTestResult(null);
+    setModelTestError(null);
+    if (value === "azure_openai") {
+      setModelName("gpt-5.6-luna");
+      setDeploymentName("gpt-5.6-luna");
+    } else if (value === "deepseek") {
+      setModelName("deepseek-flash");
+      setDeploymentName("");
+    } else if (value === "google") {
+      setModelName("gemini-2.5-flash");
+      setDeploymentName("");
+    } else {
+      setModelName("gpt-4.1-mini");
+      setDeploymentName("");
+    }
+  }
+
+  async function submitModelTest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedId || !apiKey.trim()) return;
+    setModelTestBusy(true);
+    setModelTestResult(null);
+    setModelTestError(null);
+    try {
+      const result = await testModelConnection(selectedId, {
+        provider,
+        model_name: modelName,
+        deployment_name: provider === "azure_openai" ? deploymentName : undefined,
+        base_url: provider === "azure_openai" && baseUrl.trim() ? baseUrl.trim() : undefined,
+        api_key: apiKey,
+      });
+      setModelTestResult(result);
+    } catch (testError) {
+      setModelTestError(testError instanceof Error ? testError.message : "Connection test failed.");
+    } finally {
+      setApiKey("");
+      setModelTestBusy(false);
+    }
+  }
+
   return <AppShell>
     <div className="page-header">
       <div>
@@ -273,6 +329,17 @@ export default function SettingsPage() {
         <UsersRound size={14} aria-hidden="true" />
         Members
         {selectedId ? <span className="tab-count">{members.length}</span> : null}
+      </button>
+      <button
+        className={`settings-tab${activeTab === "model-test" ? " active" : ""}`}
+        type="button"
+        role="tab"
+        aria-selected={activeTab === "model-test"}
+        disabled={!selectedId}
+        onClick={() => setActiveTab("model-test")}
+      >
+        <KeyRound size={14} aria-hidden="true" />
+        Test model
       </button>
     </div>
 
@@ -338,6 +405,53 @@ export default function SettingsPage() {
           {member.role === "OWNER" || !isOwner ? <span className="member-action-placeholder" aria-hidden="true" /> : confirmingMemberId === member.user_id ? <div className="member-confirm-actions"><button className="text-button" type="button" onClick={() => setConfirmingMemberId(null)}>Cancel</button><button className="button danger-button" type="button" disabled={memberBusyId === member.user_id} onClick={() => void removeMember(member)}>{memberBusyId === member.user_id ? <LoaderCircle className="spin" size={13} aria-hidden="true" /> : null}Remove</button></div> : <button className="icon-button danger-icon" type="button" aria-label={`Remove ${member.email}`} onClick={() => setConfirmingMemberId(member.user_id)}><UserMinus size={16} aria-hidden="true" /></button>}
         </div>)}
       </div>
+    </section> : null}
+
+    {!loading && activeTab === "model-test" && selectedId ? <section className="panel model-test-panel" role="tabpanel">
+      <div className="members-heading">
+        <div>
+          <span className="panel-kicker">Ephemeral provider probe</span>
+          <h2>Test Model Connection</h2>
+          <p className="panel-copy">Verify a provider key with one low-token request. The key is cleared from this form after the test.</p>
+        </div>
+        <span className="status-badge info"><span />No credentials saved</span>
+      </div>
+
+      <form className="model-test-form" onSubmit={submitModelTest}>
+        <div className="model-test-field-grid">
+          <label htmlFor="model-test-provider">Provider
+            <select id="model-test-provider" value={provider} onChange={(event) => selectProvider(event.target.value as ModelProviderId)}>
+              <option value="azure_openai">Azure OpenAI</option>
+              <option value="openai">OpenAI</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="google">Google Gemini</option>
+            </select>
+          </label>
+          <label htmlFor="model-test-model">Model / deployment ID
+            <input id="model-test-model" value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="gpt-4.1-mini" required />
+          </label>
+          {provider === "azure_openai" ? <label htmlFor="model-test-deployment">Azure deployment name
+            <input id="model-test-deployment" value={deploymentName} onChange={(event) => setDeploymentName(event.target.value)} placeholder="gpt-5.6-luna" required />
+          </label> : null}
+          {provider === "azure_openai" ? <label className="model-test-wide" htmlFor="model-test-base-url">Azure base URL
+            <input id="model-test-base-url" type="url" value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://resource.services.ai.azure.com/openai/v1" required />
+          </label> : null}
+          <label className="model-test-wide" htmlFor="model-test-api-key">API key
+            <input id="model-test-api-key" type="password" autoComplete="new-password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Enter a temporary provider key" required />
+          </label>
+        </div>
+        <div className="model-test-actions">
+          <p className="field-helper"><Cloud size={13} aria-hidden="true" /> Sent only to the selected provider through the authenticated API.</p>
+          <button className="button primary-button" type="submit" disabled={modelTestBusy || !apiKey.trim()}>
+            {modelTestBusy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <KeyRound size={15} aria-hidden="true" />}
+            {modelTestBusy ? "Testing…" : "Test connection"}
+          </button>
+        </div>
+      </form>
+
+      {modelTestError ? <div className="model-test-result failed" role="alert"><X size={16} aria-hidden="true" /><div><strong>Request failed</strong><span>{modelTestError}</span></div></div> : null}
+      {modelTestResult?.status === "SUCCESS" ? <div className="model-test-result success" role="status"><Check size={16} aria-hidden="true" /><div><strong>Connection successful</strong><span>{modelTestResult.provider} · {modelTestResult.model_name} · {modelTestResult.latency_ms ?? 0} ms</span></div></div> : null}
+      {modelTestResult?.status === "FAILED" && modelTestResult.error ? <div className="model-test-result failed" role="alert"><X size={16} aria-hidden="true" /><div><strong>Connection failed</strong><span>{modelTestResult.error.message}</span><small>{modelTestResult.error.code}</small></div></div> : null}
     </section> : null}
 
     {isCreateModalOpen ? <div

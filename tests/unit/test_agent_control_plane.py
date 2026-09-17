@@ -1,11 +1,16 @@
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
 from apps.api.app.agents.catalog import find_model
-from apps.api.app.agents.schemas import AgentCreateRequest, ModelConfiguration
+from apps.api.app.agents.schemas import (
+    AgentCreateRequest,
+    AgentVersionSummary,
+    ModelConfiguration,
+)
 from apps.api.app.agents.service import build_snapshot, validate_draft
 from apps.api.app.models import AgentDraft
 
@@ -77,6 +82,20 @@ def test_snapshot_contains_future_binding_slots() -> None:
     assert snapshot["knowledge_bases"] == []
     assert snapshot["guardrails"] == []
     assert snapshot["child_agents"] == []
+
+
+def test_agent_version_summary_serializes_sqlalchemy_style_attributes() -> None:
+    version = SimpleNamespace(
+        id=uuid4(),
+        agent_id=uuid4(),
+        version_number=1,
+        change_note=None,
+        created_at=datetime(2026, 9, 17, tzinfo=UTC),
+    )
+
+    summary = AgentVersionSummary.model_validate(version)
+
+    assert summary.version_number == 1
 
 
 def test_invalid_draft_reports_model_and_instruction_issues() -> None:

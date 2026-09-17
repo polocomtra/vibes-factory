@@ -15,6 +15,7 @@ from .db import check_database, dispose_engine
 from .errors import error_response, register_exception_handlers
 from .logging import configure_logging
 from .middleware import request_id_middleware
+from .model_providers.routes import router as model_provider_router
 from .telemetry import initialize_telemetry
 from .workspaces.routes import router as workspace_router
 
@@ -49,6 +50,7 @@ app.middleware("http")(request_id_middleware)
 register_exception_handlers(app)
 app.include_router(workspace_router)
 app.include_router(agent_router)
+app.include_router(model_provider_router)
 
 
 @app.get("/health", tags=["system"])

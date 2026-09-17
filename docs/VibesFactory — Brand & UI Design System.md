@@ -1805,6 +1805,19 @@ disabled state
 
 Model selector and Agent selector should use combobox behavior.
 
+Reference implementation:
+
+For new Select, Combobox, Switch, Dialog, and other interactive form primitives, use the Material UI component patterns as the behavioral and visual reference before implementing the equivalent VibesFactory primitive. Keep the implementation on the existing VibesFactory stack and tokens unless a dependency is explicitly approved.
+
+Material UI reference:
+
+```text
+https://mui.com/material-ui/react-select/
+https://mui.com/material-ui/react-switch/
+```
+
+Switches must use a horizontal track with a consistently positioned thumb: left when off and right when on. The control and its inline label must remain aligned in one row, wrap safely on narrow screens, and expose a visible keyboard focus state.
+
 ---
 
 # 45. Tags
@@ -3778,6 +3791,7 @@ Coding agents implementing VibesFactory UI MUST:
 13. Maintain WCAG AA contrast.
 14. Keep trace/workflow visual semantics consistent.
 15. Avoid introducing a separate visual style for individual modules.
+16. Reference Material UI patterns for new interactive components, especially Select/Combobox, Switch, Dialog, and form controls.
 
 ---
 

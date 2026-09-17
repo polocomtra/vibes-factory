@@ -133,6 +133,9 @@ async def get_models() -> dict[str, list[ModelResponse]]:
                 name=model.name,
                 display_name=model.display_name,
                 capabilities=model.capabilities,
+                context_window=model.context_window,
+                max_output_tokens=model.max_output_tokens,
+                is_default=model.is_default,
             )
             for model in list_models()
         ]
