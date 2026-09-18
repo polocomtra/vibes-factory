@@ -3,7 +3,12 @@
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from ..model_providers.contracts import ModelMessage, ModelRequest
+from ..model_providers.contracts import (
+    ModelMessage,
+    ModelRequest,
+    ModelTool,
+    ModelToolCall,
+)
 from .contracts import AgentRunRequest, SessionMessage
 
 
@@ -34,13 +39,16 @@ class ContextBuilder:
             ModelMessage(
                 role=_provider_role(message),
                 content=_message_content(message),
+                tool_calls=tuple(
+                    ModelToolCall.model_validate(call) for call in message.tool_calls
+                ),
+                tool_call_id=message.tool_call_id,
+                name=message.name,
             )
             for message in request.session.messages
             if message.role != "SYSTEM"
         ]
-        messages.append(
-            ModelMessage(role="user", content=request.input.text.strip())
-        )
+        messages.append(ModelMessage(role="user", content=request.input.text.strip()))
         config = _model_config(request.agent_version.model_options)
         provider = request.agent_version.model_provider.strip().lower()
         model_name = request.agent_version.model_name.strip().lower()
@@ -64,9 +72,19 @@ class ContextBuilder:
                 max_output_tokens if isinstance(max_output_tokens, int) else 1024
             ),
             stream=False,
+            tools=tuple(
+                ModelTool(
+                    name=tool.name,
+                    description=tool.description,
+                    parameters=tool.parameters,
+                )
+                for tool in request.agent_version.tools
+            ),
         )
-        input_text = request.agent_version.instructions + "\n" + "\n".join(
-            message.content for message in messages
+        input_text = (
+            request.agent_version.instructions
+            + "\n"
+            + "\n".join(message.content for message in messages)
         )
         return ContextBuildResult(
             request=model_request,

@@ -1,0 +1,1540 @@
+"use client";
+
+import {
+    AlertCircle,
+    ArrowUpRight,
+    CheckCircle2,
+    Code2,
+    FlaskConical,
+    Globe2,
+    LayoutGrid,
+    List,
+    LoaderCircle,
+    Plus,
+    Search,
+    ShieldCheck,
+    X,
+    Zap,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+
+import { AppShell } from "../../components/app-shell";
+import { apiFetch, readApiError } from "../../lib/api";
+import {
+    createTool,
+    createToolVersion,
+    fetchToolVersion,
+    fetchTools,
+    testTool,
+    type Tool,
+    type ToolTestResult,
+    type ToolVersionDetail,
+} from "../../lib/tools";
+
+type Workspace = { id: string; name: string; role: "OWNER" | "MEMBER" };
+type ViewMode = "grid" | "list";
+
+function providerLabel(tool: Tool) {
+    if (tool.slug === "web_search") return "Exa";
+    if (tool.type === "FUNCTION") return "Native";
+    return "HTTP";
+}
+
+function toolIcon(tool: Tool, size = 19) {
+    return tool.slug === "web_search" ? (
+        <Globe2 size={size} aria-hidden="true" />
+    ) : (
+        <Zap size={size} aria-hidden="true" />
+    );
+}
+
+function ToolKindBadge({ tool }: { tool: Tool }) {
+    if (tool.built_in) {
+        return <span className="tool-kind-badge built-in-badge">Built-in</span>;
+    }
+    if (tool.type === "HTTP") {
+        return (
+            <span className="tool-kind-badge http-tool-badge">
+                <Globe2 size={11} aria-hidden="true" />
+                HTTP tool
+            </span>
+        );
+    }
+    return null;
+}
+
+function ToolCard({
+    tool,
+    onOpen,
+}: {
+    tool: Tool;
+    onOpen: (tool: Tool) => void;
+}) {
+    return (
+        <button
+            className="tool-agent-card"
+            type="button"
+            onClick={() => onOpen(tool)}
+        >
+            <div className="tool-agent-card-top">
+                <span className="tool-agent-icon">{toolIcon(tool)}</span>
+                <span
+                    className={
+                        "status-badge " +
+                        (tool.status === "ACTIVE" ? "success" : "muted")
+                    }
+                >
+                    <span />
+                    {tool.status === "ACTIVE" ? "Active" : "Archived"}
+                </span>
+            </div>
+            <div className="tool-agent-card-title">
+                <h2>{tool.name}</h2>
+                <ToolKindBadge tool={tool} />
+            </div>
+            <p>{tool.description || "No description yet."}</p>
+            <div className="tool-agent-card-meta">
+                <span>
+                    <small>Provider</small>
+                    <b>{providerLabel(tool)}</b>
+                </span>
+                <span>
+                    <small>Type</small>
+                    <code>{tool.type}</code>
+                </span>
+                <span>
+                    <small>Version</small>
+                    <b>v{tool.latest_version_number}</b>
+                </span>
+            </div>
+            <footer>
+                <span>
+                    {tool.slug === "web_search"
+                        ? "Test available"
+                        : "Inspect schemas"}
+                </span>
+                <ArrowUpRight size={15} aria-hidden="true" />
+            </footer>
+        </button>
+    );
+}
+
+function SchemaBlock({
+    title,
+    schema,
+}: {
+    title: string;
+    schema: Record<string, unknown> | null | undefined;
+}) {
+    const properties = schema?.properties;
+    const required = new Set(
+        Array.isArray(schema?.required)
+            ? schema.required.filter((item): item is string => typeof item === "string")
+            : [],
+    );
+    const fields =
+        properties && typeof properties === "object" && !Array.isArray(properties)
+            ? Object.entries(properties as Record<string, unknown>)
+            : [];
+    return (
+        <section className="tool-schema-block" aria-label={title}>
+            <header className="tool-schema-block-heading">
+                <span>{title}</span>
+                <span className="tool-schema-field-count">
+                    {schema === undefined ? "Loading…" : `${fields.length} ${fields.length === 1 ? "field" : "fields"}`}
+                </span>
+                <Code2 size={14} aria-hidden="true" />
+            </header>
+            {schema === undefined ? (
+                <div className="tool-schema-empty">Loading fields…</div>
+            ) : fields.length === 0 ? (
+                <div className="tool-schema-empty">No fields defined.</div>
+            ) : (
+                <div className="tool-schema-fields">
+                    {fields.map(([name, definition]) => {
+                        const field = definition && typeof definition === "object" && !Array.isArray(definition)
+                            ? definition as Record<string, unknown>
+                            : {};
+                        const fieldType = Array.isArray(field.type)
+                            ? field.type.filter((item): item is string => typeof item === "string").join(" / ")
+                            : typeof field.type === "string" ? field.type : "any";
+                        const isRequired = required.has(name);
+                        return <div className="tool-schema-field" key={name}>
+                            <code>{name}</code>
+                            <span className="tool-schema-type">{fieldType}</span>
+                            <span className={"tool-schema-required " + (isRequired ? "required" : "optional")}><span aria-hidden="true" />{isRequired ? "Required" : "Optional"}</span>
+                        </div>;
+                    })}
+                </div>
+            )}
+        </section>
+    );
+}
+
+type CreateToolForm = {
+    name: string;
+    slug: string;
+    description: string;
+  endpoint: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+  inputFields: SchemaField[];
+  outputFields: SchemaField[];
+  timeoutSeconds: string;
+  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+};
+
+type SchemaFieldType = "string" | "integer" | "number" | "boolean" | "object" | "array";
+type SchemaField = { id: string; name: string; type: SchemaFieldType; required: boolean };
+type SchemaFieldSection = "inputFields" | "outputFields";
+type CreateToolScalarField = "name" | "slug" | "description" | "endpoint" | "method" | "timeoutSeconds" | "riskLevel";
+type CreateToolField = CreateToolScalarField | SchemaFieldSection;
+
+const initialCreateToolForm: CreateToolForm = {
+    name: "",
+    slug: "",
+  description: "",
+  endpoint: "",
+  method: "GET",
+  inputFields: [],
+  outputFields: [],
+  timeoutSeconds: "30",
+  riskLevel: "LOW",
+};
+
+function schemaFromFields(fields: SchemaField[]): Record<string, unknown> {
+  const properties: Record<string, unknown> = {};
+  const required: string[] = [];
+  for (const field of fields) {
+    const name = field.name.trim();
+    if (!name) continue;
+    properties[name] = { type: field.type };
+    if (field.required) required.push(name);
+  }
+  return {
+    type: "object",
+    properties,
+    ...(required.length > 0 ? { required } : {}),
+    additionalProperties: false,
+  };
+}
+
+function schemaFieldId() {
+  return `schema-field-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function fieldTypeLabel(type: SchemaFieldType) {
+  return type === "integer" ? "Integer" : type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function SchemaFieldEditor({
+    kind,
+    fields,
+    errors,
+    onChange,
+    onAdd,
+    onRemove,
+}: {
+    kind: "input" | "output";
+    fields: SchemaField[];
+    errors: Record<string, string>;
+    onChange: (id: string, changes: Partial<Omit<SchemaField, "id">>) => void;
+    onAdd: () => void;
+    onRemove: (id: string) => void;
+}) {
+    const title = kind === "input" ? "Input fields" : "Output fields";
+    return <div className="schema-field-editor">
+        <div className="schema-field-editor-heading"><div><h4>{title}</h4><p>{kind === "input" ? "Arguments the tool can receive." : "Fields returned by the endpoint."}</p></div><span>{fields.length} {fields.length === 1 ? "field" : "fields"}</span></div>
+        {fields.length > 0 ? <div className="schema-field-list">{fields.map((field) => <div className="schema-field-row" key={field.id}>
+            <label className="schema-field-name" htmlFor={`${kind}-field-name-${field.id}`}>Field name<input id={`${kind}-field-name-${field.id}`} value={field.name} placeholder="userId" onChange={(event) => onChange(field.id, { name: event.target.value })} aria-invalid={Boolean(errors[field.id])} />{errors[field.id] ? <span className="create-tool-field-error">{errors[field.id]}</span> : null}</label>
+            <label htmlFor={`${kind}-field-type-${field.id}`}>Type<select id={`${kind}-field-type-${field.id}`} value={field.type} onChange={(event) => onChange(field.id, { type: event.target.value as SchemaFieldType })}>{(["string", "integer", "number", "boolean", "object", "array"] as SchemaFieldType[]).map((type) => <option key={type} value={type}>{fieldTypeLabel(type)}</option>)}</select></label>
+            <label className="schema-required-toggle" htmlFor={`${kind}-field-required-${field.id}`}><input id={`${kind}-field-required-${field.id}`} type="checkbox" checked={field.required} onChange={(event) => onChange(field.id, { required: event.target.checked })} /><span>{field.required ? "Required" : "Optional"}</span></label>
+            <button className="icon-button schema-field-remove" type="button" onClick={() => onRemove(field.id)} aria-label={`Remove ${field.name || "unnamed"} field`}><X size={15} aria-hidden="true" /></button>
+        </div>)}</div> : <div className="schema-field-empty">No fields yet. Add one to define the tool contract.</div>}
+        <button className="button secondary-button schema-add-field" type="button" onClick={onAdd}><Plus size={14} aria-hidden="true" />Add field</button>
+    </div>;
+}
+
+function slugify(value: string) {
+    return value
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 100);
+}
+
+function CreateToolModal({
+    workspaceId,
+    onClose,
+    onCreated,
+}: {
+    workspaceId: string;
+    onClose: () => void;
+    onCreated: () => Promise<void> | void;
+}) {
+    const [form, setForm] = useState<CreateToolForm>(initialCreateToolForm);
+    const [fieldErrors, setFieldErrors] = useState<
+        Partial<Record<CreateToolField, string>>
+    >({});
+    const [error, setError] = useState<string | null>(null);
+    const [creating, setCreating] = useState(false);
+    const [versionSetupFailed, setVersionSetupFailed] = useState(false);
+    const [schemaErrors, setSchemaErrors] = useState<Record<SchemaFieldSection, Record<string, string>>>({ inputFields: {}, outputFields: {} });
+    const [slugTouched, setSlugTouched] = useState(false);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+    const errorSummaryRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        const focusFrame = window.requestAnimationFrame(() =>
+            closeButtonRef.current?.focus(),
+        );
+        function closeOnEscape(event: KeyboardEvent) {
+            if (event.key === "Escape" && !creating) onClose();
+        }
+        window.addEventListener("keydown", closeOnEscape);
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            window.removeEventListener("keydown", closeOnEscape);
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [creating, onClose]);
+
+    function updateField(field: CreateToolScalarField, value: string) {
+        setForm((current) => ({ ...current, [field]: value }));
+        setFieldErrors((current) => ({ ...current, [field]: undefined }));
+        setError(null);
+    }
+
+    function validateField(field: CreateToolScalarField, currentForm = form) {
+        let message: string | undefined;
+        const value = currentForm[field];
+        if (field === "name" && !value.trim()) message = "Enter a tool name.";
+        if (field === "name" && value.length > 255)
+            message = "Use 255 characters or fewer.";
+        if (field === "slug" && !/^[a-z0-9][a-z0-9_-]*$/.test(value))
+            message = "Use lowercase letters, numbers, hyphens or underscores.";
+        if (field === "endpoint") {
+            try {
+                const url = new URL(value.trim());
+                if (!["http:", "https:"].includes(url.protocol))
+                    message = "Use an http:// or https:// endpoint.";
+            } catch {
+                message = "Enter a valid HTTP endpoint URL.";
+            }
+        }
+        if (field === "timeoutSeconds") {
+            const timeout = Number(value);
+            if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600)
+                message = "Use a whole number from 1 to 3600 seconds.";
+        }
+        setFieldErrors((current) => ({ ...current, [field]: message }));
+        return message;
+    }
+
+    function updateSchemaField(section: SchemaFieldSection, id: string, changes: Partial<Omit<SchemaField, "id">>) {
+        setForm((current) => ({ ...current, [section]: current[section].map((field) => field.id === id ? { ...field, ...changes } : field) }));
+        setSchemaErrors((current) => ({ ...current, [section]: { ...current[section], [id]: "" } }));
+        setError(null);
+    }
+
+    function validateSchemaFields(fields: SchemaField[]) {
+        const errors: Record<string, string> = {};
+        const seen = new Set<string>();
+        for (const field of fields) {
+            const name = field.name.trim();
+            const normalized = name.toLowerCase();
+            if (!name) errors[field.id] = "Enter a field name.";
+            else if (name.length > 100) errors[field.id] = "Use 100 characters or fewer.";
+            else if (seen.has(normalized)) errors[field.id] = "Field names must be unique.";
+            else seen.add(normalized);
+        }
+        return errors;
+    }
+
+    function addSchemaField(section: SchemaFieldSection) {
+        setForm((current) => ({ ...current, [section]: [...current[section], { id: schemaFieldId(), name: "", type: "string", required: false }] }));
+        setError(null);
+    }
+
+    function removeSchemaField(section: SchemaFieldSection, id: string) {
+        setForm((current) => ({ ...current, [section]: current[section].filter((field) => field.id !== id) }));
+        setSchemaErrors((current) => {
+            const next = { ...current[section] };
+            delete next[id];
+            return { ...current, [section]: next };
+        });
+    }
+
+    function validateForm() {
+        const fields: CreateToolScalarField[] = [
+            "name",
+            "slug",
+            "endpoint",
+        ];
+        const nextErrors: Partial<Record<CreateToolField, string>> = {};
+        for (const field of fields) {
+            const message = validateField(field, form);
+            if (message) nextErrors[field] = message;
+        }
+        const timeout = Number(form.timeoutSeconds);
+        if (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600)
+            nextErrors.timeoutSeconds =
+                "Use a whole number from 1 to 3600 seconds.";
+        const nextSchemaErrors = {
+            inputFields: validateSchemaFields(form.inputFields),
+            outputFields: validateSchemaFields(form.outputFields),
+        };
+        setSchemaErrors(nextSchemaErrors);
+        if (Object.keys(nextSchemaErrors.inputFields).length > 0) nextErrors.inputFields = "Fix the highlighted input fields.";
+        if (Object.keys(nextSchemaErrors.outputFields).length > 0) nextErrors.outputFields = "Fix the highlighted output fields.";
+        setFieldErrors(nextErrors);
+        return nextErrors;
+    }
+
+    async function submit(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        const errors = validateForm();
+        if (Object.keys(errors).length > 0) {
+            window.requestAnimationFrame(() =>
+                errorSummaryRef.current?.focus(),
+            );
+            return;
+        }
+        setCreating(true);
+        setError(null);
+        try {
+            const tool = await createTool(workspaceId, {
+                name: form.name.trim(),
+                slug: form.slug.trim(),
+                description: form.description.trim() || null,
+                type: "HTTP",
+            });
+            try {
+                await createToolVersion(tool.id, {
+                    name: form.name.trim(),
+                    description: form.description.trim() || null,
+                    input_schema: schemaFromFields(form.inputFields),
+                    output_schema: schemaFromFields(form.outputFields),
+                    executor: {
+                        type: "HTTP",
+                        config: {
+                            method: form.method,
+                            base_url: (() => {
+                                const endpoint = new URL(form.endpoint.trim());
+                                return endpoint.origin;
+                            })(),
+                            path: (() => {
+                                const endpoint = new URL(form.endpoint.trim());
+                                return endpoint.pathname + endpoint.search;
+                            })(),
+                            headers: {},
+                            query_mapping: {},
+                            body_mapping: {},
+                        },
+                    },
+                    timeout_seconds: Number(form.timeoutSeconds),
+                    retry_policy: {},
+                    risk_level: form.riskLevel,
+                    side_effect: false,
+                    idempotent: form.method === "GET" || form.method === "HEAD",
+                });
+            } catch (reason: unknown) {
+                setVersionSetupFailed(true);
+                setError(
+                    "The tool was created, but its first HTTP version could not be created. Refresh the catalog before trying again.",
+                );
+                return;
+            }
+            await onCreated();
+        } catch (reason: unknown) {
+            setError(
+                reason instanceof Error
+                    ? reason.message
+                    : "Unable to create the HTTP tool.",
+            );
+        } finally {
+            setCreating(false);
+        }
+    }
+
+    const errorEntries = Object.entries(fieldErrors).filter(
+        (entry): entry is [CreateToolField, string] => Boolean(entry[1]),
+    );
+    return (
+        <div
+            className="modal-backdrop tool-modal-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget && !creating)
+                    onClose();
+            }}
+        >
+            <section
+                className="modal-dialog create-tool-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="create-tool-title"
+                aria-describedby="create-tool-description"
+            >
+                <header className="modal-heading">
+                    <div>
+                        <p className="panel-kicker">Tool catalog</p>
+                        <h2 id="create-tool-title">Create HTTP tool</h2>
+                        <p id="create-tool-description" className="panel-copy">
+                            Add a public HTTP endpoint as an immutable,
+                            versioned capability.
+                        </p>
+                    </div>
+                    <button
+                        ref={closeButtonRef}
+                        className="icon-button modal-close"
+                        type="button"
+                        aria-label="Close create tool dialog"
+                        onClick={onClose}
+                        disabled={creating}
+                    >
+                        <X size={16} aria-hidden="true" />
+                    </button>
+                </header>
+                <div className="create-tool-callout">
+                    <Globe2 size={15} aria-hidden="true" />
+                    <span>
+                        <strong>HTTP only · Phase 6</strong> Credentials, custom
+                        headers and Function tool creation are not available
+                        yet.
+                    </span>
+                </div>
+                {errorEntries.length > 0 ? (
+                    <div
+                        ref={errorSummaryRef}
+                        className="create-tool-error-summary"
+                        role="alert"
+                        tabIndex={-1}
+                    >
+                        <strong>Check the highlighted fields.</strong>
+                        <ul>
+                            {errorEntries.map(([field, message]) => (
+                                <li key={field}>
+                                    <a href={field === "inputFields" ? "#create-tool-input-fields" : field === "outputFields" ? "#create-tool-output-fields" : `#create-tool-${field}`}>
+                                        {message}
+                                    </a>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                ) : null}
+                {error ? (
+                    <div className="form-error tool-modal-alert" role="alert">
+                        <AlertCircle size={15} aria-hidden="true" />
+                        {error}
+                    </div>
+                ) : null}
+                <form
+                    className="create-tool-form"
+                    onSubmit={(event) => void submit(event)}
+                    aria-busy={creating}
+                    noValidate
+                >
+                    <div className="create-tool-section">
+                        <div className="tool-modal-section-heading">
+                            <div>
+                                <p className="panel-kicker">Identity</p>
+                                <h3>Tool details</h3>
+                            </div>
+                            <Zap size={17} aria-hidden="true" />
+                        </div>
+                        <div className="create-tool-field-grid">
+                            <label htmlFor="create-tool-name">
+                                Name
+                                <input
+                                    id="create-tool-name"
+                                    value={form.name}
+                                    maxLength={255}
+                                    onChange={(event) => {
+                                        const value = event.target.value;
+                                        updateField("name", value);
+                                        if (!slugTouched)
+                                            setForm((current) => ({
+                                                ...current,
+                                                slug: slugify(value),
+                                            }));
+                                    }}
+                                    onBlur={() => validateField("name")}
+                                    aria-invalid={Boolean(fieldErrors.name)}
+                                    aria-describedby={
+                                        fieldErrors.name
+                                            ? "create-tool-name-error"
+                                            : undefined
+                                    }
+                                />
+                                {fieldErrors.name ? (
+                                    <span
+                                        id="create-tool-name-error"
+                                        className="create-tool-field-error"
+                                    >
+                                        {fieldErrors.name}
+                                    </span>
+                                ) : null}
+                            </label>
+                            <label htmlFor="create-tool-slug">
+                                Slug
+                                <input
+                                    id="create-tool-slug"
+                                    value={form.slug}
+                                    onChange={(event) => {
+                                        setSlugTouched(true);
+                                        updateField("slug", event.target.value);
+                                    }}
+                                    onBlur={() => validateField("slug")}
+                                    aria-invalid={Boolean(fieldErrors.slug)}
+                                    aria-describedby={
+                                        fieldErrors.slug
+                                            ? "create-tool-slug-error"
+                                            : undefined
+                                    }
+                                />
+                                {fieldErrors.slug ? (
+                                    <span
+                                        id="create-tool-slug-error"
+                                        className="create-tool-field-error"
+                                    >
+                                        {fieldErrors.slug}
+                                    </span>
+                                ) : null}
+                            </label>
+                        </div>
+                        <label htmlFor="create-tool-description">
+                            Description
+                            <span className="create-tool-label-hint">
+                                Optional
+                            </span>
+                            <textarea
+                                id="create-tool-description"
+                                value={form.description}
+                                maxLength={1000}
+                                rows={2}
+                                onChange={(event) =>
+                                    updateField(
+                                        "description",
+                                        event.target.value,
+                                    )
+                                }
+                            />
+                        </label>
+                    </div>
+
+                    <div className="create-tool-section">
+                        <div className="tool-modal-section-heading">
+                            <div>
+                                <p className="panel-kicker">Runtime target</p>
+                                <h3>HTTP endpoint</h3>
+                            </div>
+                            <ArrowUpRight size={17} aria-hidden="true" />
+                        </div>
+                        <label htmlFor="create-tool-endpoint">
+                            Endpoint URL
+                            <input
+                                id="create-tool-endpoint"
+                                type="url"
+                                value={form.endpoint}
+                                placeholder="https://api.example.com/v1/resource"
+                                onChange={(event) =>
+                                    updateField("endpoint", event.target.value)
+                                }
+                                onBlur={() => validateField("endpoint")}
+                                aria-invalid={Boolean(fieldErrors.endpoint)}
+                                aria-describedby="create-tool-endpoint-help create-tool-endpoint-error"
+                            />
+                            {fieldErrors.endpoint ? (
+                                <span
+                                    id="create-tool-endpoint-error"
+                                    className="create-tool-field-error"
+                                >
+                                    {fieldErrors.endpoint}
+                                </span>
+                            ) : null}
+                            <span
+                                id="create-tool-endpoint-help"
+                                className="field-helper"
+                            >
+                                Public endpoint only. The request body/query
+                                mapping follows the tool input arguments.
+                            </span>
+                        </label>
+                        <div className="create-tool-field-grid">
+                            <label htmlFor="create-tool-method">
+                                Method
+                                <select
+                                    id="create-tool-method"
+                                    value={form.method}
+                                    onChange={(event) =>
+                                        updateField(
+                                            "method",
+                                            event.target.value,
+                                        )
+                                    }
+                                >
+                                    <option>GET</option>
+                                    <option>POST</option>
+                                    <option>PUT</option>
+                                    <option>PATCH</option>
+                                    <option>DELETE</option>
+                                    <option>HEAD</option>
+                                </select>
+                            </label>
+                            <label htmlFor="create-tool-timeout">
+                                Timeout (seconds)
+                                <input
+                                    id="create-tool-timeout"
+                                    type="number"
+                                    min={1}
+                                    max={3600}
+                                    step={1}
+                                    value={form.timeoutSeconds}
+                                    onChange={(event) =>
+                                        updateField(
+                                            "timeoutSeconds",
+                                            event.target.value,
+                                        )
+                                    }
+                                    onBlur={() =>
+                                        validateField("timeoutSeconds")
+                                    }
+                                    aria-invalid={Boolean(
+                                        fieldErrors.timeoutSeconds,
+                                    )}
+                                />
+                                {fieldErrors.timeoutSeconds ? (
+                                    <span className="create-tool-field-error">
+                                        {fieldErrors.timeoutSeconds}
+                                    </span>
+                                ) : null}
+                            </label>
+                        </div>
+                    </div>
+
+                    <div className="create-tool-section">
+                        <div className="tool-modal-section-heading">
+                            <div>
+                                <p className="panel-kicker">Runtime contract</p>
+                                <h3>Schemas and policy</h3>
+                            </div>
+                            <Code2 size={17} aria-hidden="true" />
+                        </div>
+                        <div className="create-tool-schema-grid">
+                            <div id="create-tool-input-fields">
+                                <SchemaFieldEditor kind="input" fields={form.inputFields} errors={schemaErrors.inputFields} onChange={(id, changes) => updateSchemaField("inputFields", id, changes)} onAdd={() => addSchemaField("inputFields")} onRemove={(id) => removeSchemaField("inputFields", id)} />
+                                {fieldErrors.inputFields ? <span className="create-tool-field-error">{fieldErrors.inputFields}</span> : null}
+                            </div>
+                            <div id="create-tool-output-fields">
+                                <SchemaFieldEditor kind="output" fields={form.outputFields} errors={schemaErrors.outputFields} onChange={(id, changes) => updateSchemaField("outputFields", id, changes)} onAdd={() => addSchemaField("outputFields")} onRemove={(id) => removeSchemaField("outputFields", id)} />
+                                {fieldErrors.outputFields ? <span className="create-tool-field-error">{fieldErrors.outputFields}</span> : null}
+                            </div>
+                        </div>
+                        <div className="create-tool-field-grid">
+                            <label htmlFor="create-tool-risk">
+                                Risk level
+                                <select
+                                    id="create-tool-risk"
+                                    value={form.riskLevel}
+                                    onChange={(event) =>
+                                        updateField(
+                                            "riskLevel",
+                                            event.target.value,
+                                        )
+                                    }
+                                >
+                                    <option>LOW</option>
+                                    <option>MEDIUM</option>
+                                    <option>HIGH</option>
+                                </select>
+                            </label>
+                            <div className="create-tool-policy-note">
+                                <ShieldCheck size={14} aria-hidden="true" />
+                                <span>
+                                    Side effects are marked off by default.
+                                    Publish an agent version before runtime use.
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="modal-actions">
+                        <button
+                            className="button secondary-button"
+                            type="button"
+                            onClick={onClose}
+                            disabled={creating}
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            className="button primary-button"
+                            type="submit"
+                            disabled={creating || versionSetupFailed}
+                        >
+                            {creating ? (
+                                <>
+                                    <LoaderCircle
+                                        className="spin"
+                                        size={15}
+                                        aria-hidden="true"
+                                    />
+                                    Creating…
+                                </>
+                            ) : versionSetupFailed ? (
+                                "Version setup incomplete"
+                            ) : (
+                                <>
+                                    <Plus size={15} aria-hidden="true" />
+                                    Create HTTP tool
+                                </>
+                            )}
+                        </button>
+                    </div>
+                </form>
+            </section>
+        </div>
+    );
+}
+
+function sampleValue(schema: unknown): unknown {
+    if (!schema || typeof schema !== "object" || Array.isArray(schema))
+        return null;
+    const definition = schema as Record<string, unknown>;
+    if (definition.default !== undefined) return definition.default;
+    if (Array.isArray(definition.enum) && definition.enum.length > 0)
+        return definition.enum[0];
+    if (definition.type === "object" || definition.properties) {
+        const properties = definition.properties;
+        if (
+            !properties ||
+            typeof properties !== "object" ||
+            Array.isArray(properties)
+        )
+            return {};
+        return Object.fromEntries(
+            Object.entries(properties as Record<string, unknown>).map(
+                ([key, value]) => [key, sampleValue(value)],
+            ),
+        );
+    }
+    if (definition.type === "array") return [sampleValue(definition.items)];
+    if (definition.type === "integer" || definition.type === "number") return 1;
+    if (definition.type === "boolean") return false;
+    return "sample";
+}
+
+function ToolDetailModal({
+    tool,
+    versionDetail,
+    onClose,
+}: {
+    tool: Tool;
+    versionDetail: ToolVersionDetail | null;
+    onClose: () => void;
+}) {
+    const [query, setQuery] = useState("Latest news on Nvidia");
+    const [numResults, setNumResults] = useState("10");
+    const [argumentsText, setArgumentsText] = useState("{}\n");
+    const [argumentsError, setArgumentsError] = useState<string | null>(null);
+    const [testing, setTesting] = useState(false);
+    const [result, setResult] = useState<ToolTestResult | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+    const httpTool = tool.type === "HTTP";
+    const testable = httpTool || tool.slug === "web_search";
+
+    useEffect(() => {
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        const focusFrame = window.requestAnimationFrame(() =>
+            closeButtonRef.current?.focus(),
+        );
+        function closeOnEscape(event: KeyboardEvent) {
+            if (event.key === "Escape") onClose();
+        }
+        window.addEventListener("keydown", closeOnEscape);
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            window.removeEventListener("keydown", closeOnEscape);
+            document.body.style.overflow = previousOverflow;
+        };
+    }, [onClose]);
+
+    useEffect(() => {
+        if (httpTool && versionDetail) {
+            setArgumentsText(
+                JSON.stringify(
+                    sampleValue(versionDetail.input_schema),
+                    null,
+                    2,
+                ) + "\n",
+            );
+            setArgumentsError(null);
+        }
+    }, [httpTool, versionDetail]);
+
+    async function runTest(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        if (!versionDetail) {
+            setError("The immutable tool version is still loading.");
+            return;
+        }
+        let arguments_: Record<string, unknown>;
+        if (httpTool) {
+            try {
+                const parsed: unknown = JSON.parse(argumentsText);
+                if (
+                    !parsed ||
+                    typeof parsed !== "object" ||
+                    Array.isArray(parsed)
+                )
+                    throw new Error("Arguments must be a JSON object.");
+                arguments_ = parsed as Record<string, unknown>;
+            } catch (reason: unknown) {
+                const message =
+                    reason instanceof Error
+                        ? reason.message
+                        : "Enter a valid JSON object.";
+                setArgumentsError(message);
+                setError(null);
+                return;
+            }
+        } else {
+            if (!query.trim()) {
+                setError("Enter a search query before testing.");
+                return;
+            }
+            arguments_ = {
+                query: query.trim(),
+                num_results: Number(numResults),
+            };
+        }
+        setArgumentsError(null);
+        setError(null);
+        setResult(null);
+        setTesting(true);
+        try {
+            setResult(await testTool(versionDetail.id, arguments_));
+        } catch (reason: unknown) {
+            setError(
+                reason instanceof Error
+                    ? reason.message
+                    : "The tool test failed.",
+            );
+        } finally {
+            setTesting(false);
+        }
+    }
+
+    return (
+        <div
+            className="modal-backdrop tool-modal-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) onClose();
+            }}
+        >
+            <section
+                className="modal-dialog tool-detail-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="tool-detail-title"
+                aria-describedby="tool-detail-description"
+            >
+                <header className="modal-heading">
+                    <div>
+                        <p className="panel-kicker">Tool detail</p>
+                        <h2 id="tool-detail-title">{tool.name}</h2>
+                        <p id="tool-detail-description" className="panel-copy">
+                            {tool.description ||
+                                "Inspect the immutable tool version and its runtime contract."}
+                        </p>
+                    </div>
+                    <button
+                        ref={closeButtonRef}
+                        className="icon-button modal-close"
+                        type="button"
+                        aria-label="Close tool detail"
+                        onClick={onClose}
+                    >
+                        <X size={16} aria-hidden="true" />
+                    </button>
+                </header>
+
+                <div className="tool-modal-meta">
+                    <span className="tool-agent-icon small">
+                        {toolIcon(tool, 15)}
+                    </span>
+                    <span>
+                        <small>Provider</small>
+                        <b>{providerLabel(tool)}</b>
+                    </span>
+                    <span>
+                        <small>Type</small>
+                        <b>{tool.type}</b>
+                    </span>
+                    <span>
+                        <small>Version</small>
+                        <b>v{tool.latest_version_number}</b>
+                    </span>
+                    <ToolKindBadge tool={tool} />
+                    <span
+                        className={
+                            "status-badge " +
+                            (tool.status === "ACTIVE" ? "success" : "muted")
+                        }
+                    >
+                        <span />
+                        {tool.status === "ACTIVE" ? "Active" : "Archived"}
+                    </span>
+                </div>
+
+                {testable ? (
+                    <form
+                        className="tool-modal-test-form"
+                        onSubmit={(event) => void runTest(event)}
+                    >
+                        <div className="tool-modal-section-heading">
+                            <div>
+                                <p className="panel-kicker">
+                                    Safe execution preview
+                                </p>
+                                <h3>Test this tool</h3>
+                            </div>
+                            <FlaskConical size={17} aria-hidden="true" />
+                        </div>
+                        {httpTool ? (
+                            <>
+                                <label htmlFor="tool-modal-arguments">
+                                    Request arguments (JSON)
+                                    <textarea
+                                        id="tool-modal-arguments"
+                                        className="tool-modal-arguments"
+                                        value={argumentsText}
+                                        onChange={(event) => {
+                                            setArgumentsText(
+                                                event.target.value,
+                                            );
+                                            setArgumentsError(null);
+                                            setError(null);
+                                        }}
+                                        onBlur={() =>
+                                            setArgumentsText((value) =>
+                                                value.trim() ? value : "{}\n",
+                                            )
+                                        }
+                                        rows={7}
+                                        spellCheck={false}
+                                        aria-invalid={Boolean(argumentsError)}
+                                        aria-describedby="tool-modal-arguments-help tool-modal-arguments-error"
+                                        disabled={!versionDetail}
+                                    />
+                                    {argumentsError ? (
+                                        <span
+                                            id="tool-modal-arguments-error"
+                                            className="create-tool-field-error"
+                                        >
+                                            {argumentsError}
+                                        </span>
+                                    ) : null}
+                                    <span
+                                        id="tool-modal-arguments-help"
+                                        className="field-helper"
+                                    >
+                                        Edit the JSON object to match the input
+                                        schema. Arguments are validated before
+                                        the request is sent.
+                                    </span>
+                                </label>
+                                <div className="tool-modal-test-options">
+                                    <span className="tool-modal-request-label">
+                                        {String(
+                                            versionDetail?.executor.config
+                                                .method ?? "GET",
+                                        )}{" "}
+                                        request
+                                    </span>
+                                    <button
+                                        className="button primary-button"
+                                        type="submit"
+                                        disabled={testing || !versionDetail}
+                                    >
+                                        {testing ? (
+                                            <>
+                                                <LoaderCircle
+                                                    className="spin"
+                                                    size={15}
+                                                    aria-hidden="true"
+                                                />
+                                                Sending…
+                                            </>
+                                        ) : (
+                                            <>
+                                                <ArrowUpRight
+                                                    size={15}
+                                                    aria-hidden="true"
+                                                />
+                                                Send test request
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                            </>
+                        ) : (
+                            <>
+                                <label htmlFor="tool-modal-query">
+                                    Sample query
+                                </label>
+                                <input
+                                    id="tool-modal-query"
+                                    value={query}
+                                    onChange={(event) =>
+                                        setQuery(event.target.value)
+                                    }
+                                    onBlur={() =>
+                                        setQuery((value) => value.trim())
+                                    }
+                                    maxLength={2000}
+                                />
+                                <div className="tool-modal-test-options">
+                                    <label htmlFor="tool-modal-results">
+                                        Results
+                                    </label>
+                                    <select
+                                        id="tool-modal-results"
+                                        value={numResults}
+                                        onChange={(event) =>
+                                            setNumResults(event.target.value)
+                                        }
+                                    >
+                                        <option value="5">5 results</option>
+                                        <option value="10">10 results</option>
+                                    </select>
+                                    <button
+                                        className="button primary-button"
+                                        type="submit"
+                                        disabled={testing || !query.trim()}
+                                    >
+                                        {testing ? (
+                                            <>
+                                                <LoaderCircle
+                                                    className="spin"
+                                                    size={15}
+                                                    aria-hidden="true"
+                                                />
+                                                Searching…
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Search
+                                                    size={15}
+                                                    aria-hidden="true"
+                                                />
+                                                Run search
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+                                <p className="field-helper">
+                                    Uses Exa Search with highlights. External
+                                    pages are treated as untrusted data.
+                                </p>
+                            </>
+                        )}
+                    </form>
+                ) : (
+                    <div className="tool-inspect-note">
+                        <ShieldCheck size={15} aria-hidden="true" />
+                        <span>
+                            This built-in tool is inspect-only in this preview.
+                            Its immutable schemas are shown below.
+                        </span>
+                    </div>
+                )}
+
+                {error ? (
+                    <div className="form-error tool-modal-alert" role="alert">
+                        <AlertCircle size={15} aria-hidden="true" />
+                        {error}
+                    </div>
+                ) : null}
+                <div className="tool-schema-grid modal-schema-grid">
+                    <SchemaBlock
+                        title="Input schema"
+                        schema={versionDetail?.input_schema}
+                    />
+                    <SchemaBlock
+                        title="Output schema"
+                        schema={versionDetail?.output_schema}
+                    />
+                </div>
+                {testable ? (
+                    <div className="tool-modal-result-area">
+                        <div className="tool-modal-section-heading">
+                            <div>
+                                <p className="panel-kicker">
+                                    {httpTool
+                                        ? "HTTP response"
+                                        : "Sanitized response"}
+                                </p>
+                                <h3>
+                                    {httpTool
+                                        ? "Test result"
+                                        : "Search results"}
+                                </h3>
+                            </div>
+                            {result?.status === "completed" ? (
+                                <span className="tool-result-meta">
+                                    <CheckCircle2
+                                        size={14}
+                                        aria-hidden="true"
+                                    />
+                                    Completed
+                                </span>
+                            ) : null}
+                        </div>
+                        <div
+                            className="tool-modal-result-scroll"
+                            aria-live="polite"
+                        >
+                            {testing ? (
+                                <div className="tool-modal-result-state">
+                                    <LoaderCircle
+                                        className="spin"
+                                        size={17}
+                                        aria-hidden="true"
+                                    />
+                                    {httpTool
+                                        ? "Sending HTTP request…"
+                                        : "Searching the web…"}
+                                </div>
+                            ) : null}
+                            {!testing && !result ? (
+                                <div className="tool-modal-result-state">
+                                    {httpTool
+                                        ? "Send a test request to inspect the response."
+                                        : "Run a sample query to inspect sanitized highlights."}
+                                </div>
+                            ) : null}
+                            {!testing &&
+                            result?.status === "completed" &&
+                            httpTool ? (
+                                <pre className="tool-http-result-output">
+                                    {JSON.stringify(result.output, null, 2)}
+                                </pre>
+                            ) : null}
+                            {!testing &&
+                            result?.status === "completed" &&
+                            !httpTool ? (
+                                <div className="tool-results">
+                                    {result.output?.results?.map((item) => (
+                                        <article
+                                            className="tool-result"
+                                            key={item.url}
+                                        >
+                                            <strong>{item.title}</strong>
+                                            <a
+                                                href={item.url}
+                                                target="_blank"
+                                                rel="noreferrer"
+                                            >
+                                                {item.url}
+                                            </a>
+                                            {item.highlights.map(
+                                                (highlight) => (
+                                                    <p key={highlight}>
+                                                        {highlight}
+                                                    </p>
+                                                ),
+                                            )}
+                                        </article>
+                                    ))}
+                                </div>
+                            ) : null}
+                            {!testing && result?.status === "failed" ? (
+                                <div className="tool-modal-result-state error">
+                                    <AlertCircle size={17} aria-hidden="true" />
+                                    {result.error?.message ??
+                                        "Tool execution failed."}
+                                </div>
+                            ) : null}
+                        </div>
+                    </div>
+                ) : null}
+            </section>
+        </div>
+    );
+}
+
+export default function ToolsPage() {
+    const [workspace, setWorkspace] = useState<Workspace | null>(null);
+    const [tools, setTools] = useState<Tool[]>([]);
+    const [search, setSearch] = useState("");
+    const [viewMode, setViewMode] = useState<ViewMode>("grid");
+    const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
+    const [versionDetail, setVersionDetail] =
+        useState<ToolVersionDetail | null>(null);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        const savedView = window.localStorage.getItem("vf-tools-view");
+        if (savedView === "grid" || savedView === "list")
+            setViewMode(savedView);
+        let cancelled = false;
+        void apiFetch("/v1/workspaces")
+            .then(async (response) => {
+                if (!response.ok) throw new Error(await readApiError(response));
+                const body = (await response.json()) as { data: Workspace[] };
+                const saved = window.localStorage.getItem("vf-workspace-id");
+                if (!cancelled)
+                    setWorkspace(
+                        body.data.find((item) => item.id === saved) ??
+                            body.data[0] ??
+                            null,
+                    );
+            })
+            .catch((reason: unknown) => {
+                if (!cancelled)
+                    setError(
+                        reason instanceof Error
+                            ? reason.message
+                            : "Unable to load workspaces.",
+                    );
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    useEffect(() => {
+        if (!workspace) {
+            setLoading(false);
+            return;
+        }
+        let cancelled = false;
+        setLoading(true);
+        void fetchTools(workspace.id)
+            .then((items) => {
+                if (!cancelled) setTools(items);
+            })
+            .catch((reason: unknown) => {
+                if (!cancelled)
+                    setError(
+                        reason instanceof Error
+                            ? reason.message
+                            : "Unable to load tools.",
+                    );
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [workspace]);
+
+    const filteredTools = useMemo(() => {
+        const normalized = search.trim().toLowerCase();
+        if (!normalized) return tools;
+        return tools.filter((tool) =>
+            [
+                tool.name,
+                tool.slug,
+                tool.description ?? "",
+                providerLabel(tool),
+                tool.type,
+            ]
+                .join(" ")
+                .toLowerCase()
+                .includes(normalized),
+        );
+    }, [search, tools]);
+
+    useEffect(() => {
+        if (!selectedTool) {
+            setVersionDetail(null);
+            return;
+        }
+        const version = selectedTool.versions[0];
+        if (!version) {
+            setVersionDetail(null);
+            return;
+        }
+        void fetchToolVersion(selectedTool.id, version.id)
+            .then(setVersionDetail)
+            .catch(() => setVersionDetail(null));
+    }, [selectedTool]);
+
+    function openTool(tool: Tool) {
+        setError(null);
+        setVersionDetail(null);
+        setSelectedTool(tool);
+    }
+
+    function changeView(nextView: ViewMode) {
+        setViewMode(nextView);
+        window.localStorage.setItem("vf-tools-view", nextView);
+    }
+
+    return (
+        <AppShell>
+            <div className="page-header tools-page-header">
+                <div>
+                    <p className="eyebrow">VibesFactory / Build</p>
+                    <h1>Tools</h1>
+                    <p className="page-description">
+                        Browse, inspect and test immutable capabilities
+                        available to this workspace.
+                    </p>
+                </div>
+                <div className="tools-header-actions">
+                    <div className="tool-page-health">
+                        <span className="status-pulse" aria-hidden="true" />
+                        Catalog ready
+                    </div>
+                    <button
+                        className="button primary-button"
+                        type="button"
+                        onClick={() => setCreateOpen(true)}
+                    >
+                        <Plus size={15} aria-hidden="true" />
+                        New tool
+                    </button>
+                </div>
+            </div>
+
+            {error ? (
+                <div className="form-error tool-alert" role="alert">
+                    <AlertCircle size={16} aria-hidden="true" />
+                    {error}
+                </div>
+            ) : null}
+            {!workspace && !loading ? (
+                <section className="panel tool-empty">
+                    <Zap size={28} aria-hidden="true" />
+                    <h2>Create a workspace first</h2>
+                    <p className="panel-copy">
+                        Built-in tools are scoped to a workspace.
+                    </p>
+                </section>
+            ) : null}
+            {loading ? (
+                <section className="panel agent-state">
+                    <LoaderCircle
+                        className="spin"
+                        size={18}
+                        aria-hidden="true"
+                    />
+                    Loading tool catalog…
+                </section>
+            ) : null}
+
+            {workspace && !loading ? (
+                <>
+                    <section
+                        className="tools-toolbar"
+                        aria-label="Tool catalog controls"
+                    >
+                        <label className="agent-search">
+                            <Search size={16} aria-hidden="true" />
+                            <span className="sr-only">Search tools</span>
+                            <input
+                                value={search}
+                                onChange={(event) =>
+                                    setSearch(event.target.value)
+                                }
+                                placeholder="Search tools…"
+                            />
+                        </label>
+                        <div className="layout-toggle" aria-label="Tool layout">
+                            <button
+                                type="button"
+                                className={
+                                    viewMode === "grid" ? "selected" : ""
+                                }
+                                aria-label="Grid view"
+                                aria-pressed={viewMode === "grid"}
+                                onClick={() => changeView("grid")}
+                            >
+                                <LayoutGrid size={15} aria-hidden="true" />
+                            </button>
+                            <button
+                                type="button"
+                                className={
+                                    viewMode === "list" ? "selected" : ""
+                                }
+                                aria-label="List view"
+                                aria-pressed={viewMode === "list"}
+                                onClick={() => changeView("list")}
+                            >
+                                <List size={15} aria-hidden="true" />
+                            </button>
+                        </div>
+                    </section>
+                    {filteredTools.length === 0 ? (
+                        <section className="panel tool-empty">
+                            <Search size={25} aria-hidden="true" />
+                            <h2>No tools found</h2>
+                            <p className="panel-copy">
+                                Try a different name, slug, provider or executor
+                                type.
+                            </p>
+                        </section>
+                    ) : (
+                        <section
+                            className={
+                                "tools-card-grid " +
+                                (viewMode === "list" ? "list-view" : "")
+                            }
+                            aria-label={
+                                viewMode === "grid" ? "Tool cards" : "Tool list"
+                            }
+                        >
+                            {filteredTools.map((tool) => (
+                                <ToolCard
+                                    key={tool.id}
+                                    tool={tool}
+                                    onOpen={openTool}
+                                />
+                            ))}
+                        </section>
+                    )}
+                </>
+            ) : null}
+            {selectedTool ? (
+                <ToolDetailModal
+                    tool={selectedTool}
+                    versionDetail={versionDetail}
+                    onClose={() => setSelectedTool(null)}
+                />
+            ) : null}
+            {workspace && createOpen ? (
+                <CreateToolModal
+                    workspaceId={workspace.id}
+                    onClose={() => setCreateOpen(false)}
+                    onCreated={async () => {
+                        setCreateOpen(false);
+                        setError(null);
+                        setLoading(true);
+                        try {
+                            setTools(await fetchTools(workspace.id));
+                        } catch (reason: unknown) {
+                            setError(
+                                reason instanceof Error
+                                    ? reason.message
+                                    : "Unable to refresh the tool catalog.",
+                            );
+                        } finally {
+                            setLoading(false);
+                        }
+                    }}
+                />
+            ) : null}
+        </AppShell>
+    );
+}

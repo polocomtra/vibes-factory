@@ -1,10 +1,16 @@
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import uuid4
 
 import pytest
 
-from apps.api.app.model_providers.contracts import ModelMessage
+from apps.api.app.model_providers.contracts import (
+    ModelMessage,
+    ModelResponse,
+    ModelUsage,
+)
 from apps.api.app.models import Span, SpanStatus, SpanType
+from apps.api.app.runtime.budget import ExecutionBudgetTracker, estimate_model_cost
 from apps.api.app.runtime.context import ContextBuilder
 from apps.api.app.runtime.contracts import (
     AgentRunRequest,
@@ -13,6 +19,7 @@ from apps.api.app.runtime.contracts import (
     RuntimeSession,
     SessionMessage,
     TextInput,
+    TokenUsage,
 )
 from apps.api.app.runtime.errors import RuntimeExecutionError
 from apps.api.app.runtime.service import AgentRuntime, _safe_provider_metadata
@@ -107,9 +114,7 @@ def test_context_builder_omits_temperature_for_gemini_3_8_flash() -> None:
 
 def test_runtime_budget_rejects_mismatched_workspace() -> None:
     request = runtime_request()
-    request = request.model_copy(
-        update={"workspace_id": uuid4()}
-    )
+    request = request.model_copy(update={"workspace_id": uuid4()})
 
     with pytest.raises(RuntimeExecutionError) as error:
         AgentRuntime._validate_request(request)
@@ -143,9 +148,48 @@ def test_runtime_budget_is_conservative_and_explicit() -> None:
     assert budget.timeout_seconds == 120
 
 
+def test_budget_tracker_accumulates_model_rounds_and_tool_calls() -> None:
+    request = runtime_request(max_total_tokens=20)
+    tracker = ExecutionBudgetTracker(request)
+    remaining = tracker.begin_model_call()
+    assert remaining > 0
+    tracker.record_response(
+        ModelResponse(
+            content="answer",
+            usage=ModelUsage(input_tokens=4, output_tokens=2, total_tokens=6),
+        ),
+        ContextBuilder().build(request).request,
+    )
+    tracker.record_tool_calls(2)
+
+    assert tracker.model_calls == 1
+    assert tracker.tool_calls == 2
+    assert tracker.usage().total_tokens == 6
+
+
+def test_estimate_model_cost_applies_cached_input_rate() -> None:
+    cost = estimate_model_cost(
+        TokenUsage(
+            input_tokens=1_000_000,
+            output_tokens=100_000,
+            total_tokens=1_100_000,
+            cached_input_tokens=200_000,
+        ),
+        input_price_per_million=Decimal("1.25"),
+        output_price_per_million=Decimal(10),
+        cached_input_price_per_million=Decimal("0.125"),
+    )
+
+    assert cost == Decimal("2.02500000")
+
+
 def test_provider_metadata_drops_secret_shaped_fields() -> None:
     assert _safe_provider_metadata(
-        {"request_id": "req-123", "api_key": "do-not-store", "nested": {"token": "secret"}}
+        {
+            "request_id": "req-123",
+            "api_key": "do-not-store",
+            "nested": {"token": "secret"},
+        }
     ) == {"request_id": "req-123", "nested": {}}
 
 

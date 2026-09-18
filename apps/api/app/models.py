@@ -62,12 +62,29 @@ class SpanType(StrEnum):
     RUN = "RUN"
     CONTEXT_BUILD = "CONTEXT_BUILD"
     MODEL = "MODEL"
+    TOOL = "TOOL"
 
 
 class SpanStatus(StrEnum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+class ToolType(StrEnum):
+    FUNCTION = "FUNCTION"
+    HTTP = "HTTP"
+
+
+class ToolStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class ToolRiskLevel(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 
 class User(Base):
@@ -260,6 +277,158 @@ class AgentVersion(Base):
     )
 
 
+class Tool(Base):
+    __tablename__ = "tools"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tool_type: Mapped[ToolType] = mapped_column(
+        "type", Enum(ToolType, native_enum=False, length=32), nullable=False
+    )
+    status: Mapped[ToolStatus] = mapped_column(
+        Enum(ToolStatus, native_enum=False, length=32),
+        default=ToolStatus.ACTIVE,
+        nullable=False,
+    )
+    is_builtin: Mapped[bool] = mapped_column(
+        default=False, server_default="false", nullable=False
+    )
+    latest_version_number: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "slug", name="uq_tools_workspace_slug"),
+        Index("ix_tools_workspace_id", "workspace_id"),
+    )
+
+
+class ToolVersion(Base):
+    __tablename__ = "tool_versions"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    tool_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tools.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    output_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    executor_type: Mapped[ToolType] = mapped_column(
+        Enum(ToolType, native_enum=False, length=32), nullable=False
+    )
+    executor_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    timeout_seconds: Mapped[int] = mapped_column(
+        Integer, default=30, server_default="30", nullable=False
+    )
+    retry_policy: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    risk_level: Mapped[ToolRiskLevel] = mapped_column(
+        Enum(ToolRiskLevel, native_enum=False, length=32),
+        default=ToolRiskLevel.LOW,
+        nullable=False,
+    )
+    side_effect: Mapped[bool] = mapped_column(
+        default=False, server_default="false", nullable=False
+    )
+    idempotent: Mapped[bool] = mapped_column(
+        default=True, server_default="true", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tool_id", "version_number", name="uq_tool_versions_number"),
+        Index("ix_tool_versions_workspace_id", "workspace_id"),
+        Index("ix_tool_versions_tool_id", "tool_id"),
+    )
+
+
+class AgentDraftTool(Base):
+    __tablename__ = "agent_draft_tools"
+
+    agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tool_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tool_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    enabled: Mapped[bool] = mapped_column(
+        default=True, server_default="true", nullable=False
+    )
+    alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentVersionTool(Base):
+    __tablename__ = "agent_version_tools"
+
+    agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tool_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tool_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Session(Base):
     __tablename__ = "sessions"
 
@@ -432,9 +601,7 @@ class Run(Base):
     output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    execution_budget: Mapped[dict[str, Any]] = mapped_column(
-        JSONB, nullable=False
-    )
+    execution_budget: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     usage: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}", nullable=False
     )

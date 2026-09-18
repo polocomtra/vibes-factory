@@ -1287,6 +1287,21 @@ data: {"run_id":"...","trace_id":"..."}
 }
 ```
 
+## Tool events
+
+Phase 6 adds `tool.started`, `tool.completed`, and `tool.failed`. Payloads contain only sanitized identifiers and execution status; provider payloads and credentials are never included.
+
+```json
+{
+  "run_id": "uuid",
+  "tool_id": "uuid",
+  "tool_version_id": "uuid",
+  "tool": "web_search",
+  "status": "running",
+  "duration_ms": 120
+}
+```
+
 ---
 
 # 46. Extended SSE Events
@@ -1321,6 +1336,8 @@ Frontend must ignore unknown event types for forward compatibility.
 ---
 
 # 47. Tools
+
+Built-in Function tools available in every workspace are `calculator`, `current_datetime`, `echo`, and `web_search`. Built-ins have immutable platform-managed versions and are catalog-ready but never auto-attached. `web_search` accepts `{ "query": "...", "num_results": 10 }` and returns only `query`, normalized `results` (`title`, `url`, `published_date`, `highlights`) and an optional `request_id`.
 
 ## POST `/v1/workspaces/{workspace_id}/tools`
 
@@ -1360,6 +1377,19 @@ status
 search
 ```
 
+The response is a collection envelope:
+
+```json
+{
+  "data": [],
+  "pagination": {"next_cursor": null, "has_more": false}
+}
+```
+
+`built_in` is persisted platform state. Built-in slugs are reserved, their
+versions are immutable, and catalog seeding never creates an agent binding.
+Tool and version resources are returned only after workspace authorization.
+
 ---
 
 # 49. Publish Tool Version
@@ -1393,7 +1423,7 @@ Request example for HTTP Tool:
       "query_mapping": {
         "city": "{{city}}"
       },
-      "credential_id": "uuid"
+      "credential_ref": "vault-reference"
     }
   },
   "timeout_seconds": 10,
@@ -1416,6 +1446,14 @@ Response `201`.
 
 Published tool versions are immutable.
 
+HTTP executor configuration is canonicalized to `method`, `base_url`, `path`,
+`headers`, `query_mapping`, and `body_mapping`. Legacy `url` input is accepted
+as a compatibility fallback and normalized at write time. Mappings support
+only `{{field}}` placeholders. Redirects, embedded URL credentials, sensitive
+headers, private destinations, oversized responses, and unresolved mappings
+are rejected with stable errors such as `HTTP_URL_INVALID`,
+`HTTP_PRIVATE_DESTINATION`, `HTTP_RESPONSE_TOO_LARGE`, and `HTTP_TIMEOUT`.
+
 ---
 
 # 51. Test Tool
@@ -1436,7 +1474,7 @@ Response:
 
 ```json
 {
-  "status": "SUCCESS",
+  "status": "completed",
   "output": {},
   "duration_ms": 310
 }

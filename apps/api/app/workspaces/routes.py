@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth.dependencies import get_current_user
 from ..db import get_session
 from ..models import User, Workspace, WorkspaceMember, WorkspaceRole
+from ..tools.catalog import ensure_builtin_tools
 from .authorization import (
     require_workspace_access,
     require_workspace_membership,
@@ -61,6 +62,7 @@ async def create_workspace(
                 workspace_id=workspace.id, user_id=user.id, role=WorkspaceRole.OWNER
             )
         )
+        await ensure_builtin_tools(session, workspace.id, user.id)
         await session.commit()
         await session.refresh(workspace)
     except IntegrityError as exc:

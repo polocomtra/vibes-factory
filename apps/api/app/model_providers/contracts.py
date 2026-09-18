@@ -10,19 +10,30 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-class ModelMessage(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str = Field(min_length=1)
-
-
 class ModelTool(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=10_000)
     parameters: dict[str, object] = Field(default_factory=dict)
+
+
+class ModelToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str | None = None
+    name: str = Field(min_length=1)
+    arguments: dict[str, object]
+
+
+class ModelMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str = ""
+    tool_calls: tuple[ModelToolCall, ...] = ()
+    tool_call_id: str | None = None
+    name: str | None = None
 
 
 class ModelRequest(BaseModel):
@@ -60,13 +71,6 @@ class ModelRequest(BaseModel):
         if value is not None and value.get("type") not in (None, "object"):
             raise ValueError("response_schema must describe a JSON object")
         return value
-
-class ModelToolCall(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    id: str | None = None
-    name: str = Field(min_length=1)
-    arguments: dict[str, object]
 
 
 class ModelUsage(BaseModel):

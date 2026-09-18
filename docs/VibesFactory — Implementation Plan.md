@@ -1774,7 +1774,9 @@ remain deferred to their later milestones.
 
 ## Goal
 
-Support model-controlled actions.
+Support model-controlled actions through a workspace-scoped, immutable tool platform. Phase 6 is complete when the built-in `web_search` Function tool is catalog-ready, testable, attachable to an Agent Draft, copied into published AgentVersion bindings, and executable through the runtime loop.
+
+Implementation record (Phase 6): `web_search` uses Exa Search API through `exa-py`, with `type="auto"` and `contents={"highlights": True}`. The API key is supplied only by `VF_EXA_API_KEY` as a `SecretStr`; it is never persisted, logged, traced, returned to the model, or exposed in the UI. The tool is seeded into every workspace catalog but is not auto-attached to any agent. Exa Agent/Deep Search/full page text/pagination are deferred.
 
 ---
 
@@ -1787,7 +1789,9 @@ tools
 
 tool_versions
 
-agent_tools
+agent_draft_tools
+
+agent_version_tools
 ```
 
 Tool:
@@ -1910,6 +1914,8 @@ calculator
 current_datetime or simple utility
 
 echo/debug tool
+
+web_search (Exa Search API, normalized highlights output, maximum 10 results)
 ```
 
 Do not allow arbitrary Python upload.
@@ -1976,7 +1982,7 @@ Model
 repeat
 ```
 
-Stop using ExecutionBudget.
+Runtime continues enforcing `ExecutionBudget`, including `max_steps`, `max_model_calls`, `max_tool_calls`, token limits and timeout.
 
 ---
 
@@ -5506,6 +5512,35 @@ For each milestone:
 Do not optimize for maximum feature count.
 Optimize for correctness, maintainability, observability and a working end-to-end lifecycle.
 ```
+
+---
+
+# Phase 6 Implementation Record — Tool Platform Hardening + Exa
+
+Phase 6 is implemented with migration `0008_tool_contract_hardening` after
+`0007_builtin_schema_backfill`. The platform now persists built-in state,
+reserves built-in slugs, seeds catalog rows idempotently under concurrent
+requests, allocates tool versions under a row lock, and enforces workspace
+ownership through draft publish, runtime request construction, version reads,
+and execution.
+
+Tool tests and both runtime transports share `ToolExecutionPipeline`: schema
+definition/argument validation, executor mismatch checks, guardrail hook,
+credential resolution, execution, output validation, secret redaction, and
+stable sanitized errors. HTTP tools use canonical configuration, DNS-aware
+SSRF checks, disabled redirects, `trust_env=False`, bounded streaming
+responses, absolute per-run deadlines, and idempotent-only transient retries.
+Exa search uses the exact bounded provider call and returns normalized result
+fields only.
+
+The runtime uses one cumulative budget tracker for steps, model calls, tool
+calls, total tokens, and the absolute deadline. Tool spans persist sanitized
+identifiers/status/duration, and SSE tool events expose only those fields.
+
+Verification completed locally: `pytest -q` (55 passed), Ruff, mypy, web
+ESLint, TypeScript typecheck, and Next.js production build. Migration runbook:
+`docker compose up -d postgres`, `alembic upgrade head`, `alembic current`;
+expected head is `0008_tool_contract_hardening`.
 
 ---
 

@@ -7,7 +7,17 @@ from uuid import UUID
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, AgentDraft, AgentStatus, AgentVersion
+from ..models import (
+    Agent,
+    AgentDraft,
+    AgentDraftTool,
+    AgentStatus,
+    AgentVersion,
+    AgentVersionTool,
+    Tool,
+    ToolVersion,
+)
+from ..tools.naming import model_tool_name
 from .catalog import find_model, get_default_model
 from .schemas import (
     AgentCreateRequest,
@@ -82,7 +92,9 @@ def _normalized_model_config(stored_config: dict[str, Any]) -> dict[str, object]
     }
 
 
-def build_snapshot(draft: AgentDraft) -> dict[str, object]:
+def build_snapshot(
+    draft: AgentDraft, tools: list[dict[str, object]] | None = None
+) -> dict[str, object]:
     return {
         "schema_version": 1,
         "instructions": draft.instructions,
@@ -93,7 +105,7 @@ def build_snapshot(draft: AgentDraft) -> dict[str, object]:
         },
         "runtime_config": draft.runtime_config,
         "memory_config": draft.memory_config,
-        "tools": [],
+        "tools": tools or [],
         "knowledge_bases": [],
         "guardrails": [],
         "child_agents": [],
@@ -253,6 +265,44 @@ async def publish_version(
             {"errors": [issue.model_dump() for issue in issues]},
         )
 
+    bindings = await session.execute(
+        select(AgentDraftTool, ToolVersion, Tool)
+        .join(ToolVersion, ToolVersion.id == AgentDraftTool.tool_version_id)
+        .join(Tool, Tool.id == ToolVersion.tool_id)
+        .where(
+            AgentDraftTool.agent_id == locked_agent.id, AgentDraftTool.enabled.is_(True)
+        )
+        .order_by(ToolVersion.name.asc())
+    )
+    tool_snapshots: list[dict[str, object]] = []
+    binding_rows = bindings.all()
+    for binding, tool_version, tool in binding_rows:
+        if (
+            tool_version.workspace_id != locked_agent.workspace_id
+            or tool.workspace_id != locked_agent.workspace_id
+        ):
+            raise AgentServiceError(
+                "TOOL_WORKSPACE_MISMATCH",
+                "A bound tool does not belong to the agent workspace.",
+                422,
+            )
+        tool_snapshots.append(
+            {
+                "id": str(tool_version.id),
+                "name": model_tool_name(binding.alias or tool.slug),
+                "description": tool_version.description,
+                "type": tool_version.executor_type.value,
+                "input_schema": tool_version.input_schema,
+                "output_schema": tool_version.output_schema,
+                "executor": {
+                    "type": tool_version.executor_type.value,
+                    "config": tool_version.executor_config,
+                },
+                "version_number": tool_version.version_number,
+                "risk_level": tool_version.risk_level.value,
+            }
+        )
+
     next_version = locked_agent.latest_version_number + 1
     version = AgentVersion(
         workspace_id=locked_agent.workspace_id,
@@ -264,12 +314,22 @@ async def publish_version(
         model_config=draft.model_config,
         runtime_config=draft.runtime_config,
         memory_config=draft.memory_config,
-        snapshot=build_snapshot(draft),
+        snapshot=build_snapshot(draft, tool_snapshots),
         change_note=change_note,
         created_by=user_id,
     )
     locked_agent.latest_version_number = next_version
     session.add(version)
+    await session.flush()
+    for binding, _, _ in binding_rows:
+        session.add(
+            AgentVersionTool(
+                agent_version_id=version.id,
+                tool_version_id=binding.tool_version_id,
+                alias=binding.alias,
+                configuration=binding.configuration,
+            )
+        )
     await session.commit()
     await session.refresh(version)
     return version

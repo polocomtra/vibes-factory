@@ -125,6 +125,40 @@ async def test_azure_stream_normalizes_text_deltas_and_completed_response() -> N
 
 
 @pytest.mark.asyncio
+async def test_azure_stream_keeps_usable_incomplete_text_response() -> None:
+    incomplete = SimpleNamespace(
+        output_text="A useful partial answer",
+        output=[],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=8, total_tokens=20),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+    )
+
+    async def events():
+        yield SimpleNamespace(type="response.output_text.delta", delta="A useful ")
+        yield SimpleNamespace(type="response.output_text.delta", delta="partial answer")
+        yield SimpleNamespace(type="response.incomplete", response=incomplete)
+
+    client = FakeOpenAIClient(events())
+    provider = AzureOpenAIProvider(
+        base_url="https://resource.services.ai.azure.com/openai/v1",
+        client_factory=cast(Callable[..., AsyncOpenAI], lambda **kwargs: client),
+    )
+    stream_request = request("azure_openai", "gpt-5.6-luna").model_copy(
+        update={"stream": True}
+    )
+
+    normalized = [
+        event async for event in provider.stream(stream_request, "temporary-key")
+    ]
+
+    assert normalized[-1].type == "completed"
+    assert normalized[-1].response is not None
+    assert normalized[-1].response.content == "A useful partial answer"
+    assert normalized[-1].response.finish_reason == "LENGTH"
+
+
+@pytest.mark.asyncio
 async def test_openai_response_fallback_normalizes_tool_call() -> None:
     response = SimpleNamespace(
         output_text=None,

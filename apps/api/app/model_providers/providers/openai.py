@@ -23,14 +23,36 @@ def _value(item: object, key: str, default: Any = None) -> Any:
     return getattr(item, key, default)
 
 
-def _messages(request: ModelRequest) -> list[dict[str, str]]:
-    return [
-        {"role": message.role, "content": message.content}
-        for message in request.messages
-    ]
+def _messages(request: ModelRequest) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for message in request.messages:
+        if message.role == "tool":
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": message.tool_call_id,
+                    "output": message.content,
+                }
+            )
+            continue
+        if message.role == "assistant" and message.tool_calls:
+            for call in message.tool_calls:
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call.id,
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments),
+                    }
+                )
+            if message.content:
+                items.append({"role": "assistant", "content": message.content})
+            continue
+        items.append({"role": message.role, "content": message.content})
+    return items
 
 
-def _response_input(request: ModelRequest) -> str | list[dict[str, str]]:
+def _response_input(request: ModelRequest) -> str | list[dict[str, Any]]:
     if len(request.messages) == 1 and request.messages[0].role == "user":
         return request.messages[0].content
     return _messages(request)
@@ -113,7 +135,7 @@ def _parse_responses_output(response: object) -> ModelResponse:
         if tool_calls
         else (
             "LENGTH"
-            if reason == "max_output_tokens" or status == "incomplete"
+            if reason in {"max_output_tokens", "max_tokens"} or status == "incomplete"
             else "STOP"
             if status == "completed"
             else status
@@ -198,9 +220,7 @@ class OpenAIProvider:
         client: AsyncOpenAI | None = None
         try:
             client = self._client(api_key)
-            response = await client.responses.create(
-                **self._response_kwargs(request)
-            )  # type: ignore[call-overload]
+            response = await client.responses.create(**self._response_kwargs(request))  # type: ignore[call-overload]
             return _parse_responses_output(response)
         except ProviderError:
             raise
@@ -223,9 +243,7 @@ class OpenAIProvider:
         completed = False
         try:
             client = self._client(api_key)
-            stream = await client.responses.create(
-                **self._response_kwargs(request)
-            )  # type: ignore[call-overload]
+            stream = await client.responses.create(**self._response_kwargs(request))  # type: ignore[call-overload]
             async for event in stream:
                 event_type = _value(event, "type")
                 if event_type == "response.output_text.delta":
@@ -243,14 +261,31 @@ class OpenAIProvider:
                     yield ModelStreamEvent(
                         type="completed", response=_parse_responses_output(response)
                     )
-                elif event_type in {
-                    "response.failed",
-                    "response.incomplete",
-                    "error",
-                }:
+                elif event_type == "response.incomplete":
+                    # Azure/OpenAI can terminate a response at the output limit
+                    # while still returning usable text. Preserve that text as
+                    # a bounded partial answer so the runtime can persist it
+                    # instead of dropping the whole run after tool execution.
+                    response = _value(event, "response")
+                    if response is None:
+                        raise ProviderError(
+                            "PROVIDER_INVALID_RESPONSE",
+                            "The provider returned an incomplete response.",
+                        )
+                    try:
+                        parsed = _parse_responses_output(response)
+                    except ProviderError:
+                        raise ProviderError(
+                            "PROVIDER_INVALID_RESPONSE",
+                            "The provider returned an incomplete response "
+                            "without usable output.",
+                        ) from None
+                    completed = True
+                    yield ModelStreamEvent(type="completed", response=parsed)
+                elif event_type in {"response.failed", "error"}:
                     raise ProviderError(
                         "PROVIDER_INVALID_RESPONSE",
-                        "The provider did not complete the response.",
+                        "The provider failed before completing the response.",
                     )
             if not completed:
                 raise ProviderError(

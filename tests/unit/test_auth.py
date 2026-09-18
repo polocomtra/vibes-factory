@@ -50,6 +50,7 @@ async def test_invalid_jwt_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         await verify_supabase_token("invalid-token", auth_settings())
 
     assert error.value.status_code == 401
+    assert isinstance(error.value.detail, dict)
     assert error.value.detail["code"] == "INVALID_TOKEN"
 
 
@@ -64,6 +65,7 @@ async def test_expired_jwt_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
         await verify_supabase_token("expired-token", auth_settings())
 
     assert error.value.status_code == 401
+    assert isinstance(error.value.detail, dict)
     assert error.value.detail["code"] == "INVALID_TOKEN"
 
 

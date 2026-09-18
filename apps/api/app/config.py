@@ -1,5 +1,6 @@
 """Application configuration loaded from environment variables."""
 
+from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated
 
@@ -34,9 +35,15 @@ class Settings(BaseSettings):
     supabase_auth_timeout_seconds: float = 5.0
     model_provider_timeout_seconds: float = 60.0
     gemini_api_key: SecretStr | None = None
+    exa_api_key: SecretStr | None = None
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
     azure_openai_deployment_name: str = "gpt-5.6-luna"
+    # These are estimates for the configured Azure deployment, not provider
+    # billing data. Override them with the rates from the Azure pricing plan.
+    azure_openai_input_price_per_million: Decimal | None = Decimal("1.25")
+    azure_openai_output_price_per_million: Decimal | None = Decimal("10")
+    azure_openai_cached_input_price_per_million: Decimal | None = Decimal("0.125")
 
     @field_validator("cors_origins", mode="before")
     @classmethod

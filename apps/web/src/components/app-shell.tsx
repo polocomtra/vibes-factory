@@ -265,6 +265,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (path === "/playground" || path.includes("/playground")) return "Playground";
     if (path === "/traces" || path.includes("/traces")) return "Traces";
     if (path.startsWith("/agents")) return "Agents";
+    if (path === "/tools" || path.startsWith("/tools/")) return "Tools";
     if (path === "/settings") return "Settings";
     return "Dashboard";
   };
@@ -312,6 +313,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setMobileOpen(false);
     if (label === "Dashboard") router.push("/");
     if (label === "Agents") router.push("/agents");
+    if (label === "Tools") router.push("/tools");
     if (label === "Playground") router.push("/playground");
     if (label === "Traces") router.push("/traces");
     if (label === "Settings") router.push("/settings");

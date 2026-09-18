@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Check, ChevronDown, Clipboard, Code2, GitBranch, LoaderCircle, Play, Save, ShieldCheck, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, Clipboard, Code2, GitBranch, LoaderCircle, Play, Save, ShieldCheck, Sparkles, X, Zap } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
@@ -8,6 +8,7 @@ import { AppShell } from "../../../components/app-shell";
 import { ModelSelect } from "../../../components/model-select";
 import { apiFetch, readApiError } from "../../../lib/api";
 import { fetchAgent, fetchDraft, fetchModels, fetchVersion, fetchVersions, type Agent, type AgentDraft, type AgentVersion, type AgentVersionSummary, type ModelDefinition } from "../../../lib/agents";
+import { fetchDraftTools, fetchTools, type DraftTool, type Tool } from "../../../lib/tools";
 
 function dateLabel(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
@@ -26,7 +27,10 @@ export default function AgentDetailPage() {
   const [models, setModels] = useState<ModelDefinition[]>([]);
   const [versions, setVersions] = useState<AgentVersionSummary[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<AgentVersion | null>(null);
-  const [tab, setTab] = useState<"configuration" | "versions">("configuration");
+  const [tab, setTab] = useState<"configuration" | "versions" | "tools">("configuration");
+  const [draftTools, setDraftTools] = useState<DraftTool[]>([]);
+  const [pendingToolVersionIds, setPendingToolVersionIds] = useState<Set<string>>(new Set());
+  const [catalogTools, setCatalogTools] = useState<Tool[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"save" | "publish" | "metadata" | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -41,8 +45,10 @@ export default function AgentDetailPage() {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [agentData, draftData, modelData, versionData] = await Promise.all([fetchAgent(agentId), fetchDraft(agentId), fetchModels(), fetchVersions(agentId)]);
-      setAgent(agentData); setName(agentData.name); setDescription(agentData.description ?? ""); setDraft(draftData); setModels(modelData); setVersions(versionData); setSelectedVersion(null); setDirty(false);
+      const agentData = await fetchAgent(agentId);
+      const [draftData, modelData, versionData, draftToolData] = await Promise.all([fetchDraft(agentId), fetchModels(), fetchVersions(agentId), fetchDraftTools(agentId)]);
+      const catalogToolData = await fetchTools(agentData.workspace_id);
+      setAgent(agentData); setName(agentData.name); setDescription(agentData.description ?? ""); setDraft(draftData); setModels(modelData); setVersions(versionData); setDraftTools(draftToolData); setPendingToolVersionIds(new Set(draftToolData.filter((item) => item.enabled).map((item) => item.tool_version_id))); setCatalogTools(catalogToolData); setSelectedVersion(null); setDirty(false);
     } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : "Unable to load agent."); }
     finally { setLoading(false); }
   }, [agentId]);
@@ -65,9 +71,28 @@ export default function AgentDetailPage() {
     const model = draft.model.provider === "azure_openai"
       ? { ...draft.model, config: { max_output_tokens: draft.model.config.max_output_tokens ?? 4096 } }
       : draft.model;
-    const response = await apiFetch(`/v1/agents/${agentId}/draft`, { method: "PATCH", body: JSON.stringify({ instructions: draft.instructions, model, runtime_config: draft.runtime_config, memory_config: draft.memory_config }) });
-    if (!response.ok) { setError(await readApiError(response)); setBusy(null); return; }
-    setDraft(await response.json() as AgentDraft); setDirty(false); setMessage("Draft saved."); setBusy(null);
+    try {
+      const response = await apiFetch(`/v1/agents/${agentId}/draft`, { method: "PATCH", body: JSON.stringify({ instructions: draft.instructions, model, runtime_config: draft.runtime_config, memory_config: draft.memory_config }) });
+      if (!response.ok) throw new Error(await readApiError(response));
+      const additions = catalogTools.flatMap((tool) => {
+        const version = tool.versions[0];
+        return version && pendingToolVersionIds.has(version.id) && !draftTools.some((item) => item.tool_version_id === version.id) ? [version.id] : [];
+      });
+      const removals = draftTools.filter((item) => item.enabled && !pendingToolVersionIds.has(item.tool_version_id)).map((item) => item.tool_version_id);
+      const bindingResponses = await Promise.all([
+        ...additions.map((toolVersionId) => apiFetch(`/v1/agents/${agentId}/draft/tools`, { method: "POST", body: JSON.stringify({ tool_version_id: toolVersionId }) })),
+        ...removals.map((toolVersionId) => apiFetch(`/v1/agents/${agentId}/draft/tools/${toolVersionId}`, { method: "DELETE" })),
+      ]);
+      const failedBinding = bindingResponses.find((bindingResponse) => !bindingResponse.ok);
+      if (failedBinding) throw new Error(await readApiError(failedBinding));
+      setDraft(await response.json() as AgentDraft);
+      setMessage(additions.length + removals.length > 0 ? "Draft and tool bindings saved." : "Draft saved.");
+      await load();
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to save draft.");
+    } finally {
+      setBusy(null);
+    }
   }
 
   async function saveMetadata() {
@@ -90,6 +115,18 @@ export default function AgentDetailPage() {
     catch (reason: unknown) { setError(reason instanceof Error ? reason.message : "Unable to load version."); }
   }
 
+  function toggleTool(toolVersionId: string, enabled: boolean) {
+    setPendingToolVersionIds((current) => {
+      const next = new Set(current);
+      if (enabled) next.add(toolVersionId);
+      else next.delete(toolVersionId);
+      return next;
+    });
+    setDirty(true);
+    setMessage(null);
+    setError(null);
+  }
+
   function updateRuntime(key: keyof AgentDraft["runtime_config"], value: string) {
     updateDraft({ ...draft, runtime_config: { ...draft.runtime_config, [key]: Number(value) } });
   }
@@ -110,13 +147,18 @@ export default function AgentDetailPage() {
     };
   }, [agentId, tab, versions, selectedVersion]);
 
+  const toolBindingsDirty = draftTools.filter((item) => item.enabled).some((item) => pendingToolVersionIds.has(item.tool_version_id) === false) || catalogTools.some((tool) => {
+    const version = tool.versions[0];
+    return Boolean(version && pendingToolVersionIds.has(version.id) && !draftTools.some((item) => item.tool_version_id === version.id));
+  });
+
   if (loading) return <AppShell><section className="panel agent-state"><LoaderCircle className="spin" size={18} aria-hidden="true" />Loading agent…</section></AppShell>;
   if (!agent) return <AppShell><section className="panel agent-empty-state"><h2>Agent unavailable</h2><p className="panel-copy">{error || "This agent could not be found."}</p><button className="button secondary-button" type="button" onClick={() => router.push("/agents")}>Back to agents</button></section></AppShell>;
 
   return <AppShell><div className="page-header agent-detail-header"><div><button className="text-button" type="button" onClick={() => router.push("/agents")}><ArrowLeft size={14} aria-hidden="true" />Back to agents</button><p className="eyebrow agent-eyebrow">VibesFactory / Agent control plane</p><div className="agent-title-row"><span className="agent-avatar large"><BotIcon /></span><div><h1>{agent.name}</h1><p className="page-description"><code>{agent.slug}</code> · {agent.status === "ACTIVE" ? "Active" : "Archived"}</p></div></div></div><div className="header-controls agent-command-bar"><span className={`status-badge ${agent.status === "ACTIVE" ? "success" : "muted"}`}><span />{agent.latest_version_number ? `v${agent.latest_version_number} published` : "Draft only"}</span><button className="button secondary-button command-button" type="button" onClick={() => router.push(`/agents/${agentId}/playground`)} disabled={agent.latest_version_number === 0}><Play size={15} aria-hidden="true" />Open playground</button><button className="button secondary-button command-button" type="button" onClick={() => void saveDraft()} disabled={!dirty || busy !== null} aria-label="Save agent draft">{busy === "save" ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <Save size={15} aria-hidden="true" />}Save draft</button><button className="button primary-button command-button" type="button" onClick={() => setPublishOpen(true)} disabled={busy !== null || dirty || agent.status === "ARCHIVED"} title={dirty ? "Save the draft before publishing." : undefined}><GitBranch size={15} aria-hidden="true" />Publish agent</button></div></div>
-    <section className="agent-detail-tabs" role="tablist"><button className={tab === "configuration" ? "settings-tab active" : "settings-tab"} type="button" role="tab" aria-selected={tab === "configuration"} onClick={() => setTab("configuration")}><Code2 size={15} aria-hidden="true" />Configuration{dirty ? <span className="tab-count">*</span> : null}</button><button className={tab === "versions" ? "settings-tab active" : "settings-tab"} type="button" role="tab" aria-selected={tab === "versions"} onClick={() => setTab("versions")}><GitBranch size={15} aria-hidden="true" />Versions<span className="tab-count">{versions.length}</span></button></section>
+    <section className="agent-detail-tabs" role="tablist"><button className={tab === "configuration" ? "settings-tab active" : "settings-tab"} type="button" role="tab" aria-selected={tab === "configuration"} onClick={() => setTab("configuration")}><Code2 size={15} aria-hidden="true" />Configuration{dirty ? <span className="tab-count">*</span> : null}</button><button className={tab === "tools" ? "settings-tab active" : "settings-tab"} type="button" role="tab" aria-selected={tab === "tools"} onClick={() => setTab("tools")}><Zap size={15} aria-hidden="true" />Tools<span className="tab-count">{pendingToolVersionIds.size}</span></button><button className={tab === "versions" ? "settings-tab active" : "settings-tab"} type="button" role="tab" aria-selected={tab === "versions"} onClick={() => setTab("versions")}><GitBranch size={15} aria-hidden="true" />Versions<span className="tab-count">{versions.length}</span></button></section>
     {error ? <div className="form-error agent-alert agent-detail-alert" role="alert">{error}</div> : null}{message ? <div className="form-success agent-alert agent-detail-alert" role="status"><Check size={14} aria-hidden="true" />{message}</div> : null}
-    {tab === "configuration" ? <main className="agent-detail-layout"><section className="panel agent-form-panel"><div className="panel-heading"><div><span className="panel-kicker">Identity</span><h2>Agent details</h2></div><ShieldCheck size={18} aria-hidden="true" /></div><div className="field-grid"><label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>Slug<input value={agent.slug} disabled /></label></div><label>Description<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} /></label><div className="panel-inline-actions"><span className="field-helper">Metadata changes do not create a new version.</span><button className="button secondary-button" type="button" onClick={() => void saveMetadata()} disabled={busy !== null}>{busy === "metadata" ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : <Save size={14} aria-hidden="true" />}Save details</button></div></section>
+    {tab === "tools" ? <section className="panel agent-tools-panel"><div className="panel-heading"><div><span className="panel-kicker">Capability bindings</span><h2>Tools for this draft</h2></div><div className="agent-tools-heading-actions"><span className={"tool-binding-state " + (toolBindingsDirty ? "unsaved" : "saved")}>{toolBindingsDirty ? "Unsaved changes" : "Synced"}</span><button className="button primary-button" type="button" onClick={() => void saveDraft()} disabled={!toolBindingsDirty || busy !== null}>{busy === "save" ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : <Save size={14} aria-hidden="true" />}Save tool changes</button></div></div><p className="panel-copy agent-tools-copy">Toggle capabilities locally, then save the complete set in one batch. Enabled tools become runtime-available only after publishing a new agent version.</p><div className="agent-tool-list">{catalogTools.map((tool) => { const version = tool.versions[0]; const enabled = Boolean(version && pendingToolVersionIds.has(version.id)); return version ? <label className="agent-tool-row agent-tool-switch-row" key={version.id}><span className="tool-card-icon"><Zap size={16} aria-hidden="true" /></span><span className="agent-tool-copy"><strong>{tool.name}</strong><small>{tool.description} · v{version.version_number}</small></span><span className="built-in-badge">{tool.built_in ? "Built-in" : "Workspace"}</span><span className="tool-switch-status"><span>{enabled ? "Enabled" : "Disabled"}</span><span className="tool-switch"><input type="checkbox" checked={enabled} onChange={(event) => toggleTool(version.id, event.target.checked)} aria-label={enabled ? "Disable " + tool.name : "Enable " + tool.name} /><span className="tool-switch-track" aria-hidden="true"><span /></span></span></span></label> : null; })}</div></section> : tab === "configuration" ? <main className="agent-detail-layout"><section className="panel agent-form-panel"><div className="panel-heading"><div><span className="panel-kicker">Identity</span><h2>Agent details</h2></div><ShieldCheck size={18} aria-hidden="true" /></div><div className="field-grid"><label>Name<input value={name} onChange={(event) => setName(event.target.value)} /></label><label>Slug<input value={agent.slug} disabled /></label></div><label>Description<textarea value={description} onChange={(event) => setDescription(event.target.value)} rows={3} /></label><div className="panel-inline-actions"><span className="field-helper">Metadata changes do not create a new version.</span><button className="button secondary-button" type="button" onClick={() => void saveMetadata()} disabled={busy !== null}>{busy === "metadata" ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : <Save size={14} aria-hidden="true" />}Save details</button></div></section>
       <section className="panel agent-form-panel"><div className="panel-heading"><div><span className="panel-kicker">Behavior</span><h2>Instructions</h2></div></div><textarea className="instructions-editor" value={draft.instructions} onChange={(event) => updateDraft({ ...draft, instructions: event.target.value })} rows={14} /></section>
       <section className="panel agent-form-panel"><div className="panel-heading"><div><span className="panel-kicker">Model</span><h2>Model configuration</h2></div></div><div className="field-grid"><label>Model<ModelSelect models={models} value={`${draft.model.provider}:${draft.model.name}`} onChange={(value) => { const model = models.find((item) => `${item.provider}:${item.name}` === value); if (model) { const config = { ...draft.model.config }; if (model.provider === "azure_openai") delete config.temperature; updateDraft({ ...draft, model: { ...draft.model, provider: model.provider, name: model.name, config } }); } }} /></label><label htmlFor="agent-temperature"><span>Temperature</span><input id="agent-temperature" type="number" inputMode="decimal" min="0" max="2" step="0.1" value={String(draft.model.config.temperature ?? 0.2)} disabled={draft.model.provider === "azure_openai"} aria-describedby="agent-temperature-helper" onChange={(event) => updateDraft({ ...draft, model: { ...draft.model, config: { ...draft.model.config, temperature: Number(event.target.value) } } })} /><small id="agent-temperature-helper">{draft.model.provider === "azure_openai" ? "Temporarily disabled for Azure OpenAI reasoning models." : "Lower values make responses more consistent."}</small></label><label>Max output tokens<input type="number" min="1" value={String(draft.model.config.max_output_tokens ?? 4096)} onChange={(event) => updateDraft({ ...draft, model: { ...draft.model, config: { ...draft.model.config, max_output_tokens: Number(event.target.value) } } })} /></label></div></section>
       <section className="panel agent-form-panel runtime-panel"><button className="runtime-accordion-trigger" type="button" aria-expanded={runtimeOpen} aria-controls="runtime-config-content" onClick={() => setRuntimeOpen((open) => !open)}><span><span className="panel-kicker">Execution</span><strong>Runtime configuration</strong><small>Limits for steps, model calls, tools and timeouts.</small></span><span className="runtime-accordion-meta"><span className="code-hint">V1</span><ChevronDown className={runtimeOpen ? "accordion-chevron open" : "accordion-chevron"} size={18} aria-hidden="true" /></span></button>{runtimeOpen ? <div className="runtime-grid" id="runtime-config-content">{(["max_steps", "max_model_calls", "max_tool_calls", "max_child_runs", "max_agent_depth", "max_total_tokens", "timeout_seconds"] as const).map((key) => <label key={key}>{key.replaceAll("_", " ")}<input type="number" min="0" value={String(draft.runtime_config[key])} onChange={(event) => updateRuntime(key, event.target.value)} /></label>)}</div> : null}</section>

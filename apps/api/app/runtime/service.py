@@ -1,7 +1,9 @@
 """The first synchronous AgentRuntime vertical slice."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -10,7 +12,13 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..model_providers.contracts import ModelRequest, ModelResponse
+from ..config import get_settings
+from ..model_providers.contracts import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ModelToolCall,
+)
 from ..model_providers.errors import ProviderError
 from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
@@ -22,9 +30,14 @@ from ..models import (
     Span,
     SpanStatus,
     SpanType,
+    Tool,
+    ToolVersion,
     Trace,
     TraceStatus,
 )
+from ..tools.contracts import ToolExecutionContext
+from ..tools.pipeline import SecretRedactor, ToolExecutionPipeline
+from .budget import ExecutionBudgetTracker, estimate_model_cost, estimate_model_request
 from .context import ContextBuilder, ContextBuildResult
 from .contracts import (
     AgentRunRequest,
@@ -36,6 +49,18 @@ from .contracts import (
 from .errors import RuntimeExecutionError
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class ToolExecutionRecord:
+    message: ModelMessage
+    tool_id: UUID | None
+    tool_version_id: UUID | None
+    name: str
+    succeeded: bool
+    duration_ms: int
+    span_id: UUID
+
 
 _SECRET_METADATA_KEYS = frozenset(
     {
@@ -67,6 +92,14 @@ def _safe_model_input(model_request: ModelRequest) -> dict[str, object]:
         "temperature": model_request.temperature,
         "max_output_tokens": model_request.max_output_tokens,
         "stream": model_request.stream,
+        "tools": [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            for tool in model_request.tools
+        ],
     }
 
 
@@ -101,10 +134,13 @@ class AgentRuntime:
         registry: ModelProviderRegistry,
         *,
         context_builder: ContextBuilder | None = None,
+        tool_pipeline: ToolExecutionPipeline | None = None,
     ) -> None:
         self.session = session
         self.registry = registry
         self.context_builder = context_builder or ContextBuilder()
+        self.tool_pipeline = tool_pipeline or ToolExecutionPipeline()
+        self.secret_redactor = SecretRedactor()
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
         self._validate_request(request)
@@ -151,6 +187,7 @@ class AgentRuntime:
             context_span.completed_at = datetime.now(UTC)
             await self.session.commit()
 
+            tracker = ExecutionBudgetTracker(request)
             if context.input_token_estimate > request.execution_budget.max_total_tokens:
                 raise RuntimeExecutionError(
                     "RUN_LIMIT_EXCEEDED",
@@ -158,71 +195,75 @@ class AgentRuntime:
                     status_code=422,
                     details={"budget": "max_total_tokens"},
                 )
-            if request.execution_budget.max_steps < 1:
-                raise RuntimeExecutionError(
-                    "RUN_LIMIT_EXCEEDED",
-                    "Agent execution exceeded its configured step limit.",
-                    status_code=422,
-                    details={"budget": "max_steps"},
-                )
-            if request.execution_budget.max_model_calls < 1:
-                raise RuntimeExecutionError(
-                    "RUN_LIMIT_EXCEEDED",
-                    "Agent execution exceeded its configured model-call limit.",
-                    status_code=422,
-                    details={"budget": "max_model_calls"},
-                )
-
-            model_span = Span(
-                id=uuid4(),
-                trace_id=trace.id,
-                parent_span_id=root_span.id,
-                run_id=run.id,
-                span_type=SpanType.MODEL,
-                name=f"{request.agent_version.model_provider}.generate",
-                status=SpanStatus.RUNNING,
-                input=_safe_model_input(context.request),
-                attributes={
-                    "provider": context.request.provider,
-                    "model": context.request.model,
-                    "input_token_estimate": context.input_token_estimate,
-                },
-                usage={
-                    "input_tokens": context.input_token_estimate,
-                    "input_tokens_estimated": True,
-                },
-                started_at=datetime.now(UTC),
-            )
-            self.session.add(model_span)
-            await self.session.commit()
-
-            self.registry.validate_request(context.request)
             provider = self.registry.resolve(request.agent_version.model_provider)
             api_key = self.registry.builtin_api_key(
                 request.agent_version.model_provider
             )
-            response = await asyncio.wait_for(
-                provider.generate(context.request, api_key),
-                timeout=request.execution_budget.timeout_seconds,
-            )
-            if response.tool_calls:
-                raise RuntimeExecutionError(
-                    "MODEL_CAPABILITY_UNSUPPORTED",
-                    "Tool calls are not supported in the Phase 4 runtime.",
-                    status_code=422,
+            response: ModelResponse | None = None
+            while True:
+                remaining = tracker.begin_model_call()
+                model_span = Span(
+                    id=uuid4(),
+                    trace_id=trace.id,
+                    parent_span_id=root_span.id,
+                    run_id=run.id,
+                    span_type=SpanType.MODEL,
+                    name=f"{context.request.provider}.generate",
+                    status=SpanStatus.RUNNING,
+                    input=_safe_model_input(context.request),
+                    attributes={
+                        "provider": context.request.provider,
+                        "model": context.request.model,
+                        "input_token_estimate": estimate_model_request(context.request),
+                    },
+                    started_at=datetime.now(UTC),
                 )
+                self.session.add(model_span)
+                await self.session.flush()
+                self.registry.validate_request(context.request)
+                response = await asyncio.wait_for(
+                    provider.generate(context.request, api_key), timeout=remaining
+                )
+                tracker.record_response(response, context.request)
+                if not response.tool_calls:
+                    break
+                tracker.record_tool_calls(len(response.tool_calls))
+                records = await self._execute_tool_calls(
+                    request,
+                    run,
+                    trace,
+                    model_span,
+                    response.tool_calls,
+                    timeout_seconds=tracker.remaining_seconds(),
+                )
+                assistant_message = ModelMessage(
+                    role="assistant",
+                    content=response.content,
+                    tool_calls=response.tool_calls,
+                )
+                next_messages = (
+                    tuple(context.request.messages)
+                    + (assistant_message,)
+                    + tuple(record.message for record in records)
+                )
+                context = ContextBuildResult(
+                    request=context.request.model_copy(
+                        update={"messages": next_messages}
+                    ),
+                    input_token_estimate=estimate_model_request(
+                        context.request.model_copy(update={"messages": next_messages})
+                    ),
+                )
+                model_span.status = SpanStatus.COMPLETED
+                model_span.completed_at = datetime.now(UTC)
 
-            usage = _usage(response)
-            if (
-                usage.total_tokens is not None
-                and usage.total_tokens > request.execution_budget.max_total_tokens
-            ):
+            if response is None:
                 raise RuntimeExecutionError(
-                    "RUN_LIMIT_EXCEEDED",
-                    "Agent execution exceeded its configured token limit.",
-                    status_code=422,
-                    details={"budget": "max_total_tokens"},
+                    "PROVIDER_INVALID_RESPONSE",
+                    "The provider returned no response.",
+                    status_code=502,
                 )
+            usage = tracker.usage()
             return await self._complete_run(
                 request,
                 run,
@@ -385,47 +426,8 @@ class AgentRuntime:
                     status_code=422,
                     details={"budget": "max_total_tokens"},
                 )
-            if request.execution_budget.max_steps < 1:
-                raise RuntimeExecutionError(
-                    "RUN_LIMIT_EXCEEDED",
-                    "Agent execution exceeded its configured step limit.",
-                    status_code=422,
-                    details={"budget": "max_steps"},
-                )
-            if request.execution_budget.max_model_calls < 1:
-                raise RuntimeExecutionError(
-                    "RUN_LIMIT_EXCEEDED",
-                    "Agent execution exceeded its configured model-call limit.",
-                    status_code=422,
-                    details={"budget": "max_model_calls"},
-                )
-
+            tracker = ExecutionBudgetTracker(request)
             stream_request = context.request.model_copy(update={"stream": True})
-            model_span = Span(
-                id=uuid4(),
-                trace_id=trace.id,
-                parent_span_id=root_span.id,
-                run_id=run.id,
-                span_type=SpanType.MODEL,
-                name=f"{request.agent_version.model_provider}.generate",
-                status=SpanStatus.RUNNING,
-                input=_safe_model_input(stream_request),
-                attributes={
-                    "provider": stream_request.provider,
-                    "model": stream_request.model,
-                    "input_token_estimate": context.input_token_estimate,
-                    "stream": True,
-                },
-                usage={
-                    "input_tokens": context.input_token_estimate,
-                    "input_tokens_estimated": True,
-                },
-                started_at=datetime.now(UTC),
-            )
-            self.session.add(model_span)
-            await self.session.commit()
-
-            self.registry.validate_request(stream_request)
             provider = self.registry.resolve_streaming(
                 request.agent_version.model_provider
             )
@@ -433,59 +435,144 @@ class AgentRuntime:
                 request.agent_version.model_provider
             )
             final_response: ModelResponse | None = None
-            accumulated_text: list[str] = []
-            async with asyncio.timeout(request.execution_budget.timeout_seconds):
-                async for event in provider.stream(stream_request, api_key):
-                    if event.type == "text_delta":
-                        if event.text:
-                            accumulated_text.append(event.text)
-                            yield RuntimeStreamEvent(
-                                event="message.delta",
-                                data={
-                                    "run_id": str(run.id),
-                                    "delta": event.text,
-                                },
-                            )
-                    elif event.type == "completed":
-                        final_response = event.response
-
-            if final_response is None:
-                raise RuntimeExecutionError(
-                    "PROVIDER_INVALID_RESPONSE",
-                    "The provider stream ended without a completed response.",
-                    status_code=502,
+            final_iteration_text: list[str] = []
+            while True:
+                remaining = tracker.begin_model_call()
+                model_span = Span(
+                    id=uuid4(),
+                    trace_id=trace.id,
+                    parent_span_id=root_span.id,
+                    run_id=run.id,
+                    span_type=SpanType.MODEL,
+                    name=f"{stream_request.provider}.generate",
+                    status=SpanStatus.RUNNING,
+                    input=_safe_model_input(stream_request),
+                    attributes={
+                        "provider": stream_request.provider,
+                        "model": stream_request.model,
+                        "input_token_estimate": estimate_model_request(stream_request),
+                        "stream": True,
+                    },
+                    started_at=datetime.now(UTC),
                 )
-            streamed_text = "".join(accumulated_text)
+                self.session.add(model_span)
+                await self.session.flush()
+                self.registry.validate_request(stream_request)
+                final_response = None
+                final_iteration_text = []
+                async with asyncio.timeout(remaining):
+                    async for event in provider.stream(stream_request, api_key):
+                        if event.type == "text_delta":
+                            if event.text:
+                                final_iteration_text.append(event.text)
+                                yield RuntimeStreamEvent(
+                                    event="message.delta",
+                                    data={"run_id": str(run.id), "delta": event.text},
+                                )
+                        elif event.type == "completed":
+                            final_response = event.response
+                if final_response is None:
+                    raise RuntimeExecutionError(
+                        "PROVIDER_INVALID_RESPONSE",
+                        "The provider stream ended without a completed response.",
+                        status_code=502,
+                    )
+                tracker.record_response(final_response, stream_request)
+                if not final_response.tool_calls:
+                    break
+                tracker.record_tool_calls(len(final_response.tool_calls))
+                for call in final_response.tool_calls:
+                    runtime_tool = next(
+                        (
+                            item
+                            for item in request.agent_version.tools
+                            if item.name == call.name
+                        ),
+                        None,
+                    )
+                    yield RuntimeStreamEvent(
+                        event="tool.started",
+                        data={
+                            "run_id": str(run.id),
+                            "tool_id": (
+                                str(runtime_tool.tool_id)
+                                if runtime_tool and runtime_tool.tool_id
+                                else None
+                            ),
+                            "tool_version_id": (
+                                str(runtime_tool.tool_version_id)
+                                if runtime_tool
+                                else None
+                            ),
+                            "tool": call.name,
+                            "status": "running",
+                            "duration_ms": 0,
+                        },
+                    )
+                records = await self._execute_tool_calls(
+                    request,
+                    run,
+                    trace,
+                    model_span,
+                    final_response.tool_calls,
+                    timeout_seconds=tracker.remaining_seconds(),
+                )
+                for record in records:
+                    yield RuntimeStreamEvent(
+                        event="tool.completed" if record.succeeded else "tool.failed",
+                        data={
+                            "run_id": str(run.id),
+                            "tool_id": str(record.tool_id) if record.tool_id else None,
+                            "tool_version_id": (
+                                str(record.tool_version_id)
+                                if record.tool_version_id
+                                else None
+                            ),
+                            "tool": record.name,
+                            "status": "completed" if record.succeeded else "failed",
+                            "duration_ms": record.duration_ms,
+                        },
+                    )
+                tool_messages = [record.message for record in records]
+                stream_request = context.request.model_copy(
+                    update={
+                        "messages": tuple(context.request.messages)
+                        + (
+                            ModelMessage(
+                                role="assistant",
+                                content=final_response.content,
+                                tool_calls=final_response.tool_calls,
+                            ),
+                        )
+                        + tuple(tool_messages),
+                        "stream": True,
+                    }
+                )
+                context = ContextBuildResult(
+                    request=stream_request.model_copy(update={"stream": False}),
+                    input_token_estimate=estimate_model_request(stream_request),
+                )
+                model_span.status = SpanStatus.COMPLETED
+                model_span.completed_at = datetime.now(UTC)
+
+            # Validate only the final model iteration. Text from a tool-call
+            # iteration is not part of the final assistant answer and must not
+            # be compared against the next model response.
+            streamed_text = "".join(final_iteration_text)
             if streamed_text and final_response.content != streamed_text:
                 raise RuntimeExecutionError(
                     "PROVIDER_INVALID_RESPONSE",
                     "The streamed response did not match its final content.",
                     status_code=502,
                 )
-            if final_response.tool_calls:
-                raise RuntimeExecutionError(
-                    "MODEL_CAPABILITY_UNSUPPORTED",
-                    "Tool calls are not supported in the Phase 5 runtime.",
-                    status_code=422,
-                )
-            if not final_response.content and not accumulated_text:
+            if not final_response.content and not final_iteration_text:
                 raise RuntimeExecutionError(
                     "PROVIDER_INVALID_RESPONSE",
                     "The provider returned no text content.",
                     status_code=502,
                 )
 
-            usage = _usage(final_response)
-            if (
-                usage.total_tokens is not None
-                and usage.total_tokens > request.execution_budget.max_total_tokens
-            ):
-                raise RuntimeExecutionError(
-                    "RUN_LIMIT_EXCEEDED",
-                    "Agent execution exceeded its configured token limit.",
-                    status_code=422,
-                    details={"budget": "max_total_tokens"},
-                )
+            usage = tracker.usage()
 
             await self._complete_run(
                 request,
@@ -622,10 +709,228 @@ class AgentRuntime:
                     "error": {"code": normalized.code, "message": normalized.message},
                 },
             )
+
+    async def _execute_tool_calls(
+        self,
+        request: AgentRunRequest,
+        run: Run,
+        trace: Trace,
+        parent_span: Span,
+        calls: tuple[ModelToolCall, ...],
+        *,
+        timeout_seconds: float,
+    ) -> list[ToolExecutionRecord]:
+        """Resolve published bindings and execute through the shared pipeline."""
+        versions = list(
+            (
+                await self.session.execute(
+                    select(ToolVersion, Tool)
+                    .join(Tool, Tool.id == ToolVersion.tool_id)
+                    .where(
+                        ToolVersion.id.in_(
+                            [
+                                tool.tool_version_id
+                                for tool in request.agent_version.tools
+                            ]
+                        ),
+                    )
+                )
+            ).all()
+        )
+        by_name = {tool.name: tool for tool in request.agent_version.tools}
+        by_id = {
+            version.id: (version, catalog_tool) for version, catalog_tool in versions
+        }
+        results: list[ToolExecutionRecord] = []
+        redactor = self.secret_redactor
+        sequence = await self.session.scalar(
+            select(func.coalesce(func.max(Message.sequence_no), 0)).where(
+                Message.session_id == request.session.id
+            )
+        )
+        next_sequence = int(sequence or 0) + 1
+        self.session.add(
+            Message(
+                id=uuid4(),
+                workspace_id=request.workspace_id,
+                session_id=request.session.id,
+                run_id=run.id,
+                role=MessageRole.ASSISTANT,
+                sequence_no=next_sequence,
+                content={
+                    "type": "tool_calls",
+                    "tool_calls": [
+                        redactor.redact(call.model_dump()) for call in calls
+                    ],
+                },
+            )
+        )
+        next_sequence += 1
+        for call in calls:
+            runtime_tool = by_name.get(call.name)
+            version_pair = (
+                by_id.get(runtime_tool.tool_version_id) if runtime_tool else None
+            )
+            version = version_pair[0] if version_pair else None
+            catalog_tool = version_pair[1] if version_pair else None
+            started = datetime.now(UTC)
+            span = Span(
+                id=uuid4(),
+                trace_id=trace.id,
+                parent_span_id=parent_span.id,
+                run_id=run.id,
+                span_type=SpanType.TOOL,
+                name=call.name,
+                status=SpanStatus.RUNNING,
+                input={
+                    "tool": call.name,
+                    "arguments": redactor.redact(call.arguments),
+                },
+                attributes={
+                    "tool_id": str(runtime_tool.tool_id)
+                    if runtime_tool and runtime_tool.tool_id
+                    else None,
+                    "tool_version_id": str(runtime_tool.tool_version_id)
+                    if runtime_tool
+                    else None,
+                    "tool_name": call.name,
+                    "status": "running",
+                    "duration_ms": 0,
+                    "untrusted_external_content": call.name == "web_search",
+                },
+                started_at=started,
+            )
+            self.session.add(span)
+            await self.session.flush()
+            try:
+                if version is None or runtime_tool is None:
+                    result = {
+                        "ok": False,
+                        "error": {
+                            "code": "TOOL_NOT_AUTHORIZED",
+                            "message": (
+                                "The tool is not attached to this published "
+                                "agent version."
+                            ),
+                        },
+                    }
+                    succeeded = False
+                elif (
+                    version.workspace_id != request.workspace_id
+                    or catalog_tool is None
+                    or catalog_tool.workspace_id != request.workspace_id
+                    or (
+                        runtime_tool.tool_id is not None
+                        and runtime_tool.tool_id != catalog_tool.id
+                    )
+                ):
+                    result = {
+                        "ok": False,
+                        "error": {
+                            "code": "TOOL_WORKSPACE_MISMATCH",
+                            "message": "The tool version belongs to another workspace.",
+                        },
+                    }
+                    succeeded = False
+                else:
+                    execution = await self.tool_pipeline.execute(
+                        version,
+                        call.arguments,
+                        ToolExecutionContext(
+                            workspace_id=request.workspace_id,
+                            run_id=run.id,
+                            trace_id=trace.id,
+                            timeout_seconds=min(
+                                float(version.timeout_seconds), timeout_seconds
+                            ),
+                        ),
+                    )
+                    succeeded = execution.ok
+                    result = {"ok": execution.ok}
+                    if execution.ok:
+                        result["output"] = redactor.redact(execution.output)
+                    else:
+                        result["error"] = {
+                            "code": execution.error_code or "TOOL_FAILED",
+                            "message": execution.error_message or "The tool failed.",
+                        }
+                duration_ms = max(
+                    0, int((datetime.now(UTC) - started).total_seconds() * 1000)
+                )
+                span.output = redactor.redact(result) if succeeded else None
+                span.status = SpanStatus.COMPLETED if succeeded else SpanStatus.FAILED
+                span.attributes = {
+                    **span.attributes,
+                    "status": "completed" if succeeded else "failed",
+                    "duration_ms": duration_ms,
+                }
+                error_payload = result.get("error")
+                span.error_json = (
+                    error_payload if isinstance(error_payload, dict) else None
+                )
+                span.completed_at = datetime.now(UTC)
+            except Exception:
+                span.status = SpanStatus.FAILED
+                span.error_json = {
+                    "code": "TOOL_FAILED",
+                    "message": "The tool failed unexpectedly.",
+                }
+                span.completed_at = datetime.now(UTC)
+                result = {"ok": False, "error": span.error_json}
+                succeeded = False
+                duration_ms = max(
+                    0, int((datetime.now(UTC) - started).total_seconds() * 1000)
+                )
+                span.attributes = {
+                    **span.attributes,
+                    "status": "failed",
+                    "duration_ms": duration_ms,
+                }
+            content = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            self.session.add(
+                Message(
+                    id=uuid4(),
+                    workspace_id=request.workspace_id,
+                    session_id=request.session.id,
+                    run_id=run.id,
+                    role=MessageRole.TOOL,
+                    sequence_no=next_sequence,
+                    content={
+                        "type": "tool_result",
+                        "text": content,
+                        "tool_call_id": call.id,
+                        "name": call.name,
+                        "output": result,
+                    },
+                )
+            )
+            next_sequence += 1
+            results.append(
+                ToolExecutionRecord(
+                    message=ModelMessage(
+                        role="tool",
+                        content=content,
+                        tool_call_id=call.id,
+                        name=call.name,
+                    ),
+                    tool_id=runtime_tool.tool_id if runtime_tool else None,
+                    tool_version_id=runtime_tool.tool_version_id
+                    if runtime_tool
+                    else None,
+                    name=call.name,
+                    succeeded=succeeded,
+                    duration_ms=duration_ms,
+                    span_id=span.id,
+                )
+            )
+        await self.session.commit()
+        return results
+
     @staticmethod
     def _validate_request(request: AgentRunRequest) -> None:
         if not (
-            request.workspace_id == request.agent_version.workspace_id
+            request.workspace_id
+            == request.agent_version.workspace_id
             == request.session.workspace_id
         ):
             raise RuntimeExecutionError(
@@ -783,6 +1088,18 @@ class AgentRuntime:
         run.status = RunStatus.COMPLETED
         run.output = {"type": "text", "text": response.content}
         run.usage = usage.model_dump(exclude_none=True)
+        settings = get_settings()
+        estimated_cost = None
+        if request.agent_version.model_provider == "azure_openai":
+            estimated_cost = estimate_model_cost(
+                usage,
+                input_price_per_million=settings.azure_openai_input_price_per_million,
+                output_price_per_million=settings.azure_openai_output_price_per_million,
+                cached_input_price_per_million=(
+                    settings.azure_openai_cached_input_price_per_million
+                ),
+            )
+        run.estimated_cost = estimated_cost
         safe_provider_metadata = _safe_provider_metadata(response.provider_metadata)
         run.metadata_json = {"provider_metadata": safe_provider_metadata}
         run.completed_at = now
@@ -830,6 +1147,9 @@ class AgentRuntime:
             status="COMPLETED",
             output=TextInput(text=response.content),
             usage=usage,
+            estimated_cost=(
+                float(estimated_cost) if estimated_cost is not None else None
+            ),
             started_at=run.started_at or now,
             completed_at=now,
         )
@@ -859,7 +1179,17 @@ class AgentRuntime:
             run.error_code = error.code
             run.error_message = error.message
             run.completed_at = now
-        for span in (root_span, context_span, model_span):
+        active_spans = list(
+            (
+                await self.session.scalars(
+                    select(Span).where(
+                        Span.run_id == run_id,
+                        Span.status == SpanStatus.RUNNING,
+                    )
+                )
+            ).all()
+        )
+        for span in (root_span, context_span, model_span, *active_spans):
             if span is not None and span.status == SpanStatus.RUNNING:
                 span.status = SpanStatus.FAILED
                 span.error_json = {"code": error.code, "message": error.message}

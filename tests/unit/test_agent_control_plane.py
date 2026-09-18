@@ -20,16 +20,17 @@ def valid_create_payload() -> AgentCreateRequest:
         name="Research Agent",
         slug="research-agent",
         instructions="Research technical topics accurately.",
-        model={
-            "provider": "Azure_OpenAI",
-            "name": "GPT-5.6-Luna",
-            "config": {"temperature": 0.2},
-        },
+        model=ModelConfiguration(
+            provider="Azure_OpenAI",
+            name="GPT-5.6-Luna",
+            config={"temperature": 0.2},
+        ),
     )
 
 
 def test_model_configuration_normalizes_catalog_identifiers() -> None:
     model = valid_create_payload().model
+    assert model is not None
 
     assert model.provider == "azure_openai"
     assert model.name == "gpt-5.6-luna"
@@ -47,6 +48,7 @@ def test_model_configuration_rejects_secret_like_options() -> None:
 
 def test_runtime_configuration_defaults_are_explicit() -> None:
     payload = valid_create_payload()
+    assert payload.model is not None
 
     assert payload.runtime_config.max_steps == 20
     assert payload.runtime_config.timeout_seconds == 120
@@ -55,6 +57,7 @@ def test_runtime_configuration_defaults_are_explicit() -> None:
 
 def test_snapshot_contains_future_binding_slots() -> None:
     payload = valid_create_payload()
+    assert payload.model is not None
     draft = AgentDraft(
         agent_id=uuid4(),
         instructions=payload.instructions,

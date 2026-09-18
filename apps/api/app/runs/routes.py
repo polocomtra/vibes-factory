@@ -1,6 +1,7 @@
 """Authenticated run creation, streaming and inspection routes."""
 
 import json
+from collections.abc import Mapping
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -13,16 +14,28 @@ from ..auth.dependencies import get_current_user
 from ..config import get_settings
 from ..db import get_session
 from ..model_providers.registry import ModelProviderRegistry
-from ..models import Agent, AgentVersion, Message, Run, Session, User
+from ..models import (
+    Agent,
+    AgentVersion,
+    AgentVersionTool,
+    Message,
+    Run,
+    Session,
+    Tool,
+    ToolVersion,
+    User,
+)
 from ..runtime.contracts import (
     AgentRunRequest,
     AgentVersionRuntimeConfig,
     ExecutionBudget,
     RuntimeSession,
+    RuntimeTool,
     SessionMessage,
 )
 from ..runtime.errors import RuntimeExecutionError
 from ..runtime.service import AgentRuntime
+from ..tools.naming import model_tool_name
 from .schemas import RunCreateRequest, RunErrorResponse, RunResponse
 
 router = APIRouter(prefix="/v1", tags=["runs"])
@@ -80,10 +93,32 @@ async def _build_runtime_request(
         SessionMessage(
             role=item.role.value,
             content=str(item.content.get("text", "")),
+            tool_calls=tuple(item.content.get("tool_calls", [])),
+            tool_call_id=item.content.get("tool_call_id"),
+            name=item.content.get("name"),
         )
         for item in messages.all()
         if item.content.get("text")
+        or item.content.get("tool_calls")
+        or item.role.value == "TOOL"
     )
+    tool_rows = await session.execute(
+        select(AgentVersionTool, ToolVersion, Tool)
+        .join(ToolVersion, ToolVersion.id == AgentVersionTool.tool_version_id)
+        .join(Tool, Tool.id == ToolVersion.tool_id)
+        .where(AgentVersionTool.agent_version_id == version.id)
+    )
+    published_tools = tool_rows.all()
+    if any(
+        tool_version.workspace_id != agent.workspace_id
+        or catalog_tool.workspace_id != agent.workspace_id
+        for _, tool_version, catalog_tool in published_tools
+    ):
+        raise RuntimeExecutionError(
+            "TOOL_WORKSPACE_MISMATCH",
+            "A published tool does not belong to the agent workspace.",
+            status_code=422,
+        )
     budget = ExecutionBudget.model_validate(version.runtime_config)
     return AgentRunRequest(
         workspace_id=agent.workspace_id,
@@ -95,6 +130,16 @@ async def _build_runtime_request(
             model_provider=version.model_provider,
             model_name=version.model_name,
             model_options=version.model_config,
+            tools=tuple(
+                RuntimeTool(
+                    tool_id=catalog_tool.id,
+                    tool_version_id=tool_version.id,
+                    name=model_tool_name(binding.alias or catalog_tool.slug),
+                    description=tool_version.description,
+                    parameters=tool_version.input_schema,
+                )
+                for binding, tool_version, catalog_tool in published_tools
+            ),
         ),
         session=RuntimeSession(
             id=conversation.id,
@@ -107,7 +152,7 @@ async def _build_runtime_request(
     )
 
 
-def _sse(event: str, data: dict[str, object], sequence: int) -> str:
+def _sse(event: str, data: Mapping[str, object], sequence: int) -> str:
     encoded = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"id: {sequence}\nevent: {event}\ndata: {encoded}\n\n"
 

@@ -39,7 +39,20 @@ class SessionMessage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     role: Literal["USER", "ASSISTANT", "SYSTEM", "TOOL"]
-    content: str = Field(min_length=1)
+    content: str = ""
+    tool_calls: tuple[dict[str, object], ...] = ()
+    tool_call_id: str | None = None
+    name: str | None = None
+
+
+class RuntimeTool(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tool_id: UUID | None = None
+    tool_version_id: UUID
+    name: str
+    description: str | None = None
+    parameters: dict[str, object] = Field(default_factory=dict)
 
 
 class AgentVersionRuntimeConfig(BaseModel):
@@ -52,6 +65,7 @@ class AgentVersionRuntimeConfig(BaseModel):
     model_provider: str
     model_name: str
     model_options: dict[str, object] = Field(default_factory=dict)
+    tools: tuple[RuntimeTool, ...] = ()
 
 
 class RuntimeSession(BaseModel):
@@ -97,6 +111,9 @@ class RuntimeStreamEvent(BaseModel):
         "run.started",
         "message.delta",
         "message.completed",
+        "tool.started",
+        "tool.completed",
+        "tool.failed",
         "run.completed",
         "run.failed",
     ]

@@ -29,10 +29,33 @@ def _interaction_input(request: ModelRequest) -> list[dict[str, Any]]:
         if message.role == "system":
             continue
         if message.role == "tool":
-            raise ProviderError(
-                "MODEL_CAPABILITY_UNSUPPORTED",
-                "Tool messages are not supported by the Gemini text adapter yet.",
+            interaction_input.append(
+                {
+                    "type": "function_result",
+                    "call_id": message.tool_call_id,
+                    "name": message.name,
+                    "result": message.content,
+                }
             )
+            continue
+        if message.role == "assistant" and message.tool_calls:
+            interaction_input.extend(
+                {
+                    "type": "function_call",
+                    "id": call.id,
+                    "name": call.name,
+                    "arguments": call.arguments,
+                }
+                for call in message.tool_calls
+            )
+            if message.content:
+                interaction_input.append(
+                    {
+                        "type": "model_output",
+                        "content": [{"type": "text", "text": message.content}],
+                    }
+                )
+            continue
         interaction_input.append(
             {
                 "type": (
@@ -189,7 +212,7 @@ class GeminiProvider:
         *,
         base_url: str | None = None,
         timeout: float = 60.0,
-        client_factory: Callable[..., genai.Client] = genai.Client,
+        client_factory: Callable[..., Any] = genai.Client,
     ) -> None:
         self.base_url = base_url
         self.timeout = timeout

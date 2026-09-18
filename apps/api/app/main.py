@@ -19,6 +19,7 @@ from .model_providers.routes import router as model_provider_router
 from .runs.routes import router as run_router
 from .sessions.routes import router as session_router
 from .telemetry import initialize_telemetry
+from .tools.routes import router as tool_router
 from .traces.routes import router as trace_router
 from .workspaces.routes import router as workspace_router
 
@@ -57,6 +58,7 @@ app.include_router(model_provider_router)
 app.include_router(session_router)
 app.include_router(run_router)
 app.include_router(trace_router)
+app.include_router(tool_router)
 
 
 @app.get("/health", tags=["system"])
