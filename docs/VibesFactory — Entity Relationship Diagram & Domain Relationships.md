@@ -509,11 +509,14 @@ These resources hold only credential references.
 # 17. MCP Relationship
 
 ```text
-MCPServer
-    │
-    ├── Tool A
-    ├── Tool B
-    └── Tool C
+MCPServer (ACTIVE / DISABLED)
+    │ 1
+    ├──< mcp_tool_catalog (discovery cache)
+    │              │ latest imported version
+    │              ▼
+    └────────── ToolVersion (immutable snapshot)
+                       │
+                       └── AgentDraftTool → AgentVersionTool
 ```
 
 Remote tools may be cached in:
@@ -537,6 +540,12 @@ remote tool name
 ```
 
 Runtime then normalizes this to the same `ResolvedTool` abstraction used by other tool types.
+
+`ToolVersion.mcp_server_id` is a relational reference in addition to the
+executor snapshot. Re-discovery updates the catalog and marks `CHANGED` or
+`REMOVED`; it never mutates an imported version or a published agent version.
+Server deletion is represented by `DISABLED`, preserving the kill-switch and
+preventing hard deletion of referenced MCP resources.
 
 ---
 

@@ -1595,9 +1595,33 @@ Credential create, list, rotate and revoke operations never return plaintext
 secrets, ciphertext or encryption key material. Members can list credential
 metadata; only workspace owners can create, rotate or revoke credentials.
 
+## GET `/v1/credentials/{credential_id}/keys`
+
+Returns the top-level key names available in an active credential for legacy
+credential snapshots and diagnostics. The MCP UI now binds each custom header
+to a Secret Store credential directly:
+
+```json
+{
+  "credential_id": "uuid",
+  "keys": ["instance", "password", "token", "username"]
+}
+```
+
+Only key names are returned; values are decrypted only inside the executor
+when the outbound MCP request is created.
+
 ---
 
 # 58. MCP Servers
+
+Phase 8 additionally supports `GET`/`PATCH`/soft-`DELETE` for MCP server
+management and `GET /v1/mcp-servers/{mcp_server_id}/tools` for the persisted
+discovery catalog. Mutating MCP server, test, discovery and import operations
+are owner-only because endpoint configuration can cause SSRF or credential
+exfiltration; members may view servers and attach already imported versions to
+agent drafts. MCP imports are immutable snapshots and rediscovery reports
+schema drift rather than changing published AgentVersions.
 
 ## POST `/v1/workspaces/{workspace_id}/mcp-servers`
 
@@ -1609,9 +1633,30 @@ Request:
   "transport": "STREAMABLE_HTTP",
   "endpoint": "https://mcp.example.com",
   "credential_id": "uuid",
-  "configuration": {}
+  "auth": {
+    "mode": "BEARER",
+    "header_name": "Authorization",
+    "prefix": "Bearer",
+    "secret_key": "token",
+    "custom_headers": [
+      { "header_name": "x-instance", "credential_id": "uuid" },
+      { "header_name": "x-username", "credential_id": "uuid" },
+      { "header_name": "x-password", "credential_id": "uuid" }
+    ]
+  }
 }
 ```
+
+`custom_headers` is independent from Authorization, so a server may receive
+both the Bearer header and additional headers in the same request. It contains
+only references to Secret Store credentials (one header may use a different
+credential from another). Plaintext header values are never accepted in this
+request or persisted in the MCP server configuration. At connection time the
+executor resolves each `credential_id` and sends its vault token under the
+configured `header_name`. Legacy snapshots may use `secret_key` against the
+primary credential. Custom headers can also be used with `mode: "NONE"` and do
+not require a primary Authorization credential. `prefix` is optional and
+defaults to an empty string.
 
 Response:
 
@@ -2737,6 +2782,7 @@ Query parameters:
 
 ```text
 agent_id
+session_id             # returns every execution trace for one session
 agent          # matches agent name or slug
 status         # RUNNING | COMPLETED | FAILED
 started_after

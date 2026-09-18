@@ -31,6 +31,7 @@ import {
   fetchRun,
   fetchSessions,
   fetchRunTrace,
+  fetchSessionTraces,
   fetchSpan,
   fetchTraceSpans,
   type Message,
@@ -39,6 +40,7 @@ import {
   type Span,
   type RunTrace,
   RuntimeApiError,
+  type TraceListItem,
 } from "../../../../lib/runtime";
 import { fetchAgent, fetchVersions, type Agent, type AgentVersionSummary } from "../../../../lib/agents";
 
@@ -327,6 +329,8 @@ export default function PlaygroundPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [composer, setComposer] = useState("");
   const [lastRun, setLastRun] = useState<Run | null>(null);
+  const [sessionTraces, setSessionTraces] = useState<TraceListItem[]>([]);
+  const [tracesLoading, setTracesLoading] = useState(false);
   const [traceRunId, setTraceRunId] = useState<string | null>(null);
   const [status, setStatus] = useState<"READY" | "RUNNING" | "COMPLETED" | "FAILED">("READY");
   const [streamingText, setStreamingText] = useState("");
@@ -386,6 +390,17 @@ export default function PlaygroundPage() {
     }
   }, []);
 
+  const refreshSessionTraces = useCallback(async (id: string) => {
+    setTracesLoading(true);
+    try {
+      setSessionTraces(await fetchSessionTraces(id));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to load session traces.");
+    } finally {
+      setTracesLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     const element = messageListRef.current;
     if (!element) return;
@@ -404,6 +419,7 @@ export default function PlaygroundPage() {
         const selected = sessionData.find((item) => item.id === querySession) ?? (querySession ? null : sessionData[0]) ?? null;
         if (selected) {
           setSessionId(selected.id);
+          void refreshSessionTraces(selected.id);
           const history = await reloadMessages(selected.id);
           if (!cancelled) await restoreLatestRun(history);
         }
@@ -411,7 +427,7 @@ export default function PlaygroundPage() {
       finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [agentId, reloadMessages, restoreLatestRun]);
+  }, [agentId, refreshSessionTraces, reloadMessages, restoreLatestRun]);
 
   const selectedVersion = useMemo(() => versions.find((version) => version.id === selectedVersionId) ?? null, [versions, selectedVersionId]);
   const conversationItems = useMemo(() => groupConversation(messages), [messages]);
@@ -420,7 +436,7 @@ export default function PlaygroundPage() {
     setError(null);
     try {
       const created = await createSession(agentId);
-      setSessions((items) => [created, ...items]); setSessionId(created.id); setMessages([]); setLastRun(null); setStatus("READY"); setStreamingText(""); setStreamRunId(null);
+      setSessions((items) => [created, ...items]); setSessionId(created.id); setMessages([]); setLastRun(null); setSessionTraces([]); setStatus("READY"); setStreamingText(""); setStreamRunId(null);
       router.replace(`/agents/${agentId}/playground?session_id=${created.id}`);
     } catch (reason: unknown) { setError(reason instanceof Error ? reason.message : "Unable to create session."); }
   }
@@ -454,7 +470,8 @@ export default function PlaygroundPage() {
         } else if (event.event === "message.delta") {
           queueDelta(event.data.delta);
         } else if (event.event === "tool.started") {
-          setToolActivity("Searching web…");
+          const toolName = event.data.tool?.trim() || "tool";
+          setToolActivity(`Calling ${toolName}…`);
         } else if (event.event === "tool.completed" || event.event === "tool.failed") {
           setToolActivity(null);
         } else if (event.event === "run.completed") {
@@ -474,6 +491,7 @@ export default function PlaygroundPage() {
         failureMessage = failureMessage ?? run.error?.message ?? null;
       }
       await reloadMessages(sessionId);
+      await refreshSessionTraces(sessionId);
       // Keep any partial assistant text visible when the provider fails after
       // emitting deltas. A failed run should explain what happened without
       // making the user's response disappear behind tool activity.
@@ -484,6 +502,7 @@ export default function PlaygroundPage() {
       setStatus("FAILED");
       try {
         await reloadMessages(sessionId);
+        await refreshSessionTraces(sessionId);
       } catch {
         // Keep the optimistic query visible if the history refresh also fails.
       }
@@ -506,7 +525,7 @@ export default function PlaygroundPage() {
     {error ? <div className="form-error playground-alert" role="alert"><CircleAlert size={15} aria-hidden="true" />{error}{lastRun?.id && lastRun.trace_id ? <button className="text-button" type="button" onClick={() => setTraceRunId(lastRun.id)}>Open failed trace</button> : null}</div> : null}
     {!selectedVersion ? <section className="panel agent-empty-state playground-empty"><GitBranch size={28} aria-hidden="true" /><h2>Publish a version to run this agent</h2><p className="panel-copy">The playground never executes mutable draft state. Publish an immutable version from the agent configuration first.</p><button className="button primary-button" type="button" onClick={() => router.push(`/agents/${agentId}`)}>Open agent configuration</button></section> : !sessionId ? <section className="panel agent-empty-state playground-empty"><Database size={28} aria-hidden="true" /><h2>Start a playground session</h2><p className="panel-copy">Create a session to persist this conversation and its runtime traces.</p><button className="button primary-button" type="button" onClick={() => void newSession()}><Plus size={15} aria-hidden="true" />New session</button></section> : <main className="playground-layout">
       <section className="panel playground-chat-panel" aria-busy={busy}><div className="playground-panel-heading"><div><span className="panel-kicker">Conversation</span><h2>{sessions.find((item) => item.id === sessionId)?.title || "Playground session"}</h2><p><code>{sessionId.slice(0, 8)}…</code> · {messages.length} messages</p></div><div className="run-status-area"><StatusBadge status={status} /><span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{busy ? (toolActivity ?? (streamingText ? "Generating response" : "Starting run")) : status === "COMPLETED" ? "Response complete" : status === "FAILED" ? "Response failed" : "Ready"}</span>{lastRun?.usage?.total_tokens ? <span className="token-summary">{lastRun.usage.total_tokens.toLocaleString()} tokens</span> : null}</div></div><div className="message-list" ref={messageListRef} aria-label="Conversation messages">{messages.length === 0 && !busy ? <div className="message-empty"><Bot size={25} aria-hidden="true" /><strong>Ready when you are</strong><span>Send a prompt to test version {selectedVersion.version_number}.</span></div> : conversationItems.map((item, index) => item.kind === "message" ? <PlaygroundMessage key={item.message.id} message={item.message} agentName={agent.name} tools={item.tools} /> : <ToolActivityGroup key={"orphan-tools-" + index} tools={item.tools} />)}{toolActivity ? <div className="tool-runtime-panel tool-runtime-live" role="status"><LoaderCircle className="spin" size={14} aria-hidden="true" />{toolActivity}</div> : null}{streamingText ? <article className="playground-message assistant streaming-message" aria-label="Streaming assistant response"><div className="message-meta"><span>{agent.name}</span><span>Now</span></div><MessageContent message={{ id: `streaming-${streamRunId ?? "pending"}`, session_id: sessionId, run_id: streamRunId, role: "ASSISTANT", sequence_no: messages.length + 1, content: { type: "text", text: streamingText }, token_count: null, created_at: new Date().toISOString() }} /></article> : null}{busy && !streamingText && !toolActivity ? <article className="playground-message assistant processing-message"><div className="message-meta"><span>{agent.name}</span><span>Now</span></div><div className="processing-indicator"><LoaderCircle className="spin" size={15} aria-hidden="true" /><span>Agent is processing…</span></div></article> : null}</div><div className="composer-wrap"><label htmlFor="playground-composer">Message</label><div className="composer-row"><textarea id="playground-composer" value={composer} onChange={(event) => setComposer(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="Ask your agent something…" rows={3} disabled={busy} /><button className="button primary-button send-button" type="button" onClick={() => void sendMessage()} disabled={busy || !composer.trim()} aria-label={busy ? "Sending message" : "Send message"}>{busy ? <LoaderCircle className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}</button></div><span className="field-helper">Enter to send · Shift + Enter for a new line</span></div></section>
-      <aside className="playground-side-column"><section className="panel runtime-summary-panel"><div className="panel-heading"><div><span className="panel-kicker">Runtime context</span><h2>Execution summary</h2></div><Clock3 size={17} aria-hidden="true" /></div><dl className="runtime-summary-list"><div><dt>Version</dt><dd>v{selectedVersion.version_number}</dd></div><div><dt>Version ID</dt><dd>{selectedVersion.id.slice(0, 8)}…</dd></div><div><dt>Session</dt><dd>{sessionId.slice(0, 8)}…</dd></div><div><dt>Usage</dt><dd>{lastRun?.usage?.total_tokens?.toLocaleString() ?? "—"} tokens</dd></div><div><dt>Estimated cost</dt><dd>{lastRun?.estimated_cost ?? "—"}</dd></div></dl><div className="runtime-note"><Check size={14} aria-hidden="true" />Version pinned for reproducible runs.</div></section><section className="panel recent-run-panel"><div className="panel-heading"><div><span className="panel-kicker">Observability</span><h2>Latest run</h2></div></div>{lastRun ? <><div className="latest-run-row"><StatusBadge status={lastRun.status} /><code>{lastRun.id.slice(0, 12)}…</code></div>{lastRun.trace_id ? <button className="button secondary-button full-button" type="button" onClick={() => setTraceRunId(lastRun.id)}><GitBranch size={15} aria-hidden="true" />Inspect trace</button> : null}</> : <p className="panel-copy">Your first run will appear here with its trace and usage.</p>}</section></aside>
+      <aside className="playground-side-column"><section className="panel runtime-summary-panel"><div className="panel-heading"><div><span className="panel-kicker">Runtime context</span><h2>Execution summary</h2></div><Clock3 size={17} aria-hidden="true" /></div><dl className="runtime-summary-list"><div><dt>Version</dt><dd>v{selectedVersion.version_number}</dd></div><div><dt>Version ID</dt><dd>{selectedVersion.id.slice(0, 8)}…</dd></div><div><dt>Session</dt><dd>{sessionId.slice(0, 8)}…</dd></div><div><dt>Usage</dt><dd>{lastRun?.usage?.total_tokens?.toLocaleString() ?? "—"} tokens</dd></div><div><dt>Estimated cost</dt><dd>{lastRun?.estimated_cost ?? "—"}</dd></div></dl><div className="runtime-note"><Check size={14} aria-hidden="true" />Version pinned for reproducible runs.</div></section><section className="panel recent-run-panel" aria-busy={tracesLoading}><div className="panel-heading"><div><span className="panel-kicker">Observability</span><h2>Session runs</h2><p className="panel-copy">Trace and span history for this session.</p></div><span className="session-trace-count">{sessionTraces.length}</span></div>{tracesLoading ? <div className="session-trace-loading" role="status"><LoaderCircle className="spin" size={15} aria-hidden="true" />Loading executions…</div> : sessionTraces.length > 0 ? <div className="session-trace-list">{sessionTraces.map((trace) => <article className={"session-trace-item" + (trace.run_id === lastRun?.id ? " current" : "")} key={trace.run_id}><div className="session-trace-item-heading"><StatusBadge status={trace.status} /><code>{trace.run_id.slice(0, 12)}…</code></div><div className="session-trace-item-meta"><span>{dateLabel(trace.started_at)}</span>{trace.duration_ms !== null ? <span>{trace.duration_ms} ms</span> : null}</div>{trace.input_text ? <p title={trace.input_text}>{trace.input_text}</p> : null}<button className="button secondary-button full-button" type="button" onClick={() => setTraceRunId(trace.run_id)}><GitBranch size={15} aria-hidden="true" />Inspect trace & spans</button></article>)}</div> : <p className="panel-copy">Your first run will appear here with its trace and spans.</p>}</section></aside>
     </main>}
     {traceRunId ? <TraceInspector runId={traceRunId} onClose={() => setTraceRunId(null)} /> : null}
   </div></AppShell>;

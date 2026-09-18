@@ -455,19 +455,19 @@ export default function SettingsPage() {
         <h1>Settings</h1>
         <p className="page-description">Manage workspace identity, access, and tenant boundaries.</p>
       </div>
-      <button
-        ref={createWorkspaceButtonRef}
-        className="button primary-button create-workspace-trigger"
-        type="button"
-        onClick={() => {
-          setError(null);
-          setMessage(null);
-          setIsCreateModalOpen(true);
-        }}
-      >
-        <Plus size={15} aria-hidden="true" />
-        Create workspace
-      </button>
+      {activeTab === "workspace" ? <button
+          ref={createWorkspaceButtonRef}
+          className="button primary-button create-workspace-trigger"
+          type="button"
+          onClick={() => {
+            setError(null);
+            setMessage(null);
+            setIsCreateModalOpen(true);
+          }}
+        >
+          <Plus size={15} aria-hidden="true" />
+          Create workspace
+        </button> : null}
     </div>
 
     <div className="settings-tabs" role="tablist" aria-label="Workspace settings">

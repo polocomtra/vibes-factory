@@ -1053,8 +1053,8 @@ Default product body typography.
 ## Body Small
 
 ```text
-13px
-19px
+14px
+21px
 400
 ```
 
@@ -1063,8 +1063,8 @@ Default product body typography.
 ## Label
 
 ```text
-12px
-17px
+14px
+21px
 500–600
 ```
 
@@ -1073,10 +1073,16 @@ Default product body typography.
 ## Caption
 
 ```text
-11px
-16px
+14px
+21px
 500
 ```
+
+All readable application text uses a 14px minimum for accessibility and
+comfortable long-session use. Larger display, page, section, card, and metric
+styles preserve their hierarchy above this baseline. JetBrains Mono remains
+the technical font for code, IDs, JSON, and trace payloads, with the same 14px
+minimum when rendered as application text.
 
 ---
 

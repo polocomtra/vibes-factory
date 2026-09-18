@@ -37,6 +37,7 @@ class ToolResult(BaseModel):
     output: dict[str, Any] | None = None
     error_code: str | None = None
     error_message: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CredentialResolver(Protocol):

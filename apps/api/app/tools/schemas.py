@@ -57,6 +57,8 @@ class ToolResponse(BaseModel):
     status: str
     latest_version_number: int
     built_in: bool
+    mcp_server_id: UUID | None = None
+    mcp_server_name: str | None = None
     versions: list[ToolVersionSummary] = []
     created_at: datetime
     updated_at: datetime
@@ -77,6 +79,7 @@ class ToolVersionResponse(BaseModel):
     input_schema: dict[str, Any]
     output_schema: dict[str, Any] | None
     executor: dict[str, Any]
+    mcp_server_id: UUID | None = None
     timeout_seconds: int
     retry_policy: dict[str, Any]
     risk_level: str

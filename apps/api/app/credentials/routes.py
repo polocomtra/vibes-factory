@@ -16,12 +16,14 @@ from ..workspaces.authorization import (
 from .schemas import (
     CredentialCollection,
     CredentialCreateRequest,
+    CredentialKeyCollection,
     CredentialResponse,
     CredentialRotateRequest,
 )
 from .service import (
     CredentialServiceError,
     create_credential,
+    credential_key_names,
     credential_response,
     list_credentials,
     require_credential_owner,
@@ -76,6 +78,24 @@ async def list_credentials_route(
         data=[_response(credential) for credential in credentials],
         pagination=Pagination(next_cursor=None, has_more=False),
     )
+
+
+@router.get(
+    "/credentials/{credential_id}/keys", response_model=CredentialKeyCollection
+)
+async def credential_keys_route(
+    credential_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> CredentialKeyCollection:
+    try:
+        credential = await require_credential_owner(session, credential_id, user.id)
+        return CredentialKeyCollection(
+            credential_id=credential.id,
+            keys=credential_key_names(credential),
+        )
+    except CredentialServiceError as exc:
+        raise _error(exc) from exc
 
 
 @router.delete("/credentials/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)

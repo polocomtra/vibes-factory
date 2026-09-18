@@ -139,6 +139,23 @@ def credential_response(credential: Credential) -> dict[str, Any]:
     }
 
 
+def credential_key_names(credential: Credential) -> list[str]:
+    """Return top-level secret keys without returning any secret values."""
+
+    cipher = _cipher()
+    try:
+        values = cipher.decrypt(
+            credential.ciphertext, key_version=credential.key_version
+        )
+    except CredentialCryptoError as exc:
+        raise CredentialServiceError(
+            "CREDENTIAL_VAULT_UNAVAILABLE",
+            "The credential vault is unavailable.",
+            503,
+        ) from exc
+    return sorted(str(key) for key in values if isinstance(key, str))
+
+
 async def create_credential(
     session: AsyncSession,
     workspace_id: UUID,

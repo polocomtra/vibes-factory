@@ -1005,12 +1005,19 @@ decryption or executor use.
 | created_at | TIMESTAMPTZ |
 | updated_at | TIMESTAMPTZ |
 
+Additional Phase 8 health fields are `connection_status`, `protocol_version`,
+`server_info`, `capabilities`, `last_error_code`, `last_tested_at` and
+`last_discovered_at`. `status` is `ACTIVE` or `DISABLED`; deletion is a
+soft-disable operation. MCP ToolVersions also carry a nullable relational
+`mcp_server_id` so workspace and lifecycle checks do not rely only on JSONB.
+
 Transport examples:
 
 ```text
 STREAMABLE_HTTP
-STDIO_LOCAL
 ```
+
+`STDIO_LOCAL` remains a future transport and is not accepted by Phase 8.
 
 Hosted production environment should normally use network-capable transports.
 

@@ -5,7 +5,9 @@ from typing import Any
 
 from ..config import get_settings
 from ..credentials.service import CredentialResolutionError
-from ..models import ToolType, ToolVersion
+from ..mcp.executor import MCPServerResolver, MCPToolExecutor
+from ..mcp.manager import MCPManager
+from ..models import MCPServerStatus, ToolType, ToolVersion
 from .contracts import (
     CredentialResolver,
     NoopToolGuardrailHook,
@@ -69,6 +71,8 @@ class ToolExecutionPipeline:
         guardrail_hook: ToolGuardrailHook | None = None,
         secret_redactor: SecretRedactor | None = None,
         credential_resolver: CredentialResolver | None = None,
+        mcp_manager: MCPManager | None = None,
+        mcp_server_resolver: MCPServerResolver | None = None,
     ) -> None:
         self.function_registry = function_registry or FunctionToolRegistry(
             exa_api_key=get_settings().exa_api_key
@@ -78,6 +82,8 @@ class ToolExecutionPipeline:
         self.credential_resolver = (
             credential_resolver or UnavailableCredentialResolver()
         )
+        self.mcp_manager = mcp_manager
+        self.mcp_server_resolver = mcp_server_resolver
 
     @staticmethod
     def _failure(code: str, message: str) -> ToolResult:
@@ -115,7 +121,31 @@ class ToolExecutionPipeline:
             )
 
         credential_ref = version.executor_config.get("credential_ref")
+        if version.executor_type == ToolType.MCP:
+            if self.mcp_manager is None or self.mcp_server_resolver is None:
+                return self._failure(
+                    "MCP_UNAVAILABLE", "MCP integration is not configured."
+                )
+            mcp_manager = self.mcp_manager
+            mcp_server_resolver = self.mcp_server_resolver
+            if version.mcp_server_id is None:
+                return self._failure(
+                    "MCP_SERVER_REFERENCE_INVALID",
+                    "The MCP tool is missing its server reference.",
+                )
+            server = await self.mcp_server_resolver.get(
+                version.mcp_server_id, context.workspace_id
+            )
+            if server is None:
+                return self._failure(
+                    "MCP_SERVER_NOT_FOUND", "The MCP server was not found."
+                )
+            if server.status != MCPServerStatus.ACTIVE:
+                return self._failure(
+                    "MCP_SERVER_DISABLED", "The MCP server is disabled."
+                )
         credential = None
+        custom_credentials: dict[str, Any] = {}
         if credential_ref is not None:
             try:
                 credential = await self.credential_resolver.resolve(
@@ -128,6 +158,32 @@ class ToolExecutionPipeline:
                     "CREDENTIAL_VAULT_UNAVAILABLE",
                     "The credential vault is unavailable.",
                 )
+        if version.executor_type == ToolType.MCP:
+            auth = version.executor_config.get("auth", {})
+            raw_headers = (
+                auth.get("custom_headers", []) if isinstance(auth, Mapping) else []
+            )
+            if isinstance(raw_headers, list):
+                for raw_header in raw_headers:
+                    if (
+                        not isinstance(raw_header, Mapping)
+                        or raw_header.get("credential_id") is None
+                    ):
+                        continue
+                    reference = str(raw_header["credential_id"])
+                    try:
+                        custom_credentials[reference] = (
+                            await self.credential_resolver.resolve(
+                                reference, context.workspace_id
+                            )
+                        )
+                    except CredentialResolutionError as exc:
+                        return self._failure(exc.code, exc.message)
+                    except Exception:
+                        return self._failure(
+                            "CREDENTIAL_VAULT_UNAVAILABLE",
+                            "The credential vault is unavailable.",
+                        )
 
         try:
             if version.executor_type == ToolType.FUNCTION:
@@ -143,6 +199,14 @@ class ToolExecutionPipeline:
                     idempotent=version.idempotent,
                     credential=credential,
                 ).execute(arguments, context)
+            elif version.executor_type == ToolType.MCP:
+                result = await MCPToolExecutor(
+                    version,
+                    mcp_manager,
+                    mcp_server_resolver,
+                    credential,
+                    custom_credentials,
+                ).execute(arguments, context)
             else:
                 return self._failure(
                     "EXECUTOR_TYPE_MISMATCH", "The executor type is unsupported."
@@ -157,7 +221,11 @@ class ToolExecutionPipeline:
                     "error_message": result.error_message or "The tool failed.",
                 }
             )
-        secret_values = getattr(credential, "secret_values", ())
+        secret_values = tuple(getattr(credential, "secret_values", ())) + tuple(
+            value
+            for resolved in custom_credentials.values()
+            for value in getattr(resolved, "secret_values", ())
+        )
         output = self.secret_redactor.redact(result.output or {}, secret_values)
         if version.output_schema is not None and not is_empty_object_schema(
             version.output_schema
@@ -172,4 +240,9 @@ class ToolExecutionPipeline:
                 return self._failure(
                     "TOOL_OUTPUT_INVALID", "The tool returned an invalid output."
                 )
-        return result.model_copy(update={"output": output})
+        return result.model_copy(
+            update={
+                "output": output,
+                "metadata": self.secret_redactor.redact(result.metadata, secret_values),
+            }
+        )

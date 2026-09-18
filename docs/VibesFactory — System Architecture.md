@@ -1004,11 +1004,14 @@ The LLM must not see credential values.
 Agent Runtime
       │
       ▼
-MCP Manager
+ToolExecutionPipeline
       │
-      ├── MCP Server A
-      ├── MCP Server B
-      └── MCP Server C
+      ▼
+MCPToolExecutor → MCPManager → official Python MCP SDK v2
+                                      │
+                                      ├── Streamable HTTP server A
+                                      ├── Streamable HTTP server B
+                                      └── Streamable HTTP server C
 ```
 
 MCP Manager responsibilities:
@@ -1023,7 +1026,16 @@ timeouts
 tracing
 ```
 
-MCP tools become standard VibesFactory `ResolvedTool` objects.
+Phase 8 creates short-lived SDK clients per test, discovery and invocation;
+Cloud Run instances never retain MCP sessions in process memory. Discovery is
+upserted into `mcp_tool_catalog`, while import snapshots endpoint, auth
+descriptor, schema fingerprint and remote name into an immutable MCP
+`ToolVersion`. A disabled server is an immediate runtime kill switch. OAuth,
+stdio subprocesses, resources, prompts, subscriptions and exposing a
+VibesFactory MCP server remain deferred.
+
+MCP tools become standard VibesFactory `ResolvedTool` objects and retain the
+same MODEL → TOOL → MODEL span/message/SSE shape as other executors.
 
 ---
 

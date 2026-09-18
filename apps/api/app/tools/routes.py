@@ -10,7 +10,7 @@ from ..agents.authorization import require_agent_access
 from ..agents.schemas import Pagination
 from ..auth.dependencies import get_current_user
 from ..db import get_session
-from ..models import Agent, AgentDraftTool, Tool, ToolVersion, User
+from ..models import Agent, AgentDraftTool, MCPServer, Tool, ToolVersion, User
 from ..workspaces.authorization import require_workspace_membership
 from .schemas import (
     DraftToolAttachRequest,
@@ -48,7 +48,9 @@ def _error(error: ToolServiceError) -> HTTPException:
 
 
 def _tool_response(
-    tool: Tool, versions: list[ToolVersion] | None = None
+    tool: Tool,
+    versions: list[ToolVersion] | None = None,
+    mcp_server: MCPServer | None = None,
 ) -> ToolResponse:
     return ToolResponse(
         id=tool.id,
@@ -60,6 +62,8 @@ def _tool_response(
         status=tool.status.value,
         latest_version_number=tool.latest_version_number,
         built_in=is_builtin(tool),
+        mcp_server_id=mcp_server.id if mcp_server else None,
+        mcp_server_name=mcp_server.name if mcp_server else None,
         versions=[ToolVersionSummary.model_validate(v) for v in (versions or [])],
         created_at=tool.created_at,
         updated_at=tool.updated_at,
@@ -67,6 +71,10 @@ def _tool_response(
 
 
 def _version_response(version: ToolVersion) -> ToolVersionResponse:
+    config = dict(version.executor_config)
+    if version.executor_type.value == "MCP":
+        config.pop("credential_ref", None)
+        config.pop("auth", None)
     return ToolVersionResponse(
         id=version.id,
         tool_id=version.tool_id,
@@ -78,8 +86,9 @@ def _version_response(version: ToolVersion) -> ToolVersionResponse:
         output_schema=version.output_schema,
         executor={
             "type": version.executor_type.value,
-            "config": version.executor_config,
+            "config": config,
         },
+        mcp_server_id=version.mcp_server_id,
         timeout_seconds=version.timeout_seconds,
         retry_policy=version.retry_policy,
         risk_level=version.risk_level.value,
@@ -114,7 +123,7 @@ async def list_tools_route(
     workspace_id: UUID,
     search: str | None = Query(default=None, max_length=255),
     type_filter: str | None = Query(
-        default=None, alias="type", pattern="^(FUNCTION|HTTP)$"
+        default=None, alias="type", pattern="^(FUNCTION|HTTP|MCP)$"
     ),
     status_filter: str | None = Query(
         default=None, alias="status", pattern="^(ACTIVE|ARCHIVED)$"
@@ -128,6 +137,14 @@ async def list_tools_route(
         session, workspace_id, user.id, search, type_filter, status_filter
     )
     result = []
+    mcp_servers = {
+        server.id: server
+        for server in (
+            await session.scalars(
+                select(MCPServer).where(MCPServer.workspace_id == workspace_id)
+            )
+        ).all()
+    }
     for tool in tools[:limit]:
         versions = list(
             (
@@ -141,7 +158,16 @@ async def list_tools_route(
                 )
             ).all()
         )
-        result.append(_tool_response(tool, versions))
+        latest_version = versions[0] if versions else None
+        result.append(
+            _tool_response(
+                tool,
+                versions,
+                mcp_servers.get(latest_version.mcp_server_id)
+                if latest_version and latest_version.mcp_server_id
+                else None,
+            )
+        )
     await session.commit()
     return ToolCollection(
         data=result,

@@ -109,6 +109,7 @@ async def list_traces(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
     agent_id: UUID | None = None,
+    session_id: UUID | None = None,
     agent: str | None = Query(default=None, min_length=1, max_length=100),
     trace_status: TraceStatus | None = Query(default=None, alias="status"),
     started_after: datetime | None = None,
@@ -139,6 +140,8 @@ async def list_traces(
     )
     if agent_id:
         statement = statement.where(Agent.id == agent_id)
+    if session_id:
+        statement = statement.where(Run.session_id == session_id)
     if agent:
         search = f"%{agent.strip()}%"
         statement = statement.where(

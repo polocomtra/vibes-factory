@@ -75,6 +75,7 @@ class SpanStatus(StrEnum):
 class ToolType(StrEnum):
     FUNCTION = "FUNCTION"
     HTTP = "HTTP"
+    MCP = "MCP"
 
 
 class ToolStatus(StrEnum):
@@ -86,6 +87,17 @@ class ToolRiskLevel(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
+
+
+class MCPServerStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
+class MCPConnectionStatus(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    CONNECTED = "CONNECTED"
+    FAILED = "FAILED"
 
 
 class User(Base):
@@ -341,6 +353,11 @@ class ToolVersion(Base):
         ForeignKey("tools.id", ondelete="CASCADE"),
         nullable=False,
     )
+    mcp_server_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("mcp_servers.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -380,6 +397,129 @@ class ToolVersion(Base):
         UniqueConstraint("tool_id", "version_number", name="uq_tool_versions_number"),
         Index("ix_tool_versions_workspace_id", "workspace_id"),
         Index("ix_tool_versions_tool_id", "tool_id"),
+        Index("ix_tool_versions_mcp_server_id", "mcp_server_id"),
+    )
+
+
+class MCPServer(Base):
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    transport: Mapped[str] = mapped_column(String(32), nullable=False)
+    endpoint: Mapped[str] = mapped_column(Text, nullable=False)
+    credential_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("credentials.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    status: Mapped[MCPServerStatus] = mapped_column(
+        Enum(MCPServerStatus, native_enum=False, length=32),
+        default=MCPServerStatus.ACTIVE,
+        nullable=False,
+    )
+    connection_status: Mapped[MCPConnectionStatus] = mapped_column(
+        Enum(MCPConnectionStatus, native_enum=False, length=32),
+        default=MCPConnectionStatus.UNKNOWN,
+        nullable=False,
+    )
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    protocol_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    server_info: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    capabilities: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    last_error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    last_tested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_discovered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "name", name="uq_mcp_servers_workspace_name"),
+        Index("ix_mcp_servers_workspace_status", "workspace_id", "status"),
+        Index("ix_mcp_servers_workspace_updated", "workspace_id", "updated_at"),
+    )
+
+
+class MCPToolCatalog(Base):
+    __tablename__ = "mcp_tool_catalog"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    mcp_server_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("mcp_servers.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    remote_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_schema: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    output_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    annotations: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+    schema_fingerprint: Mapped[str] = mapped_column(String(128), nullable=False)
+    available: Mapped[bool] = mapped_column(
+        default=True, server_default="true", nullable=False
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    discovered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    imported_tool_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tools.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    latest_imported_tool_version_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tool_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "mcp_server_id", "remote_name", name="uq_mcp_catalog_server_remote"
+        ),
+        Index("ix_mcp_catalog_workspace_server", "workspace_id", "mcp_server_id"),
     )
 
 

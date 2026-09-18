@@ -2262,6 +2262,22 @@ A test MCP server can expose tools which an agent discovers and executes.
 
 Trace output is identical in shape to regular tools.
 
+Implementation record (Phase 8): the MCP client vertical slice is implemented
+with the official Python `mcp>=2,<3` SDK and Streamable HTTP only. Migration
+`0010_mcp_integration` adds workspace-scoped `mcp_servers`, the discovered
+`mcp_tool_catalog`, and the immutable `tool_versions.mcp_server_id` binding.
+MCP discovery is cached, schema drift is reported by fingerprint, and imports
+snapshot endpoint/auth/schema metadata into immutable MCP ToolVersions.
+Runtime invocation uses the shared ToolExecutionPipeline and produces the same
+TOOL span/message/SSE shape as Function and HTTP tools. Auth values remain in
+the Phase 7 credential vault; the frontend provides MCP server management,
+discovery, import and draft attachment flows in both supported themes.
+
+Phase 8 deliberately defers stdio subprocesses, OAuth 2.1, MCP resources and
+prompts, subscriptions, sampling/elicitation, and exposing VibesFactory as an
+MCP server. Production deployments must keep private-network endpoint access
+disabled unless an explicit egress/hostname policy is configured.
+
 ---
 
 # 44. Phase 9 — Knowledge Base and RAG

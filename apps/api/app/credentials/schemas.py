@@ -41,3 +41,8 @@ class CredentialResponse(BaseModel):
 class CredentialCollection(BaseModel):
     data: list[CredentialResponse]
     pagination: Pagination
+
+
+class CredentialKeyCollection(BaseModel):
+    credential_id: UUID
+    keys: list[str]

@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr | None = None
     exa_api_key: SecretStr | None = None
     encryption_master_key: SecretStr | None = None
+    enable_mcp: bool = True
+    mcp_allow_http: bool = True
+    mcp_allowed_private_hosts: Annotated[list[str], NoDecode] = []
+    mcp_connect_timeout_seconds: float = 10.0
+    mcp_operation_timeout_seconds: float = 30.0
+    mcp_max_discovered_tools: int = 200
+    mcp_max_output_bytes: int = 256_000
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
     azure_openai_deployment_name: str = "gpt-5.6-luna"
@@ -52,6 +59,13 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @field_validator("mcp_allowed_private_hosts", mode="before")
+    @classmethod
+    def parse_mcp_allowed_private_hosts(cls, value: str | list[str]) -> list[str]:
+        if isinstance(value, str):
+            return [host.strip().lower() for host in value.split(",") if host.strip()]
+        return [host.strip().lower() for host in value]
 
 
 @lru_cache

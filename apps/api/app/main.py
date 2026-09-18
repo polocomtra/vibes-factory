@@ -15,6 +15,7 @@ from .credentials.routes import router as credential_router
 from .db import check_database, dispose_engine
 from .errors import error_response, register_exception_handlers
 from .logging import configure_logging
+from .mcp.routes import router as mcp_router
 from .middleware import request_id_middleware
 from .model_providers.routes import router as model_provider_router
 from .runs.routes import router as run_router
@@ -61,6 +62,7 @@ app.include_router(run_router)
 app.include_router(trace_router)
 app.include_router(tool_router)
 app.include_router(credential_router)
+app.include_router(mcp_router)
 
 
 @app.get("/health", tags=["system"])

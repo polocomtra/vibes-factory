@@ -13,6 +13,7 @@ import {
     LayoutGrid,
     List,
     LoaderCircle,
+    Network,
     Plus,
     Search,
     ShieldCheck,
@@ -43,10 +44,21 @@ import {
 
 type Workspace = { id: string; name: string; role: "OWNER" | "MEMBER" };
 type ViewMode = "grid" | "list";
+type ToolFilter = "ALL" | "BUILT_IN" | "HTTP" | "MCP";
+
+const TOOL_CARD_DESCRIPTION_LIMIT = 100;
+
+function toolCardDescription(description: string | null) {
+    const value = description?.trim() || "No description yet.";
+    return value.length > TOOL_CARD_DESCRIPTION_LIMIT
+        ? `${value.slice(0, TOOL_CARD_DESCRIPTION_LIMIT).trimEnd()}...`
+        : value;
+}
 
 function providerLabel(tool: Tool) {
     if (tool.slug === "web_search") return "Exa";
     if (tool.type === "FUNCTION") return "Native";
+    if (tool.type === "MCP") return "MCP server";
     return "HTTP";
 }
 
@@ -67,6 +79,14 @@ function ToolKindBadge({ tool }: { tool: Tool }) {
             <span className="tool-kind-badge http-tool-badge">
                 <Globe2 size={11} aria-hidden="true" />
                 HTTP tool
+            </span>
+        );
+    }
+    if (tool.type === "MCP") {
+        return (
+            <span className="tool-kind-badge http-tool-badge">
+                <Network size={11} aria-hidden="true" />
+                MCP tool
             </span>
         );
     }
@@ -102,7 +122,7 @@ function ToolCard({
                 <h2>{tool.name}</h2>
                 <ToolKindBadge tool={tool} />
             </div>
-            <p>{tool.description || "No description yet."}</p>
+            <p>{toolCardDescription(tool.description)}</p>
             <div className="tool-agent-card-meta">
                 <span>
                     <small>Provider</small>
@@ -126,6 +146,147 @@ function ToolCard({
                 <ArrowUpRight size={15} aria-hidden="true" />
             </footer>
         </button>
+    );
+}
+
+type MCPToolGroup = {
+    id: string;
+    name: string;
+    tools: Tool[];
+};
+
+function MCPServerGroupCard({
+    group,
+    onOpen,
+}: {
+    group: MCPToolGroup;
+    onOpen: (group: MCPToolGroup) => void;
+}) {
+    return (
+        <button
+            className="tool-agent-card mcp-server-group-card"
+            type="button"
+            onClick={() => onOpen(group)}
+        >
+            <div className="tool-agent-card-top">
+                <span className="tool-agent-icon mcp-group-icon">
+                    <Network size={19} aria-hidden="true" />
+                </span>
+                <span className="status-badge success">
+                    <span />
+                    Imported
+                </span>
+            </div>
+            <div className="tool-agent-card-title">
+                <h2>{group.name}</h2>
+                <span className="tool-kind-badge http-tool-badge">
+                    <Network size={11} aria-hidden="true" /> MCP server
+                </span>
+            </div>
+            <p>
+                {group.tools.length} imported MCP {group.tools.length === 1 ? "tool" : "tools"} ready to use.
+            </p>
+            <div className="tool-agent-card-meta">
+                <span>
+                    <small>Provider</small>
+                    <b>MCP server</b>
+                </span>
+                <span>
+                    <small>Tools</small>
+                    <b>{group.tools.length}</b>
+                </span>
+                <span>
+                    <small>Versions</small>
+                    <b>{new Set(group.tools.map((tool) => tool.latest_version_number)).size}</b>
+                </span>
+            </div>
+            <footer>
+                <span>Open imported tools</span>
+                <ArrowUpRight size={15} aria-hidden="true" />
+            </footer>
+        </button>
+    );
+}
+
+function MCPToolsModal({
+    group,
+    onClose,
+    onInspect,
+}: {
+    group: MCPToolGroup;
+    onClose: () => void;
+    onInspect: (tool: Tool) => void;
+}) {
+    const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        const previousOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        closeButtonRef.current?.focus();
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key === "Escape") onClose();
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            window.removeEventListener("keydown", onKeyDown);
+        };
+    }, [onClose]);
+
+    return (
+        <div
+            className="modal-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+                if (event.target === event.currentTarget) onClose();
+            }}
+        >
+            <section
+                className="modal-dialog tools-mcp-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="tools-mcp-modal-title"
+            >
+                <header className="modal-heading">
+                    <div>
+                        <p className="panel-kicker">MCP SERVER</p>
+                        <h2 id="tools-mcp-modal-title">{group.name}</h2>
+                        <p className="panel-copy">
+                            {group.tools.length} imported tool{group.tools.length === 1 ? "" : "s"}. Select one to inspect its immutable schema.
+                        </p>
+                    </div>
+                    <button
+                        ref={closeButtonRef}
+                        className="icon-button modal-close"
+                        type="button"
+                        aria-label="Close MCP tools"
+                        onClick={onClose}
+                    >
+                        <X size={16} aria-hidden="true" />
+                    </button>
+                </header>
+                <div className="tools-mcp-list" role="list" aria-label={`${group.name} imported tools`}>
+                    {group.tools.map((tool) => (
+                        <button
+                            className="tools-mcp-list-row"
+                            type="button"
+                            key={tool.id}
+                            onClick={() => onInspect(tool)}
+                        >
+                            <span className="tool-agent-icon mcp-group-row-icon">
+                                <Zap size={16} aria-hidden="true" />
+                            </span>
+                            <span className="tools-mcp-list-copy">
+                                <strong>{tool.name}</strong>
+                                <code>{tool.slug}</code>
+                                <span>{toolCardDescription(tool.description)}</span>
+                            </span>
+                            <span className="tools-mcp-list-meta">v{tool.latest_version_number}<ArrowUpRight size={15} aria-hidden="true" /></span>
+                        </button>
+                    ))}
+                </div>
+            </section>
+        </div>
     );
 }
 
@@ -1916,8 +2077,11 @@ export default function ToolsPage() {
     const [workspace, setWorkspace] = useState<Workspace | null>(null);
     const [tools, setTools] = useState<Tool[]>([]);
     const [search, setSearch] = useState("");
+    const [toolFilter, setToolFilter] = useState<ToolFilter>("ALL");
     const [viewMode, setViewMode] = useState<ViewMode>("grid");
     const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
+    const [selectedMcpGroup, setSelectedMcpGroup] =
+        useState<MCPToolGroup | null>(null);
     const [versionDetail, setVersionDetail] =
         useState<ToolVersionDetail | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
@@ -1983,20 +2147,44 @@ export default function ToolsPage() {
 
     const filteredTools = useMemo(() => {
         const normalized = search.trim().toLowerCase();
-        if (!normalized) return tools;
-        return tools.filter((tool) =>
-            [
-                tool.name,
-                tool.slug,
-                tool.description ?? "",
-                providerLabel(tool),
-                tool.type,
-            ]
-                .join(" ")
-                .toLowerCase()
-                .includes(normalized),
-        );
-    }, [search, tools]);
+        return tools.filter((tool) => {
+            const matchesFilter =
+                toolFilter === "ALL" ||
+                (toolFilter === "BUILT_IN" && tool.built_in) ||
+                (toolFilter === "HTTP" && !tool.built_in && tool.type === "HTTP") ||
+                (toolFilter === "MCP" && tool.type === "MCP");
+            const matchesSearch = !normalized ||
+                [
+                    tool.name,
+                    tool.slug,
+                    tool.description ?? "",
+                    providerLabel(tool),
+                    tool.type,
+                    tool.mcp_server_name ?? "",
+                ]
+                    .join(" ")
+                    .toLowerCase()
+                    .includes(normalized);
+            return matchesFilter && matchesSearch;
+        });
+    }, [search, toolFilter, tools]);
+
+    const mcpGroups = useMemo<MCPToolGroup[]>(() => {
+        const groups = new Map<string, MCPToolGroup>();
+        for (const tool of filteredTools.filter((item) => item.type === "MCP")) {
+            const groupId = tool.mcp_server_id ?? `tool:${tool.id}`;
+            const existing = groups.get(groupId);
+            if (existing) existing.tools.push(tool);
+            else {
+                groups.set(groupId, {
+                    id: groupId,
+                    name: tool.mcp_server_name ?? "MCP server",
+                    tools: [tool],
+                });
+            }
+        }
+        return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+    }, [filteredTools]);
 
     useEffect(() => {
         if (!selectedTool) {
@@ -2094,6 +2282,24 @@ export default function ToolsPage() {
                                 placeholder="Search tools…"
                             />
                         </label>
+                        <div className="tool-type-filters" aria-label="Filter tools by type">
+                            {([
+                                ["ALL", "All", tools.length],
+                                ["BUILT_IN", "Built-in", tools.filter((tool) => tool.built_in).length],
+                                ["HTTP", "HTTPS", tools.filter((tool) => !tool.built_in && tool.type === "HTTP").length],
+                                ["MCP", "MCP", tools.filter((tool) => tool.type === "MCP").length],
+                            ] as Array<[ToolFilter, string, number]>).map(([value, label, count]) => (
+                                <button
+                                    className={toolFilter === value ? "selected" : ""}
+                                    type="button"
+                                    key={value}
+                                    aria-pressed={toolFilter === value}
+                                    onClick={() => setToolFilter(value)}
+                                >
+                                    {label}<span>{count}</span>
+                                </button>
+                            ))}
+                        </div>
                         <div className="layout-toggle" aria-label="Tool layout">
                             <button
                                 type="button"
@@ -2138,13 +2344,21 @@ export default function ToolsPage() {
                                 viewMode === "grid" ? "Tool cards" : "Tool list"
                             }
                         >
-                            {filteredTools.map((tool) => (
-                                <ToolCard
-                                    key={tool.id}
-                                    tool={tool}
-                                    onOpen={openTool}
-                                />
-                            ))}
+                            {toolFilter === "MCP"
+                                ? mcpGroups.map((group) => (
+                                      <MCPServerGroupCard
+                                          key={group.id}
+                                          group={group}
+                                          onOpen={setSelectedMcpGroup}
+                                      />
+                                  ))
+                                : filteredTools.map((tool) => (
+                                      <ToolCard
+                                          key={tool.id}
+                                          tool={tool}
+                                          onOpen={openTool}
+                                      />
+                                  ))}
                         </section>
                     )}
                 </>
@@ -2154,6 +2368,16 @@ export default function ToolsPage() {
                     tool={selectedTool}
                     versionDetail={versionDetail}
                     onClose={() => setSelectedTool(null)}
+                />
+            ) : null}
+            {selectedMcpGroup ? (
+                <MCPToolsModal
+                    group={selectedMcpGroup}
+                    onClose={() => setSelectedMcpGroup(null)}
+                    onInspect={(tool) => {
+                        setSelectedMcpGroup(null);
+                        openTool(tool);
+                    }}
                 />
             ) : null}
             {workspace && createOpen ? (

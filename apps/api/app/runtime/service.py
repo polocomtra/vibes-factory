@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..credentials.service import DatabaseCredentialResolver
+from ..mcp.executor import DatabaseMCPServerResolver
+from ..mcp.manager import MCPManager
 from ..model_providers.contracts import (
     ModelMessage,
     ModelRequest,
@@ -141,7 +143,9 @@ class AgentRuntime:
         self.registry = registry
         self.context_builder = context_builder or ContextBuilder()
         self.tool_pipeline = tool_pipeline or ToolExecutionPipeline(
-            credential_resolver=DatabaseCredentialResolver(session)
+            credential_resolver=DatabaseCredentialResolver(session),
+            mcp_manager=MCPManager(),
+            mcp_server_resolver=DatabaseMCPServerResolver(session),
         )
         self.secret_redactor = SecretRedactor()
 
@@ -850,13 +854,27 @@ class AgentRuntime:
                     )
                     succeeded = execution.ok
                     result = {"ok": execution.ok}
+                    if execution.metadata:
+                        span.attributes = {
+                            **span.attributes,
+                            **redactor.redact(execution.metadata),
+                        }
                     if execution.ok:
                         result["output"] = redactor.redact(execution.output)
                     else:
-                        result["error"] = {
+                        error_payload: dict[str, object] = {
                             "code": execution.error_code or "TOOL_FAILED",
                             "message": execution.error_message or "The tool failed.",
                         }
+                        if execution.error_code == "MCP_RESULT_TOO_LARGE":
+                            retry_hint = {
+                                key: execution.metadata[key]
+                                for key in ("suggested_limit", "retryable")
+                                if key in execution.metadata
+                            }
+                            if retry_hint:
+                                error_payload["retry"] = retry_hint
+                        result["error"] = error_payload
                 duration_ms = max(
                     0, int((datetime.now(UTC) - started).total_seconds() * 1000)
                 )
