@@ -152,7 +152,8 @@ export default function SettingsPage() {
   async function loadCredentials(workspaceId: string) {
     setCredentialLoading(true);
     try {
-      setCredentials(await fetchCredentials(workspaceId));
+      const nextCredentials = await fetchCredentials(workspaceId);
+      setCredentials(nextCredentials.filter((credential) => credential.status === "ACTIVE"));
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load credentials.");
     } finally {
@@ -313,9 +314,7 @@ export default function SettingsPage() {
     setError(null);
     try {
       await revokeCredential(credential.id);
-      setCredentials((current) => current.map((item) => item.id === credential.id
-        ? { ...item, status: "REVOKED", revoked_at: new Date().toISOString() }
-        : item));
+      setCredentials((current) => current.filter((item) => item.id !== credential.id));
       setConfirmingCredentialId(null);
       setMessage(`${credential.name} was revoked.`);
     } catch (revokeError) {

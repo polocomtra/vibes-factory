@@ -29,11 +29,14 @@ import {
 } from "react";
 
 import { AppShell } from "../../components/app-shell";
+import { DeleteAction } from "../../components/delete-action";
+import { PaginationControls } from "../../components/pagination-controls";
 import { apiFetch, readApiError } from "../../lib/api";
 import { fetchCredentials, type Credential } from "../../lib/credentials";
 import {
     createTool,
     createToolVersion,
+    deleteTool,
     fetchToolVersion,
     fetchTools,
     testTool,
@@ -96,56 +99,85 @@ function ToolKindBadge({ tool }: { tool: Tool }) {
 function ToolCard({
     tool,
     onOpen,
+    onDelete,
 }: {
     tool: Tool;
     onOpen: (tool: Tool) => void;
+    onDelete: (tool: Tool) => Promise<void>;
 }) {
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+
+    async function handleDelete() {
+        setDeleting(true);
+        try {
+            await onDelete(tool);
+            setConfirmingDelete(false);
+        } finally {
+            setDeleting(false);
+        }
+    }
+
     return (
-        <button
-            className="tool-agent-card"
-            type="button"
-            onClick={() => onOpen(tool)}
-        >
-            <div className="tool-agent-card-top">
-                <span className="tool-agent-icon">{toolIcon(tool)}</span>
-                <span
-                    className={
-                        "status-badge " +
-                        (tool.status === "ACTIVE" ? "success" : "muted")
-                    }
-                >
-                    <span />
-                    {tool.status === "ACTIVE" ? "Active" : "Archived"}
-                </span>
-            </div>
-            <div className="tool-agent-card-title">
-                <h2>{tool.name}</h2>
-                <ToolKindBadge tool={tool} />
-            </div>
-            <p>{toolCardDescription(tool.description)}</p>
-            <div className="tool-agent-card-meta">
-                <span>
-                    <small>Provider</small>
-                    <b>{providerLabel(tool)}</b>
-                </span>
-                <span>
-                    <small>Type</small>
-                    <code>{tool.type}</code>
-                </span>
-                <span>
-                    <small>Version</small>
-                    <b>v{tool.latest_version_number}</b>
-                </span>
-            </div>
+        <article className="tool-agent-card">
+            <button
+                className="tool-agent-card-main"
+                type="button"
+                onClick={() => onOpen(tool)}
+            >
+                <div className="tool-agent-card-top">
+                    <span className="tool-agent-icon">{toolIcon(tool)}</span>
+                    <span
+                        className={
+                            "status-badge " +
+                            (tool.status === "ACTIVE" ? "success" : "muted")
+                        }
+                    >
+                        <span />
+                        {tool.status === "ACTIVE" ? "Active" : "Archived"}
+                    </span>
+                </div>
+                <div className="tool-agent-card-title">
+                    <h2>{tool.name}</h2>
+                    <ToolKindBadge tool={tool} />
+                </div>
+                <p>{toolCardDescription(tool.description)}</p>
+                <div className="tool-agent-card-meta">
+                    <span>
+                        <small>Provider</small>
+                        <b>{providerLabel(tool)}</b>
+                    </span>
+                    <span>
+                        <small>Type</small>
+                        <code>{tool.type}</code>
+                    </span>
+                    <span>
+                        <small>Version</small>
+                        <b>v{tool.latest_version_number}</b>
+                    </span>
+                </div>
+            </button>
             <footer>
                 <span>
                     {tool.slug === "web_search"
                         ? "Test available"
                         : "Inspect schemas"}
                 </span>
-                <ArrowUpRight size={15} aria-hidden="true" />
+                <div className="card-footer-actions">
+                    <ArrowUpRight size={15} aria-hidden="true" />
+                    {!tool.built_in ? (
+                        <DeleteAction
+                            label={tool.name}
+                            confirming={confirmingDelete}
+                            busy={deleting}
+                            onRequest={() => setConfirmingDelete(true)}
+                            onCancel={() => setConfirmingDelete(false)}
+                            onConfirm={() => void handleDelete()}
+                        />
+                    ) : null}
+                </div>
             </footer>
-        </button>
+        </article>
     );
 }
 
@@ -212,10 +244,12 @@ function MCPToolsModal({
     group,
     onClose,
     onInspect,
+    onDelete,
 }: {
     group: MCPToolGroup;
     onClose: () => void;
     onInspect: (tool: Tool) => void;
+    onDelete: (tool: Tool) => Promise<void>;
 }) {
     const closeButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -267,25 +301,69 @@ function MCPToolsModal({
                 </header>
                 <div className="tools-mcp-list" role="list" aria-label={`${group.name} imported tools`}>
                     {group.tools.map((tool) => (
-                        <button
-                            className="tools-mcp-list-row"
-                            type="button"
+                        <MCPToolListItem
                             key={tool.id}
-                            onClick={() => onInspect(tool)}
-                        >
-                            <span className="tool-agent-icon mcp-group-row-icon">
-                                <Zap size={16} aria-hidden="true" />
-                            </span>
-                            <span className="tools-mcp-list-copy">
-                                <strong>{tool.name}</strong>
-                                <code>{tool.slug}</code>
-                                <span>{toolCardDescription(tool.description)}</span>
-                            </span>
-                            <span className="tools-mcp-list-meta">v{tool.latest_version_number}<ArrowUpRight size={15} aria-hidden="true" /></span>
-                        </button>
+                            tool={tool}
+                            onInspect={onInspect}
+                            onDelete={onDelete}
+                        />
                     ))}
                 </div>
             </section>
+        </div>
+    );
+}
+
+function MCPToolListItem({
+    tool,
+    onInspect,
+    onDelete,
+}: {
+    tool: Tool;
+    onInspect: (tool: Tool) => void;
+    onDelete: (tool: Tool) => Promise<void>;
+}) {
+    const [confirmingDelete, setConfirmingDelete] = useState(false);
+    const [deleting, setDeleting] = useState(false);
+
+    async function handleDelete() {
+        setDeleting(true);
+        try {
+            await onDelete(tool);
+            setConfirmingDelete(false);
+        } finally {
+            setDeleting(false);
+        }
+    }
+
+    return (
+        <div className="tools-mcp-list-row-wrap" role="listitem">
+            <button
+                className="tools-mcp-list-row"
+                type="button"
+                onClick={() => onInspect(tool)}
+            >
+                <span className="tool-agent-icon mcp-group-row-icon">
+                    <Zap size={16} aria-hidden="true" />
+                </span>
+                <span className="tools-mcp-list-copy">
+                    <strong>{tool.name}</strong>
+                    <code>{tool.slug}</code>
+                    <span>{toolCardDescription(tool.description)}</span>
+                </span>
+                <span className="tools-mcp-list-meta">
+                    v{tool.latest_version_number}
+                    <ArrowUpRight size={15} aria-hidden="true" />
+                </span>
+            </button>
+            <DeleteAction
+                label={tool.name}
+                confirming={confirmingDelete}
+                busy={deleting}
+                onRequest={() => setConfirmingDelete(true)}
+                onCancel={() => setConfirmingDelete(false)}
+                onConfirm={() => void handleDelete()}
+            />
         </div>
     );
 }
@@ -2078,6 +2156,8 @@ export default function ToolsPage() {
     const [tools, setTools] = useState<Tool[]>([]);
     const [search, setSearch] = useState("");
     const [toolFilter, setToolFilter] = useState<ToolFilter>("ALL");
+    const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(5);
     const [viewMode, setViewMode] = useState<ViewMode>("grid");
     const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
     const [selectedMcpGroup, setSelectedMcpGroup] =
@@ -2187,6 +2267,22 @@ export default function ToolsPage() {
     }, [filteredTools]);
 
     useEffect(() => {
+        setPage(1);
+    }, [search, toolFilter]);
+
+    const paginatedItemCount = toolFilter === "MCP" ? mcpGroups.length : filteredTools.length;
+    const totalPages = Math.max(1, Math.ceil(paginatedItemCount / pageSize));
+    const currentPage = Math.min(page, totalPages);
+    const visibleMcpGroups = mcpGroups.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+    );
+    const visibleTools = filteredTools.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+    );
+
+    useEffect(() => {
         if (!selectedTool) {
             setVersionDetail(null);
             return;
@@ -2212,9 +2308,22 @@ export default function ToolsPage() {
         window.localStorage.setItem("vf-tools-view", nextView);
     }
 
+    async function handleDeleteTool(tool: Tool): Promise<void> {
+        setError(null);
+        try {
+            await deleteTool(tool.id);
+            setTools((current) => current.filter((item) => item.id !== tool.id));
+            setSelectedTool((current) => (current?.id === tool.id ? null : current));
+            setSelectedMcpGroup(null);
+        } catch (reason: unknown) {
+            setError(reason instanceof Error ? reason.message : "Unable to delete tool.");
+        }
+    }
+
     return (
         <AppShell>
-            <div className="page-header tools-page-header">
+            <div className="pagination-page">
+                <div className="page-header tools-page-header">
                 <div>
                     <p className="eyebrow">VibesFactory / Build</p>
                     <h1>Tools</h1>
@@ -2237,7 +2346,7 @@ export default function ToolsPage() {
                         New tool
                     </button>
                 </div>
-            </div>
+                </div>
 
             {error ? (
                 <div className="form-error tool-alert" role="alert">
@@ -2345,22 +2454,24 @@ export default function ToolsPage() {
                             }
                         >
                             {toolFilter === "MCP"
-                                ? mcpGroups.map((group) => (
+                                ? visibleMcpGroups.map((group) => (
                                       <MCPServerGroupCard
                                           key={group.id}
                                           group={group}
                                           onOpen={setSelectedMcpGroup}
                                       />
                                   ))
-                                : filteredTools.map((tool) => (
-                                      <ToolCard
-                                          key={tool.id}
-                                          tool={tool}
-                                          onOpen={openTool}
-                                      />
-                                  ))}
+                                : visibleTools.map((tool) => (
+                                        <ToolCard
+                                            key={tool.id}
+                                            tool={tool}
+                                            onOpen={openTool}
+                                            onDelete={handleDeleteTool}
+                                        />
+                                ))}
                         </section>
                     )}
+                    <PaginationControls page={currentPage} pageSize={pageSize} totalItems={paginatedItemCount} onPageChange={setPage} onPageSizeChange={setPageSize} ariaLabel="Tools pagination" />
                 </>
             ) : null}
             {selectedTool ? (
@@ -2378,6 +2489,7 @@ export default function ToolsPage() {
                         setSelectedMcpGroup(null);
                         openTool(tool);
                     }}
+                    onDelete={handleDeleteTool}
                 />
             ) : null}
             {workspace && createOpen ? (
@@ -2402,6 +2514,7 @@ export default function ToolsPage() {
                     }}
                 />
             ) : null}
+            </div>
         </AppShell>
     );
 }

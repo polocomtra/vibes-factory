@@ -2,7 +2,7 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +27,7 @@ from .schemas import (
 )
 from .service import (
     ToolServiceError,
+    archive_tool,
     attach_draft_tool,
     create_tool,
     create_version,
@@ -173,6 +174,30 @@ async def list_tools_route(
         data=result,
         pagination=Pagination(next_cursor=None, has_more=len(tools) > limit),
     )
+
+
+@router.delete("/tools/{tool_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_tool_route(
+    tool_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    tool = await session.get(Tool, tool_id)
+    if tool is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "RESOURCE_NOT_FOUND",
+                "message": "The tool was not found.",
+                "details": {},
+            },
+        )
+    await require_workspace_membership(tool.workspace_id, user, session)
+    try:
+        await archive_tool(session, tool)
+    except ToolServiceError as exc:
+        raise _error(exc) from exc
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

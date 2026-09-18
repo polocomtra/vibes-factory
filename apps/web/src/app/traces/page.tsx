@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
 import { AppShell } from "../../components/app-shell";
+import { PaginationControls } from "../../components/pagination-controls";
 import { fetchTraces, type TraceListItem } from "../../lib/runtime";
 
 type LayoutMode = "grid" | "list";
@@ -81,6 +82,8 @@ export default function TracesPage() {
   const [agentSearch, setAgentSearch] = useState("");
   const [status, setStatus] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
   const [layout, setLayout] = useState<LayoutMode>("grid");
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -91,6 +94,7 @@ export default function TracesPage() {
 
   useEffect(() => {
     let cancelled = false;
+    setPage(1);
     const timer = window.setTimeout(() => {
       setLoading(true);
       setError(null);
@@ -102,6 +106,13 @@ export default function TracesPage() {
     }, agentSearch ? 260 : 0);
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [agentSearch, status, timeRange]);
+
+  const totalPages = Math.max(1, Math.ceil(sessionItems.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visibleSessionItems = sessionItems.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
 
   async function loadMore() {
     if (!nextCursor || loadingMore) return;
@@ -134,11 +145,11 @@ export default function TracesPage() {
     if (trace.session_id) router.push(`/agents/${trace.agent_id}/playground?session_id=${trace.session_id}`);
   }
 
-  return <AppShell><div className="traces-page">
+  return <AppShell><div className="pagination-page traces-page">
     <div className="page-header traces-header"><div><p className="eyebrow">VibesFactory / Operate</p><h1>Traces</h1><p className="page-description">Explore runtime executions across the agents in your workspaces.</p></div><div className="traces-header-actions"><span className="traces-count"><strong>{summary.total}</strong> traces</span><div className="layout-toggle" role="group" aria-label="Trace layout"><button className={layout === "grid" ? "selected" : ""} type="button" aria-label="Grid view" aria-pressed={layout === "grid"} onClick={() => setLayout("grid")}><Grid2X2 size={15} aria-hidden="true" /></button><button className={layout === "list" ? "selected" : ""} type="button" aria-label="List view" aria-pressed={layout === "list"} onClick={() => setLayout("list")}><List size={15} aria-hidden="true" /></button></div></div></div>
     <section className="panel traces-filter-panel" aria-label="Trace filters"><div className="traces-filter-leading"><SlidersHorizontal size={15} aria-hidden="true" /><span>Filter traces</span></div><label className="trace-filter-search"><Search size={15} aria-hidden="true" /><span className="sr-only">Search by agent name</span><input value={agentSearch} onChange={(event) => setAgentSearch(event.target.value)} placeholder="Search agent name or slug…" /></label><label className="trace-filter-select"><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">All statuses</option><option value="COMPLETED">Completed</option><option value="FAILED">Failed</option><option value="RUNNING">Running</option></select></label><label className="trace-filter-select"><span>Time range</span><select value={timeRange} onChange={(event) => setTimeRange(event.target.value as TimeRange)}><option value="all">Any time</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label><button className="button secondary-button trace-reset-button" type="button" onClick={clearFilters} disabled={!agentSearch && !status && timeRange === "all"}><RotateCcw size={14} aria-hidden="true" />Reset</button></section>
     {error ? <div className="form-error traces-alert" role="alert"><CircleAlert size={15} aria-hidden="true" />{error}<button className="text-button" type="button" onClick={clearFilters}>Clear filters</button></div> : null}
     <div className="traces-summary" aria-live="polite"><span>{loading ? "Loading traces…" : `${summary.total} visible sessions`}</span><span>{summary.completed} latest completed · {summary.failed} latest failed</span></div>
-    {loading ? <section className="panel agent-state"><LoaderCircle className="spin" size={18} aria-hidden="true" />Loading traces…</section> : sessionItems.length === 0 ? <section className="panel agent-empty-state traces-empty"><Search size={28} aria-hidden="true" /><h2>No traces found</h2><p className="panel-copy">Try a different agent, status, or time range.</p><button className="button secondary-button" type="button" onClick={clearFilters}>Reset filters</button></section> : <>{layout === "grid" ? <section className="traces-grid" aria-label="Trace sessions grid">{sessionItems.map((trace) => <TraceGridCard key={trace.session_id ?? trace.id} trace={trace} onOpenSession={openSession} />)}</section> : <section className="traces-list" aria-label="Trace sessions list">{sessionItems.map((trace) => <TraceListRow key={trace.session_id ?? trace.id} trace={trace} onOpenSession={openSession} />)}</section>}{nextCursor ? <div className="traces-load-more"><button className="button secondary-button" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : null}{loadingMore ? "Loading…" : "Load more traces"}</button></div> : null}</>}
+    {loading ? <section className="panel agent-state"><LoaderCircle className="spin" size={18} aria-hidden="true" />Loading traces…</section> : sessionItems.length === 0 ? <section className="panel agent-empty-state traces-empty"><Search size={28} aria-hidden="true" /><h2>No traces found</h2><p className="panel-copy">Try a different agent, status, or time range.</p><button className="button secondary-button" type="button" onClick={clearFilters}>Reset filters</button></section> : <>{layout === "grid" ? <section className="traces-grid" aria-label="Trace sessions grid">{visibleSessionItems.map((trace) => <TraceGridCard key={trace.session_id ?? trace.id} trace={trace} onOpenSession={openSession} />)}</section> : <section className="traces-list" aria-label="Trace sessions list">{visibleSessionItems.map((trace) => <TraceListRow key={trace.session_id ?? trace.id} trace={trace} onOpenSession={openSession} />)}</section>}{nextCursor ? <div className="traces-load-more"><button className="button secondary-button" type="button" onClick={() => void loadMore()} disabled={loadingMore}>{loadingMore ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : null}{loadingMore ? "Loading…" : "Load more traces"}</button></div> : null}<PaginationControls page={currentPage} pageSize={pageSize} totalItems={sessionItems.length} onPageChange={setPage} onPageSizeChange={setPageSize} ariaLabel="Traces pagination" /></>}
   </div></AppShell>;
 }

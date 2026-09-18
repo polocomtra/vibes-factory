@@ -96,6 +96,19 @@ async def create_tool(
     return tool
 
 
+async def archive_tool(session: AsyncSession, tool: Tool) -> None:
+    if is_builtin(tool):
+        raise ToolServiceError(
+            "BUILTIN_IMMUTABLE",
+            "Built-in tools are managed by the platform and cannot be deleted.",
+            409,
+        )
+    if tool.status == ToolStatus.ARCHIVED:
+        return
+    tool.status = ToolStatus.ARCHIVED
+    await session.commit()
+
+
 async def create_version(
     session: AsyncSession,
     tool: Tool,

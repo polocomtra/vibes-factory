@@ -5,18 +5,19 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-    Activity,
+    // Temporarily hidden navigation icons; uncomment with their nav item:
+    // Activity,
     Bot,
-    Boxes,
+    // Boxes,
     BrainCircuit,
     ChevronDown,
     CircleHelp,
-    Cloud,
     Code2,
-    FlaskConical,
-    GitBranch,
+    // Cloud,
+    // FlaskConical,
+    // GitBranch,
     Globe2,
-    LayoutDashboard,
+    // LayoutDashboard,
     Menu,
     Moon,
     Network,
@@ -48,17 +49,18 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
-    { label: "Dashboard", icon: LayoutDashboard },
+    // Temporarily hidden until the feature is implemented:
+    // { label: "Dashboard", icon: LayoutDashboard },
     { label: "Agents", icon: Bot, group: "Build" },
     { label: "Playground", icon: Code2 },
-    { label: "Workflows", icon: GitBranch },
-    { label: "Knowledge", icon: Boxes, group: "Connect" },
-    { label: "Tools", icon: Zap },
+    // { label: "Workflows", icon: GitBranch },
+    // { label: "Knowledge", icon: Boxes, group: "Connect" },
+    { label: "Tools", icon: Zap, group: "Connect" },
     { label: "MCP Servers", icon: Network },
-    { label: "Evaluations", icon: FlaskConical, group: "Operate" },
-    { label: "Deployments", icon: Cloud },
-    { label: "Traces", icon: Radio },
-    { label: "Monitoring", icon: Activity },
+    // { label: "Evaluations", icon: FlaskConical, group: "Operate" },
+    // { label: "Deployments", icon: Cloud },
+    { label: "Traces", icon: Radio, group: "Operate" },
+    // { label: "Monitoring", icon: Activity },
     { label: "Settings", icon: Settings, group: "Workspace" },
 ];
 

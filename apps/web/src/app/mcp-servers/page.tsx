@@ -29,11 +29,14 @@ import {
 } from "react";
 
 import { AppShell } from "../../components/app-shell";
+import { DeleteAction } from "../../components/delete-action";
+import { PaginationControls } from "../../components/pagination-controls";
 import { apiFetch, readApiError } from "../../lib/api";
 import { fetchCredentials, type Credential } from "../../lib/credentials";
 import {
   attachToolToDraft,
   createMCPServer,
+  deleteMCPServer,
   discoverMCPServer,
   fetchMCPServers,
   fetchMCPTools,
@@ -275,6 +278,8 @@ function ToolImportSwitch({
 export default function MCPServersPage() {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [servers, setServers] = useState<MCPServer[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(5);
   const [credentials, setCredentials] = useState<Credential[]>([]);
   const [selectedServer, setSelectedServer] = useState<MCPServer | null>(null);
   const [tools, setTools] = useState<MCPTool[]>([]);
@@ -294,6 +299,7 @@ export default function MCPServersPage() {
   const [selectedTool, setSelectedTool] = useState<MCPTool | null>(null);
   const [editingServer, setEditingServer] = useState<MCPServer | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [confirmingServerId, setConfirmingServerId] = useState<string | null>(null);
   const [panelAction, setPanelAction] = useState<PanelAction>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -396,17 +402,6 @@ export default function MCPServersPage() {
     };
   }, [bulkImportOpen, modal]);
 
-  const connectedCount = servers.filter(
-    (server) =>
-      server.connection_status === "CONNECTED" && server.status === "ACTIVE",
-  ).length;
-  const attentionCount = servers.filter(
-    (server) => server.connection_status === "FAILED",
-  ).length;
-  const importedCount = servers.reduce(
-    (sum, server) => sum + server.tool_count,
-    0,
-  );
   const filteredTools = useMemo(
     () =>
       tools.filter((tool) =>
@@ -456,6 +451,27 @@ export default function MCPServersPage() {
     } finally {
       if (source === "panel") setPanelAction(null);
       else setBusy(null);
+    }
+  }
+
+  async function handleDeleteServer(server: MCPServer) {
+    if (workspace?.role !== "OWNER") return;
+    setBusy(`delete:${server.id}`);
+    setError("");
+    try {
+      await deleteMCPServer(server.id);
+      setServers((current) => current.filter((item) => item.id !== server.id));
+      if (selectedServer?.id === server.id) setSelectedServer(null);
+      setConfirmingServerId(null);
+      setMessage(`${server.name} was deleted.`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Unable to delete MCP server.",
+      );
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -738,10 +754,16 @@ export default function MCPServersPage() {
   const hasDiscoveredTools = tools.length > 0;
 
   const panelBusy = Boolean(panelAction);
+  const totalPages = Math.max(1, Math.ceil(servers.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const visibleServers = servers.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize,
+  );
 
   return (
     <AppShell>
-      <div className="mcp-page">
+      <div className="pagination-page mcp-page">
         <header className="page-header mcp-page-header">
           <div>
             <span className="panel-kicker">CONNECT / MCP</span>
@@ -764,35 +786,6 @@ export default function MCPServersPage() {
             <Plus size={16} aria-hidden="true" /> Add MCP server
           </button>
         </header>
-
-        {servers.length > 0 ? (
-          <div className="mcp-metrics" aria-label="MCP server summary">
-            <div>
-              <span className="mcp-metric-label">
-                <CheckCircle2 size={14} aria-hidden="true" />
-                Connected
-              </span>
-              <strong>{connectedCount}</strong>
-              <small>Ready for discovery</small>
-            </div>
-            <div>
-              <span className="mcp-metric-label">
-                <ShieldAlert size={14} aria-hidden="true" />
-                Needs attention
-              </span>
-              <strong>{attentionCount}</strong>
-              <small>Connection issues</small>
-            </div>
-            <div>
-              <span className="mcp-metric-label">
-                <Network size={14} aria-hidden="true" />
-                Discovered tools
-              </span>
-              <strong>{importedCount}</strong>
-              <small>Available in catalog</small>
-            </div>
-          </div>
-        ) : null}
 
         {message ? (
           <div
@@ -835,7 +828,7 @@ export default function MCPServersPage() {
               <small>Streamable HTTP · Credential Vault supported</small>
             </div>
           ) : (
-            servers.map((server) => {
+            visibleServers.map((server) => {
               const state = statusCopy(server);
               const cardTesting = busy === `test:${server.id}`;
               return (
@@ -889,31 +882,44 @@ export default function MCPServersPage() {
                         ? `Discovered ${new Date(server.last_discovered_at).toLocaleString()}`
                         : "Discovery not run"}
                     </span>
-                    <button
-                      className="icon-button"
-                      type="button"
-                      aria-label={`Test ${server.name}`}
-                      disabled={cardTesting || panelBusy}
-                      onClick={() =>
-                        void runServerAction("test", server, "card")
-                      }
-                    >
-                      {cardTesting ? (
-                        <LoaderCircle
-                          className="spin"
-                          size={16}
-                          aria-hidden="true"
+                    <div className="card-footer-actions">
+                      <button
+                        className="icon-button"
+                        type="button"
+                        aria-label={`Test ${server.name}`}
+                        disabled={cardTesting || panelBusy || busy === `delete:${server.id}`}
+                        onClick={() =>
+                          void runServerAction("test", server, "card")
+                        }
+                      >
+                        {cardTesting ? (
+                          <LoaderCircle
+                            className="spin"
+                            size={16}
+                            aria-hidden="true"
+                          />
+                        ) : (
+                          <RefreshCw size={16} aria-hidden="true" />
+                        )}
+                      </button>
+                      {workspace?.role === "OWNER" ? (
+                        <DeleteAction
+                          label={server.name}
+                          confirming={confirmingServerId === server.id}
+                          busy={busy === `delete:${server.id}`}
+                          onRequest={() => setConfirmingServerId(server.id)}
+                          onCancel={() => setConfirmingServerId(null)}
+                          onConfirm={() => void handleDeleteServer(server)}
                         />
-                      ) : (
-                        <RefreshCw size={16} aria-hidden="true" />
-                      )}
-                    </button>
+                      ) : null}
+                    </div>
                   </footer>
                 </article>
               );
             })
           )}
         </section>
+        <PaginationControls page={currentPage} pageSize={pageSize} totalItems={servers.length} onPageChange={setPage} onPageSizeChange={setPageSize} ariaLabel="MCP servers pagination" />
 
         {selectedServer ? (
           <aside
