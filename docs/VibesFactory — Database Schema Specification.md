@@ -980,6 +980,11 @@ outside encrypted storage.
 
 Credential values must never be returned through ordinary GET APIs.
 
+Migration `0009_credential_vault` creates this table. `ciphertext` contains the
+nonce-bearing AES-GCM payload; `key_version` identifies the active encryption key
+version. `revoked_at` is a soft-revocation marker and must be checked before
+decryption or executor use.
+
 ---
 
 # 28. MCP Servers

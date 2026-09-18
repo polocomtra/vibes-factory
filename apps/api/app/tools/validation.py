@@ -22,6 +22,23 @@ class SchemaDefinitionError(ValueError):
     """Raised when a persisted or submitted schema is not a valid JSON Schema."""
 
 
+def is_empty_object_schema(schema: dict[str, Any] | None) -> bool:
+    """Return whether a generated schema intentionally defines no output fields.
+
+    The HTTP tool builder used to persist an empty object schema for an omitted
+    output contract. Treat that legacy shape as an unconstrained response so
+    existing tool versions remain executable after the UI starts sending null.
+    """
+    if not isinstance(schema, dict):
+        return False
+    return (
+        schema.get("type") == "object"
+        and schema.get("properties") == {}
+        and not schema.get("required")
+        and schema.get("additionalProperties") is False
+    )
+
+
 def check_schema(schema: dict[str, Any] | None) -> None:
     if schema is None or not isinstance(schema, dict):
         raise SchemaDefinitionError("A JSON Schema object is required.")

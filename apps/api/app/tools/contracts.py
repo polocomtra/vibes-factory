@@ -40,14 +40,14 @@ class ToolResult(BaseModel):
 
 
 class CredentialResolver(Protocol):
-    def resolve(self, reference: str) -> str:
+    async def resolve(self, reference: str, workspace_id: UUID) -> Any:
         """Resolve a credential without exposing it to the model or storage."""
 
 
 class UnavailableCredentialResolver:
-    def resolve(self, reference: str) -> str:
-        del reference
-        raise ValueError("Credential Vault is not available until Phase 7.")
+    async def resolve(self, reference: str, workspace_id: UUID) -> Any:
+        del reference, workspace_id
+        raise ValueError("Credential Vault is not configured.")
 
 
 class ToolExecutor(Protocol):

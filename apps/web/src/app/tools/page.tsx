@@ -3,10 +3,13 @@
 import {
     AlertCircle,
     ArrowUpRight,
+    Check,
     CheckCircle2,
     Code2,
+    ChevronDown,
     FlaskConical,
     Globe2,
+    KeyRound,
     LayoutGrid,
     List,
     LoaderCircle,
@@ -16,10 +19,17 @@ import {
     X,
     Zap,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 
 import { AppShell } from "../../components/app-shell";
 import { apiFetch, readApiError } from "../../lib/api";
+import { fetchCredentials, type Credential } from "../../lib/credentials";
 import {
     createTool,
     createToolVersion,
@@ -129,11 +139,15 @@ function SchemaBlock({
     const properties = schema?.properties;
     const required = new Set(
         Array.isArray(schema?.required)
-            ? schema.required.filter((item): item is string => typeof item === "string")
+            ? schema.required.filter(
+                  (item): item is string => typeof item === "string",
+              )
             : [],
     );
     const fields =
-        properties && typeof properties === "object" && !Array.isArray(properties)
+        properties &&
+        typeof properties === "object" &&
+        !Array.isArray(properties)
             ? Object.entries(properties as Record<string, unknown>)
             : [];
     return (
@@ -141,7 +155,9 @@ function SchemaBlock({
             <header className="tool-schema-block-heading">
                 <span>{title}</span>
                 <span className="tool-schema-field-count">
-                    {schema === undefined ? "Loading…" : `${fields.length} ${fields.length === 1 ? "field" : "fields"}`}
+                    {schema === undefined
+                        ? "Loading…"
+                        : `${fields.length} ${fields.length === 1 ? "field" : "fields"}`}
                 </span>
                 <Code2 size={14} aria-hidden="true" />
             </header>
@@ -152,18 +168,40 @@ function SchemaBlock({
             ) : (
                 <div className="tool-schema-fields">
                     {fields.map(([name, definition]) => {
-                        const field = definition && typeof definition === "object" && !Array.isArray(definition)
-                            ? definition as Record<string, unknown>
-                            : {};
+                        const field =
+                            definition &&
+                            typeof definition === "object" &&
+                            !Array.isArray(definition)
+                                ? (definition as Record<string, unknown>)
+                                : {};
                         const fieldType = Array.isArray(field.type)
-                            ? field.type.filter((item): item is string => typeof item === "string").join(" / ")
-                            : typeof field.type === "string" ? field.type : "any";
+                            ? field.type
+                                  .filter(
+                                      (item): item is string =>
+                                          typeof item === "string",
+                                  )
+                                  .join(" / ")
+                            : typeof field.type === "string"
+                              ? field.type
+                              : "any";
                         const isRequired = required.has(name);
-                        return <div className="tool-schema-field" key={name}>
-                            <code>{name}</code>
-                            <span className="tool-schema-type">{fieldType}</span>
-                            <span className={"tool-schema-required " + (isRequired ? "required" : "optional")}><span aria-hidden="true" />{isRequired ? "Required" : "Optional"}</span>
-                        </div>;
+                        return (
+                            <div className="tool-schema-field" key={name}>
+                                <code>{name}</code>
+                                <span className="tool-schema-type">
+                                    {fieldType}
+                                </span>
+                                <span
+                                    className={
+                                        "tool-schema-required " +
+                                        (isRequired ? "required" : "optional")
+                                    }
+                                >
+                                    <span aria-hidden="true" />
+                                    {isRequired ? "Required" : "Optional"}
+                                </span>
+                            </div>
+                        );
                     })}
                 </div>
             )}
@@ -175,55 +213,81 @@ type CreateToolForm = {
     name: string;
     slug: string;
     description: string;
-  endpoint: string;
-  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
-  inputFields: SchemaField[];
-  outputFields: SchemaField[];
-  timeoutSeconds: string;
-  riskLevel: "LOW" | "MEDIUM" | "HIGH";
+    endpoint: string;
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD";
+    inputFields: SchemaField[];
+    outputFields: SchemaField[];
+    timeoutSeconds: string;
+    riskLevel: "LOW" | "MEDIUM" | "HIGH";
+    credentialId: string;
+    credentialHeader: string;
+    credentialPrefix: string;
 };
 
-type SchemaFieldType = "string" | "integer" | "number" | "boolean" | "object" | "array";
-type SchemaField = { id: string; name: string; type: SchemaFieldType; required: boolean };
+type SchemaFieldType =
+    | "string"
+    | "integer"
+    | "number"
+    | "boolean"
+    | "object"
+    | "array";
+type SchemaField = {
+    id: string;
+    name: string;
+    type: SchemaFieldType;
+    required: boolean;
+};
 type SchemaFieldSection = "inputFields" | "outputFields";
-type CreateToolScalarField = "name" | "slug" | "description" | "endpoint" | "method" | "timeoutSeconds" | "riskLevel";
+type CreateToolScalarField =
+    | "name"
+    | "slug"
+    | "description"
+    | "endpoint"
+    | "method"
+    | "timeoutSeconds"
+    | "riskLevel";
 type CreateToolField = CreateToolScalarField | SchemaFieldSection;
 
 const initialCreateToolForm: CreateToolForm = {
     name: "",
     slug: "",
-  description: "",
-  endpoint: "",
-  method: "GET",
-  inputFields: [],
-  outputFields: [],
-  timeoutSeconds: "30",
-  riskLevel: "LOW",
+    description: "",
+    endpoint: "",
+    method: "GET",
+    inputFields: [],
+    outputFields: [],
+    timeoutSeconds: "30",
+    riskLevel: "LOW",
+    credentialId: "",
+    credentialHeader: "Authorization",
+    credentialPrefix: "Bearer",
 };
 
 function schemaFromFields(fields: SchemaField[]): Record<string, unknown> {
-  const properties: Record<string, unknown> = {};
-  const required: string[] = [];
-  for (const field of fields) {
-    const name = field.name.trim();
-    if (!name) continue;
-    properties[name] = { type: field.type };
-    if (field.required) required.push(name);
-  }
-  return {
-    type: "object",
-    properties,
-    ...(required.length > 0 ? { required } : {}),
-    additionalProperties: false,
-  };
+    const properties: Record<string, unknown> = {};
+    const required: string[] = [];
+    for (const field of fields) {
+        const name = field.name.trim();
+        if (!name) continue;
+        properties[name] = { type: field.type };
+        if (field.required) required.push(name);
+    }
+    return {
+        type: "object",
+        properties,
+        ...(required.length > 0 ? { required } : {}),
+        additionalProperties: false,
+    };
 }
 
 function schemaFieldId() {
-  return `schema-field-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return `schema-field-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function fieldTypeLabel(type: SchemaFieldType) {
-  return type === "integer" ? "Integer" : type.charAt(0).toUpperCase() + type.slice(1);
+    return type === "integer"
+        ? "Integer"
+        : type.charAt(0).toUpperCase() + type.slice(1);
 }
 
 function SchemaFieldEditor({
@@ -242,16 +306,119 @@ function SchemaFieldEditor({
     onRemove: (id: string) => void;
 }) {
     const title = kind === "input" ? "Input fields" : "Output fields";
-    return <div className="schema-field-editor">
-        <div className="schema-field-editor-heading"><div><h4>{title}</h4><p>{kind === "input" ? "Arguments the tool can receive." : "Fields returned by the endpoint."}</p></div><span>{fields.length} {fields.length === 1 ? "field" : "fields"}</span></div>
-        {fields.length > 0 ? <div className="schema-field-list">{fields.map((field) => <div className="schema-field-row" key={field.id}>
-            <label className="schema-field-name" htmlFor={`${kind}-field-name-${field.id}`}>Field name<input id={`${kind}-field-name-${field.id}`} value={field.name} placeholder="userId" onChange={(event) => onChange(field.id, { name: event.target.value })} aria-invalid={Boolean(errors[field.id])} />{errors[field.id] ? <span className="create-tool-field-error">{errors[field.id]}</span> : null}</label>
-            <label htmlFor={`${kind}-field-type-${field.id}`}>Type<select id={`${kind}-field-type-${field.id}`} value={field.type} onChange={(event) => onChange(field.id, { type: event.target.value as SchemaFieldType })}>{(["string", "integer", "number", "boolean", "object", "array"] as SchemaFieldType[]).map((type) => <option key={type} value={type}>{fieldTypeLabel(type)}</option>)}</select></label>
-            <label className="schema-required-toggle" htmlFor={`${kind}-field-required-${field.id}`}><input id={`${kind}-field-required-${field.id}`} type="checkbox" checked={field.required} onChange={(event) => onChange(field.id, { required: event.target.checked })} /><span>{field.required ? "Required" : "Optional"}</span></label>
-            <button className="icon-button schema-field-remove" type="button" onClick={() => onRemove(field.id)} aria-label={`Remove ${field.name || "unnamed"} field`}><X size={15} aria-hidden="true" /></button>
-        </div>)}</div> : <div className="schema-field-empty">No fields yet. Add one to define the tool contract.</div>}
-        <button className="button secondary-button schema-add-field" type="button" onClick={onAdd}><Plus size={14} aria-hidden="true" />Add field</button>
-    </div>;
+    return (
+        <div className="schema-field-editor">
+            <div className="schema-field-editor-heading">
+                <div>
+                    <h4>{title}</h4>
+                    <p>
+                        {kind === "input"
+                            ? "Arguments the tool can receive."
+                            : "Fields returned by the endpoint."}
+                    </p>
+                </div>
+                <span>
+                    {fields.length} {fields.length === 1 ? "field" : "fields"}
+                </span>
+            </div>
+            {fields.length > 0 ? (
+                <div className="schema-field-list">
+                    {fields.map((field) => (
+                        <div className="schema-field-row" key={field.id}>
+                            <label
+                                className="schema-field-name"
+                                htmlFor={`${kind}-field-name-${field.id}`}
+                            >
+                                Field name
+                                <input
+                                    id={`${kind}-field-name-${field.id}`}
+                                    value={field.name}
+                                    placeholder="userId"
+                                    onChange={(event) =>
+                                        onChange(field.id, {
+                                            name: event.target.value,
+                                        })
+                                    }
+                                    aria-invalid={Boolean(errors[field.id])}
+                                />
+                                {errors[field.id] ? (
+                                    <span className="create-tool-field-error">
+                                        {errors[field.id]}
+                                    </span>
+                                ) : null}
+                            </label>
+                            <label htmlFor={`${kind}-field-type-${field.id}`}>
+                                Type
+                                <select
+                                    id={`${kind}-field-type-${field.id}`}
+                                    value={field.type}
+                                    onChange={(event) =>
+                                        onChange(field.id, {
+                                            type: event.target
+                                                .value as SchemaFieldType,
+                                        })
+                                    }
+                                >
+                                    {(
+                                        [
+                                            "string",
+                                            "integer",
+                                            "number",
+                                            "boolean",
+                                            "object",
+                                            "array",
+                                        ] as SchemaFieldType[]
+                                    ).map((type) => (
+                                        <option key={type} value={type}>
+                                            {fieldTypeLabel(type)}
+                                        </option>
+                                    ))}
+                                </select>
+                            </label>
+                            <label
+                                className="schema-required-toggle"
+                                htmlFor={`${kind}-field-required-${field.id}`}
+                            >
+                                <input
+                                    id={`${kind}-field-required-${field.id}`}
+                                    type="checkbox"
+                                    checked={field.required}
+                                    onChange={(event) =>
+                                        onChange(field.id, {
+                                            required: event.target.checked,
+                                        })
+                                    }
+                                />
+                                <span>
+                                    {field.required ? "Required" : "Optional"}
+                                </span>
+                            </label>
+                            <button
+                                className="icon-button schema-field-remove"
+                                type="button"
+                                onClick={() => onRemove(field.id)}
+                                aria-label={`Remove ${field.name || "unnamed"} field`}
+                            >
+                                <X size={15} aria-hidden="true" />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <div className="schema-field-empty">
+                    No fields yet. Add one to define the tool contract.
+                </div>
+            )}
+            <button
+                className="button secondary-button schema-add-field"
+                type="button"
+                onClick={onAdd}
+            >
+                <Plus size={14} aria-hidden="true" />
+                Add field
+            </button>
+        </div>
+    );
 }
 
 function slugify(value: string) {
@@ -261,6 +428,191 @@ function slugify(value: string) {
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "")
         .slice(0, 100);
+}
+
+function CredentialSelect({
+    credentials,
+    value,
+    loading,
+    labelId,
+    helpId,
+    onChange,
+}: {
+    credentials: Credential[];
+    value: string;
+    loading: boolean;
+    labelId: string;
+    helpId: string;
+    onChange: (value: string) => void;
+}) {
+    const options = useMemo(
+        () => [
+            {
+                id: "",
+                name: "No credential",
+                detail: "Leave this request unauthenticated",
+                provider: "",
+                type: "",
+            },
+            ...credentials.map((credential) => ({
+                id: credential.id,
+                name: credential.name,
+                detail: `${credential.provider} · ${credential.type}`,
+                provider: credential.provider,
+                type: credential.type,
+            })),
+        ],
+        [credentials],
+    );
+    const selectedIndex = Math.max(
+        0,
+        options.findIndex((option) => option.id === value),
+    );
+    const selected = options[selectedIndex] ?? options[0];
+    const [open, setOpen] = useState(false);
+    const [activeIndex, setActiveIndex] = useState(selectedIndex);
+    const wrapperRef = useRef<HTMLDivElement>(null);
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    const listboxId = "create-tool-credential-listbox";
+
+    useEffect(() => {
+        if (!open) return;
+        setActiveIndex(selectedIndex);
+        function dismiss(event: PointerEvent) {
+            if (!wrapperRef.current?.contains(event.target as Node)) {
+                setOpen(false);
+            }
+        }
+        document.addEventListener("pointerdown", dismiss);
+        return () => document.removeEventListener("pointerdown", dismiss);
+    }, [open, selectedIndex]);
+
+    useEffect(() => {
+        if (!open) return;
+        document
+            .getElementById(`${listboxId}-option-${activeIndex}`)
+            ?.scrollIntoView({
+                block: "nearest",
+            });
+    }, [activeIndex, listboxId, open]);
+
+    function choose(index: number) {
+        const option = options[index];
+        if (!option) return;
+        onChange(option.id);
+        setOpen(false);
+        window.requestAnimationFrame(() => triggerRef.current?.focus());
+    }
+
+    function handleKeyDown(event: ReactKeyboardEvent<HTMLButtonElement>) {
+        if (event.key === "ArrowDown") {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((current) =>
+                Math.min(current + 1, options.length - 1),
+            );
+        } else if (event.key === "ArrowUp") {
+            event.preventDefault();
+            setOpen(true);
+            setActiveIndex((current) => Math.max(current - 1, 0));
+        } else if (event.key === "Home" && open) {
+            event.preventDefault();
+            setActiveIndex(0);
+        } else if (event.key === "End" && open) {
+            event.preventDefault();
+            setActiveIndex(options.length - 1);
+        } else if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (open) choose(activeIndex);
+            else {
+                setOpen(true);
+                setActiveIndex(selectedIndex);
+            }
+        } else if (event.key === "Escape" && open) {
+            event.preventDefault();
+            setOpen(false);
+        }
+    }
+
+    return (
+        <div ref={wrapperRef} className="credential-combobox">
+            <button
+                ref={triggerRef}
+                className="credential-combobox-trigger"
+                type="button"
+                role="combobox"
+                aria-labelledby={labelId}
+                aria-describedby={helpId}
+                aria-controls={listboxId}
+                aria-expanded={open}
+                aria-activedescendant={
+                    open ? `${listboxId}-option-${activeIndex}` : undefined
+                }
+                aria-busy={loading}
+                disabled={loading}
+                onClick={() => {
+                    setOpen((current) => !current);
+                    setActiveIndex(selectedIndex);
+                }}
+                onKeyDown={handleKeyDown}
+            >
+                <span className="credential-trigger-leading" aria-hidden="true">
+                    <KeyRound size={15} />
+                </span>
+                <span className="credential-trigger-copy">
+                    <strong>{selected?.name ?? "No credential"}</strong>
+                    <small>
+                        {selected?.detail ??
+                            "Leave this request unauthenticated"}
+                    </small>
+                </span>
+                <ChevronDown
+                    className={
+                        open ? "credential-chevron open" : "credential-chevron"
+                    }
+                    size={16}
+                    aria-hidden="true"
+                />
+            </button>
+            {open ? (
+                <ul
+                    id={listboxId}
+                    className="credential-combobox-listbox"
+                    role="listbox"
+                    aria-labelledby={labelId}
+                >
+                    {options.map((option, index) => (
+                        <li
+                            id={`${listboxId}-option-${index}`}
+                            className={
+                                index === activeIndex
+                                    ? "credential-combobox-option active"
+                                    : "credential-combobox-option"
+                            }
+                            key={option.id || "none"}
+                            role="option"
+                            aria-selected={option.id === value}
+                            onMouseDown={(event) => event.preventDefault()}
+                            onMouseEnter={() => setActiveIndex(index)}
+                            onClick={() => choose(index)}
+                        >
+                            <span className="credential-option-copy">
+                                <strong>{option.name}</strong>
+                                <small>{option.detail}</small>
+                            </span>
+                            {option.id === value ? (
+                                <Check
+                                    className="credential-option-check"
+                                    size={15}
+                                    aria-hidden="true"
+                                />
+                            ) : null}
+                        </li>
+                    ))}
+                </ul>
+            ) : null}
+        </div>
+    );
 }
 
 function CreateToolModal({
@@ -278,8 +630,12 @@ function CreateToolModal({
     >({});
     const [error, setError] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
+    const [credentials, setCredentials] = useState<Credential[]>([]);
+    const [credentialsLoading, setCredentialsLoading] = useState(false);
     const [versionSetupFailed, setVersionSetupFailed] = useState(false);
-    const [schemaErrors, setSchemaErrors] = useState<Record<SchemaFieldSection, Record<string, string>>>({ inputFields: {}, outputFields: {} });
+    const [schemaErrors, setSchemaErrors] = useState<
+        Record<SchemaFieldSection, Record<string, string>>
+    >({ inputFields: {}, outputFields: {} });
     const [slugTouched, setSlugTouched] = useState(false);
     const closeButtonRef = useRef<HTMLButtonElement>(null);
     const errorSummaryRef = useRef<HTMLDivElement>(null);
@@ -300,6 +656,27 @@ function CreateToolModal({
             document.body.style.overflow = previousOverflow;
         };
     }, [creating, onClose]);
+
+    useEffect(() => {
+        let active = true;
+        setCredentialsLoading(true);
+        void fetchCredentials(workspaceId)
+            .then((items) => {
+                if (active)
+                    setCredentials(
+                        items.filter((item) => item.status === "ACTIVE"),
+                    );
+            })
+            .catch(() => {
+                if (active) setCredentials([]);
+            })
+            .finally(() => {
+                if (active) setCredentialsLoading(false);
+            });
+        return () => {
+            active = false;
+        };
+    }, [workspaceId]);
 
     function updateField(field: CreateToolScalarField, value: string) {
         setForm((current) => ({ ...current, [field]: value }));
@@ -333,9 +710,21 @@ function CreateToolModal({
         return message;
     }
 
-    function updateSchemaField(section: SchemaFieldSection, id: string, changes: Partial<Omit<SchemaField, "id">>) {
-        setForm((current) => ({ ...current, [section]: current[section].map((field) => field.id === id ? { ...field, ...changes } : field) }));
-        setSchemaErrors((current) => ({ ...current, [section]: { ...current[section], [id]: "" } }));
+    function updateSchemaField(
+        section: SchemaFieldSection,
+        id: string,
+        changes: Partial<Omit<SchemaField, "id">>,
+    ) {
+        setForm((current) => ({
+            ...current,
+            [section]: current[section].map((field) =>
+                field.id === id ? { ...field, ...changes } : field,
+            ),
+        }));
+        setSchemaErrors((current) => ({
+            ...current,
+            [section]: { ...current[section], [id]: "" },
+        }));
         setError(null);
     }
 
@@ -346,20 +735,36 @@ function CreateToolModal({
             const name = field.name.trim();
             const normalized = name.toLowerCase();
             if (!name) errors[field.id] = "Enter a field name.";
-            else if (name.length > 100) errors[field.id] = "Use 100 characters or fewer.";
-            else if (seen.has(normalized)) errors[field.id] = "Field names must be unique.";
+            else if (name.length > 100)
+                errors[field.id] = "Use 100 characters or fewer.";
+            else if (seen.has(normalized))
+                errors[field.id] = "Field names must be unique.";
             else seen.add(normalized);
         }
         return errors;
     }
 
     function addSchemaField(section: SchemaFieldSection) {
-        setForm((current) => ({ ...current, [section]: [...current[section], { id: schemaFieldId(), name: "", type: "string", required: false }] }));
+        setForm((current) => ({
+            ...current,
+            [section]: [
+                ...current[section],
+                {
+                    id: schemaFieldId(),
+                    name: "",
+                    type: "string",
+                    required: false,
+                },
+            ],
+        }));
         setError(null);
     }
 
     function removeSchemaField(section: SchemaFieldSection, id: string) {
-        setForm((current) => ({ ...current, [section]: current[section].filter((field) => field.id !== id) }));
+        setForm((current) => ({
+            ...current,
+            [section]: current[section].filter((field) => field.id !== id),
+        }));
         setSchemaErrors((current) => {
             const next = { ...current[section] };
             delete next[id];
@@ -368,11 +773,7 @@ function CreateToolModal({
     }
 
     function validateForm() {
-        const fields: CreateToolScalarField[] = [
-            "name",
-            "slug",
-            "endpoint",
-        ];
+        const fields: CreateToolScalarField[] = ["name", "slug", "endpoint"];
         const nextErrors: Partial<Record<CreateToolField, string>> = {};
         for (const field of fields) {
             const message = validateField(field, form);
@@ -387,8 +788,10 @@ function CreateToolModal({
             outputFields: validateSchemaFields(form.outputFields),
         };
         setSchemaErrors(nextSchemaErrors);
-        if (Object.keys(nextSchemaErrors.inputFields).length > 0) nextErrors.inputFields = "Fix the highlighted input fields.";
-        if (Object.keys(nextSchemaErrors.outputFields).length > 0) nextErrors.outputFields = "Fix the highlighted output fields.";
+        if (Object.keys(nextSchemaErrors.inputFields).length > 0)
+            nextErrors.inputFields = "Fix the highlighted input fields.";
+        if (Object.keys(nextSchemaErrors.outputFields).length > 0)
+            nextErrors.outputFields = "Fix the highlighted output fields.";
         setFieldErrors(nextErrors);
         return nextErrors;
     }
@@ -416,7 +819,9 @@ function CreateToolModal({
                     name: form.name.trim(),
                     description: form.description.trim() || null,
                     input_schema: schemaFromFields(form.inputFields),
-                    output_schema: schemaFromFields(form.outputFields),
+                    output_schema: form.outputFields.length > 0
+                        ? schemaFromFields(form.outputFields)
+                        : null,
                     executor: {
                         type: "HTTP",
                         config: {
@@ -432,6 +837,19 @@ function CreateToolModal({
                             headers: {},
                             query_mapping: {},
                             body_mapping: {},
+                            ...(form.credentialId
+                                ? {
+                                      credential_ref: form.credentialId,
+                                      credential_binding: {
+                                          location: "HEADER",
+                                          name:
+                                              form.credentialHeader.trim() ||
+                                              "Authorization",
+                                          prefix: form.credentialPrefix.trim(),
+                                          secret_key: "token",
+                                      },
+                                  }
+                                : {}),
                         },
                     },
                     timeout_seconds: Number(form.timeoutSeconds),
@@ -461,6 +879,9 @@ function CreateToolModal({
 
     const errorEntries = Object.entries(fieldErrors).filter(
         (entry): entry is [CreateToolField, string] => Boolean(entry[1]),
+    );
+    const selectedCredential = credentials.find(
+        (credential) => credential.id === form.credentialId,
     );
     return (
         <div
@@ -501,9 +922,8 @@ function CreateToolModal({
                 <div className="create-tool-callout">
                     <Globe2 size={15} aria-hidden="true" />
                     <span>
-                        <strong>HTTP only · Phase 6</strong> Credentials, custom
-                        headers and Function tool creation are not available
-                        yet.
+                        <strong>HTTP only · public endpoint</strong> Credentials
+                        are resolved server-side and never sent to the model.
                     </span>
                 </div>
                 {errorEntries.length > 0 ? (
@@ -517,7 +937,15 @@ function CreateToolModal({
                         <ul>
                             {errorEntries.map(([field, message]) => (
                                 <li key={field}>
-                                    <a href={field === "inputFields" ? "#create-tool-input-fields" : field === "outputFields" ? "#create-tool-output-fields" : `#create-tool-${field}`}>
+                                    <a
+                                        href={
+                                            field === "inputFields"
+                                                ? "#create-tool-input-fields"
+                                                : field === "outputFields"
+                                                  ? "#create-tool-output-fields"
+                                                  : `#create-tool-${field}`
+                                        }
+                                    >
                                         {message}
                                     </a>
                                 </li>
@@ -525,6 +953,183 @@ function CreateToolModal({
                         </ul>
                     </div>
                 ) : null}
+                <section
+                    className="create-tool-section credential-injection-section"
+                    aria-labelledby="credential-injection-title"
+                >
+                    <div className="tool-modal-section-heading credential-injection-heading">
+                        <div>
+                            <div className="credential-heading-line">
+                                <p className="panel-kicker">
+                                    Optional authentication
+                                </p>
+                                <span className="credential-optional-badge">
+                                    Optional
+                                </span>
+                            </div>
+                            <h3 id="credential-injection-title">
+                                Credential injection
+                            </h3>
+                            <p className="credential-section-copy">
+                                Bind a workspace vault entry to one HTTP header.
+                                The secret is resolved only when this tool
+                                executes.
+                            </p>
+                        </div>
+                        <span
+                            className="credential-security-icon"
+                            aria-hidden="true"
+                        >
+                            <ShieldCheck size={18} />
+                        </span>
+                    </div>
+
+                    <div className="credential-field">
+                        <span
+                            id="create-tool-credential-label"
+                            className="credential-field-label"
+                        >
+                            Credential
+                        </span>
+                        <CredentialSelect
+                            credentials={credentials}
+                            value={form.credentialId}
+                            loading={credentialsLoading}
+                            labelId="create-tool-credential-label"
+                            helpId="create-tool-credential-help"
+                            onChange={(value) =>
+                                setForm((current) => ({
+                                    ...current,
+                                    credentialId: value,
+                                }))
+                            }
+                        />
+                        <span
+                            id="create-tool-credential-help"
+                            className="field-helper"
+                        >
+                            {credentialsLoading
+                                ? "Loading active credentials…"
+                                : credentials.length === 0
+                                  ? "No active credentials found. Add one in Settings → Credentials."
+                                  : "Choose an active credential. Secret values never leave the backend."}
+                        </span>
+                    </div>
+
+                    {selectedCredential ? (
+                        <>
+                            <div
+                                className="credential-selection-card"
+                                role="status"
+                                aria-live="polite"
+                            >
+                                <span
+                                    className="credential-selection-icon"
+                                    aria-hidden="true"
+                                >
+                                    <KeyRound size={16} />
+                                </span>
+                                <span className="credential-selection-copy">
+                                    <strong>{selectedCredential.name}</strong>
+                                    <span>
+                                        {selectedCredential.provider} ·{" "}
+                                        {selectedCredential.type}
+                                    </span>
+                                </span>
+                                <span className="credential-secret-badge">
+                                    <ShieldCheck size={13} aria-hidden="true" />
+                                    Server-side only
+                                </span>
+                            </div>
+
+                            <div className="create-tool-field-grid credential-binding-grid">
+                                <label
+                                    className="credential-field"
+                                    htmlFor="create-tool-credential-header"
+                                >
+                                    <span className="credential-field-label">
+                                        Header name
+                                    </span>
+                                    <input
+                                        id="create-tool-credential-header"
+                                        value={form.credentialHeader}
+                                        onChange={(event) =>
+                                            setForm((current) => ({
+                                                ...current,
+                                                credentialHeader:
+                                                    event.target.value,
+                                            }))
+                                        }
+                                        placeholder="Authorization"
+                                        autoComplete="off"
+                                        aria-describedby="create-tool-credential-header-help"
+                                    />
+                                    <span
+                                        id="create-tool-credential-header-help"
+                                        className="field-helper"
+                                    >
+                                        Where the token is attached.
+                                    </span>
+                                </label>
+                                <label
+                                    className="credential-field"
+                                    htmlFor="create-tool-credential-prefix"
+                                >
+                                    <span className="credential-field-label">
+                                        Prefix
+                                    </span>
+                                    <input
+                                        id="create-tool-credential-prefix"
+                                        value={form.credentialPrefix}
+                                        onChange={(event) =>
+                                            setForm((current) => ({
+                                                ...current,
+                                                credentialPrefix:
+                                                    event.target.value,
+                                            }))
+                                        }
+                                        placeholder="Bearer"
+                                        autoComplete="off"
+                                        aria-describedby="create-tool-credential-prefix-help"
+                                    />
+                                    <span
+                                        id="create-tool-credential-prefix-help"
+                                        className="field-helper"
+                                    >
+                                        Leave empty for no prefix.
+                                    </span>
+                                </label>
+                            </div>
+
+                            <div
+                                className="credential-header-preview"
+                                aria-label="Runtime header preview"
+                            >
+                                <div className="credential-header-preview-heading">
+                                    <span>Runtime header</span>
+                                    <span>Injected on execute</span>
+                                </div>
+                                <code>
+                                    {form.credentialHeader.trim() ||
+                                        "Authorization"}
+                                    :{" "}
+                                    {form.credentialPrefix.trim()
+                                        ? `${form.credentialPrefix.trim()} `
+                                        : ""}
+                                    <span>••••••••</span>
+                                </code>
+                            </div>
+                        </>
+                    ) : (
+                        <div className="credential-unselected-note">
+                            <KeyRound size={15} aria-hidden="true" />
+                            <span>
+                                Select a credential to enable secure header
+                                injection.
+                            </span>
+                        </div>
+                    )}
+                </section>
                 {error ? (
                     <div className="form-error tool-modal-alert" role="alert">
                         <AlertCircle size={15} aria-hidden="true" />
@@ -725,12 +1330,50 @@ function CreateToolModal({
                         </div>
                         <div className="create-tool-schema-grid">
                             <div id="create-tool-input-fields">
-                                <SchemaFieldEditor kind="input" fields={form.inputFields} errors={schemaErrors.inputFields} onChange={(id, changes) => updateSchemaField("inputFields", id, changes)} onAdd={() => addSchemaField("inputFields")} onRemove={(id) => removeSchemaField("inputFields", id)} />
-                                {fieldErrors.inputFields ? <span className="create-tool-field-error">{fieldErrors.inputFields}</span> : null}
+                                <SchemaFieldEditor
+                                    kind="input"
+                                    fields={form.inputFields}
+                                    errors={schemaErrors.inputFields}
+                                    onChange={(id, changes) =>
+                                        updateSchemaField(
+                                            "inputFields",
+                                            id,
+                                            changes,
+                                        )
+                                    }
+                                    onAdd={() => addSchemaField("inputFields")}
+                                    onRemove={(id) =>
+                                        removeSchemaField("inputFields", id)
+                                    }
+                                />
+                                {fieldErrors.inputFields ? (
+                                    <span className="create-tool-field-error">
+                                        {fieldErrors.inputFields}
+                                    </span>
+                                ) : null}
                             </div>
                             <div id="create-tool-output-fields">
-                                <SchemaFieldEditor kind="output" fields={form.outputFields} errors={schemaErrors.outputFields} onChange={(id, changes) => updateSchemaField("outputFields", id, changes)} onAdd={() => addSchemaField("outputFields")} onRemove={(id) => removeSchemaField("outputFields", id)} />
-                                {fieldErrors.outputFields ? <span className="create-tool-field-error">{fieldErrors.outputFields}</span> : null}
+                                <SchemaFieldEditor
+                                    kind="output"
+                                    fields={form.outputFields}
+                                    errors={schemaErrors.outputFields}
+                                    onChange={(id, changes) =>
+                                        updateSchemaField(
+                                            "outputFields",
+                                            id,
+                                            changes,
+                                        )
+                                    }
+                                    onAdd={() => addSchemaField("outputFields")}
+                                    onRemove={(id) =>
+                                        removeSchemaField("outputFields", id)
+                                    }
+                                />
+                                {fieldErrors.outputFields ? (
+                                    <span className="create-tool-field-error">
+                                        {fieldErrors.outputFields}
+                                    </span>
+                                ) : null}
                             </div>
                         </div>
                         <div className="create-tool-field-grid">

@@ -7,13 +7,16 @@ import socket
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
 import httpx
 from pydantic import SecretStr
 
 from .contracts import ToolExecutionContext, ToolResult
+
+if TYPE_CHECKING:
+    from ..credentials.service import ResolvedCredential
 
 HTTP_RESPONSE_LIMIT = 100_000
 _EXA_MAX_RESULTS = 10
@@ -78,14 +81,30 @@ def _redact_config_keys(value: object, *, in_headers: bool = False) -> None:
             normalized = str(key).lower()
             if normalized == "credential_ref":
                 continue
-            if normalized in _SENSITIVE_KEYS or (
-                in_headers and normalized in _SENSITIVE_KEYS
-            ):
+            credential_template = (
+                isinstance(child, str)
+                and "{{credential." in child
+                and child.endswith("}}")
+            )
+            if (
+                normalized in _SENSITIVE_KEYS
+                or in_headers and normalized in _SENSITIVE_KEYS
+            ) and not credential_template:
                 raise HttpToolConfigError("HTTP tool config cannot contain secrets.")
             _redact_config_keys(child, in_headers=in_headers or normalized == "headers")
     elif isinstance(value, (list, tuple)):
         for child in value:
             _redact_config_keys(child, in_headers=in_headers)
+
+
+def _contains_credential_template(value: object) -> bool:
+    if isinstance(value, str):
+        return "{{credential." in value
+    if isinstance(value, Mapping):
+        return any(_contains_credential_template(child) for child in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_credential_template(child) for child in value)
+    return False
 
 
 def canonical_http_config(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -118,6 +137,36 @@ def canonical_http_config(config: Mapping[str, Any]) -> dict[str, Any]:
         or not config["credential_ref"].strip()
     ):
         raise HttpToolConfigError("credential_ref must be a non-empty reference.")
+    credential_binding = config.get("credential_binding")
+    if "credential_ref" in config and credential_binding is None:
+        credential_binding = {
+            "location": "HEADER",
+            "name": "Authorization",
+            "prefix": "Bearer",
+            "secret_key": "token",
+        }
+    if credential_binding is not None:
+        if not isinstance(credential_binding, Mapping):
+            raise HttpToolConfigError("credential_binding must be an object.")
+        if credential_binding.get("location", "HEADER") != "HEADER":
+            raise HttpToolConfigError(
+                "Credential injection only supports HTTP headers."
+            )
+        header_name = credential_binding.get("name", "Authorization")
+        secret_key = credential_binding.get("secret_key", "token")
+        prefix = credential_binding.get("prefix", "Bearer")
+        if (
+            not isinstance(header_name, str)
+            or not header_name.strip()
+            or not isinstance(secret_key, str)
+            or not secret_key.strip()
+            or not isinstance(prefix, str)
+        ):
+            raise HttpToolConfigError("credential_binding contains invalid values.")
+        if "credential_ref" not in config:
+            raise HttpToolConfigError(
+                "credential_binding requires credential_ref."
+            )
     if legacy_url and not config.get("base_url"):
         path = parsed.path or "/"
         if parsed.query:
@@ -137,11 +186,35 @@ def canonical_http_config(config: Mapping[str, Any]) -> dict[str, Any]:
     ):
         if not isinstance(value, Mapping):
             raise HttpToolConfigError(f"HTTP {name} must be an object.")
+    if _contains_credential_template(path) or _contains_credential_template(
+        query_mapping
+    ) or _contains_credential_template(body_mapping):
+        raise HttpToolConfigError(
+            "Credential injection only supports HTTP headers."
+        )
+    normalized_headers = dict(headers)
+    if credential_binding is not None:
+        header_name = str(credential_binding.get("name", "Authorization"))
+        secret_key = str(credential_binding.get("secret_key", "token"))
+        prefix = str(credential_binding.get("prefix", "Bearer"))
+        generated_header = (
+            f"{prefix} {{{{credential.{secret_key}}}}}"
+            if prefix
+            else f"{{{{credential.{secret_key}}}}}"
+        )
+        if (
+            header_name in normalized_headers
+            and normalized_headers[header_name] != generated_header
+        ):
+            raise HttpToolConfigError(
+                "credential_binding cannot overwrite a configured header."
+            )
+        normalized_headers[header_name] = generated_header
     return {
         "method": method,
         "base_url": base_url,
         "path": path,
-        "headers": dict(headers),
+        "headers": normalized_headers,
         "query_mapping": dict(query_mapping),
         "body_mapping": dict(body_mapping),
         **(
@@ -149,17 +222,26 @@ def canonical_http_config(config: Mapping[str, Any]) -> dict[str, Any]:
             if "credential_ref" in config
             else {}
         ),
+        **(
+            {"credential_binding": dict(credential_binding)}
+            if credential_binding is not None
+            else {}
+        ),
     }
 
 
-def _resolve_template(value: Any, arguments: Mapping[str, Any]) -> Any:
+def _resolve_template(
+    value: Any,
+    arguments: Mapping[str, Any],
+    credential: "ResolvedCredential | None" = None,
+) -> Any:
     if isinstance(value, Mapping):
         return {
-            str(key): _resolve_template(child, arguments)
+            str(key): _resolve_template(child, arguments, credential)
             for key, child in value.items()
         }
     if isinstance(value, list):
-        return [_resolve_template(child, arguments) for child in value]
+        return [_resolve_template(child, arguments, credential) for child in value]
     if not isinstance(value, str):
         return value
     start = 0
@@ -174,11 +256,23 @@ def _resolve_template(value: Any, arguments: Mapping[str, Any]) -> Any:
             raise HttpToolConfigError("HTTP mapping contains an invalid placeholder.")
         pieces.append(value[start:opening])
         name = value[opening + 2 : closing].strip()
-        if not name or name not in arguments:
+        if name.startswith("credential."):
+            if credential is None:
+                raise HttpToolConfigError(
+                    "HTTP mapping requires a configured credential."
+                )
+            credential_key = name.removeprefix("credential.")
+            replacement = credential.values.get(credential_key)
+            if not isinstance(replacement, (str, int, float, bool)):
+                raise HttpToolConfigError(
+                    "The credential mapping references an unavailable value."
+                )
+        elif not name or name not in arguments:
             raise HttpToolConfigError(
                 "HTTP mapping contains an unresolved placeholder."
             )
-        replacement = arguments[name]
+        else:
+            replacement = arguments[name]
         if opening == 0 and closing == len(value) - 2:
             return replacement
         pieces.append(str(replacement))
@@ -427,10 +521,12 @@ class HttpToolExecutor:
         *,
         retry_policy: Mapping[str, Any] | None = None,
         idempotent: bool = False,
+        credential: "ResolvedCredential | None" = None,
     ) -> None:
         self.config = canonical_http_config(config)
         self.retry_policy = retry_policy or {}
         self.idempotent = idempotent
+        self.credential = credential
 
     async def _request_once(
         self,
@@ -477,12 +573,14 @@ class HttpToolExecutor:
                 raise HttpToolConfigError("HTTP path mapping must resolve to text.")
             url = self.config["base_url"].rstrip("/") + "/" + path.lstrip("/")
             await _assert_public_destination(url)
-            headers = _resolve_template(self.config["headers"], arguments)
+            headers = _resolve_template(
+                self.config["headers"], arguments, self.credential
+            )
             params = _resolve_template(
-                self.config["query_mapping"] or arguments, arguments
+                self.config["query_mapping"] or arguments, arguments, self.credential
             )
             body = _resolve_template(
-                self.config["body_mapping"] or arguments, arguments
+                self.config["body_mapping"] or arguments, arguments, self.credential
             )
             if not isinstance(headers, Mapping) or not isinstance(params, Mapping):
                 raise HttpToolConfigError("HTTP mappings must resolve to objects.")

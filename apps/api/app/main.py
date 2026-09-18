@@ -11,6 +11,7 @@ from starlette import status
 
 from .agents.routes import router as agent_router
 from .config import get_settings
+from .credentials.routes import router as credential_router
 from .db import check_database, dispose_engine
 from .errors import error_response, register_exception_handlers
 from .logging import configure_logging
@@ -59,6 +60,7 @@ app.include_router(session_router)
 app.include_router(run_router)
 app.include_router(trace_router)
 app.include_router(tool_router)
+app.include_router(credential_router)
 
 
 @app.get("/health", tags=["system"])

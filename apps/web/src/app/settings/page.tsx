@@ -10,11 +10,16 @@ import {
 import {
   Check,
   Cloud,
+  Eye,
+  EyeOff,
   KeyRound,
+  LockKeyhole,
   LoaderCircle,
   Mail,
   Plus,
+  RotateCcw,
   ShieldCheck,
+  Trash2,
   UserMinus,
   UsersRound,
   X,
@@ -22,6 +27,13 @@ import {
 
 import { AppShell } from "../../components/app-shell";
 import { apiFetch, readApiError } from "../../lib/api";
+import {
+  createCredential,
+  fetchCredentials,
+  revokeCredential,
+  rotateCredential,
+  type Credential,
+} from "../../lib/credentials";
 import {
   ModelProviderId,
   testModelConnection,
@@ -61,8 +73,9 @@ export default function SettingsPage() {
   const [newWorkspaceName, setNewWorkspaceName] = useState("");
   const [newWorkspaceSlug, setNewWorkspaceSlug] = useState("");
   const [members, setMembers] = useState<WorkspaceMember[]>([]);
+  const [credentials, setCredentials] = useState<Credential[]>([]);
   const [memberEmail, setMemberEmail] = useState("");
-  const [activeTab, setActiveTab] = useState<"workspace" | "members" | "model-test">("workspace");
+  const [activeTab, setActiveTab] = useState<"workspace" | "members" | "model-test" | "credentials">("workspace");
   const [provider, setProvider] = useState<ModelProviderId>("azure_openai");
   const [modelName, setModelName] = useState("gpt-5.6-luna");
   const [deploymentName, setDeploymentName] = useState("gpt-5.6-luna");
@@ -72,6 +85,17 @@ export default function SettingsPage() {
   const [modelTestResult, setModelTestResult] = useState<Awaited<ReturnType<typeof testModelConnection>> | null>(null);
   const [modelTestError, setModelTestError] = useState<string | null>(null);
   const [memberLoading, setMemberLoading] = useState(false);
+  const [credentialLoading, setCredentialLoading] = useState(false);
+  const [credentialBusyId, setCredentialBusyId] = useState<string | null>(null);
+  const [credentialModal, setCredentialModal] = useState<"create" | "rotate" | null>(null);
+  const [credentialModalId, setCredentialModalId] = useState<string | null>(null);
+  const [credentialName, setCredentialName] = useState("");
+  const [credentialProvider, setCredentialProvider] = useState("");
+  const [credentialToken, setCredentialToken] = useState("");
+  const [credentialTokenVisible, setCredentialTokenVisible] = useState(false);
+  const [credentialModalBusy, setCredentialModalBusy] = useState(false);
+  const [credentialModalError, setCredentialModalError] = useState<string | null>(null);
+  const [confirmingCredentialId, setConfirmingCredentialId] = useState<string | null>(null);
   const [memberBusyId, setMemberBusyId] = useState<string | null>(null);
   const [confirmingMemberId, setConfirmingMemberId] = useState<string | null>(null);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -81,6 +105,9 @@ export default function SettingsPage() {
   const createWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
   const createWorkspaceNameRef = useRef<HTMLInputElement>(null);
   const createWorkspaceDialogRef = useRef<HTMLDivElement>(null);
+  const credentialDialogRef = useRef<HTMLDivElement>(null);
+  const credentialSecretRef = useRef<HTMLInputElement>(null);
+  const credentialTriggerRef = useRef<HTMLButtonElement>(null);
 
   const selectedWorkspace = workspaces.find((workspace) => workspace.id === selectedId);
   const isOwner = selectedWorkspace?.role === "OWNER";
@@ -122,11 +149,27 @@ export default function SettingsPage() {
     setMemberLoading(false);
   }
 
+  async function loadCredentials(workspaceId: string) {
+    setCredentialLoading(true);
+    try {
+      setCredentials(await fetchCredentials(workspaceId));
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load credentials.");
+    } finally {
+      setCredentialLoading(false);
+    }
+  }
+
   useEffect(() => { void load(); }, []);
 
   useEffect(() => {
     if (selectedId) void loadMembers(selectedId);
     else setMembers([]);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (selectedId) void loadCredentials(selectedId);
+    else setCredentials([]);
   }, [selectedId]);
 
   useEffect(() => {
@@ -160,6 +203,125 @@ export default function SettingsPage() {
     } else if (!event.shiftKey && document.activeElement === last) {
       event.preventDefault();
       first.focus();
+    }
+  }
+
+  useEffect(() => {
+    if (!credentialModal) return;
+    const previousOverflow = document.body.style.overflow;
+    const trigger = credentialTriggerRef.current;
+    document.body.style.overflow = "hidden";
+    const focusTimer = window.setTimeout(() => credentialSecretRef.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.body.style.overflow = previousOverflow;
+      trigger?.focus();
+    };
+  }, [credentialModal]);
+
+  function handleCredentialModalKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key === "Escape" && !credentialModalBusy) {
+      closeCredentialModal();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = credentialDialogRef.current?.querySelectorAll<HTMLElement>(
+      "button, input, select",
+    );
+    if (!focusable?.length) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  function closeCredentialModal(force = false) {
+    if (credentialModalBusy && !force) return;
+    setCredentialModal(null);
+    setCredentialModalId(null);
+    setCredentialToken("");
+    setCredentialTokenVisible(false);
+    setCredentialModalError(null);
+  }
+
+  function openCreateCredential() {
+    setCredentialModal("create");
+    setCredentialModalId(null);
+    setCredentialName("");
+    setCredentialProvider("");
+    setCredentialToken("");
+    setCredentialTokenVisible(false);
+    setCredentialModalError(null);
+  }
+
+  function openRotateCredential(credential: Credential) {
+    setCredentialModal("rotate");
+    setCredentialModalId(credential.id);
+    setCredentialName(credential.name);
+    setCredentialProvider(credential.provider);
+    setCredentialToken("");
+    setCredentialTokenVisible(false);
+    setCredentialModalError(null);
+  }
+
+  async function submitCredential(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCredentialModalError(null);
+    if (!credentialToken.trim()) {
+      setCredentialModalError("Enter a token before saving the credential.");
+      credentialSecretRef.current?.focus();
+      return;
+    }
+    if (credentialModal === "create" && (!credentialName.trim() || !credentialProvider.trim())) {
+      setCredentialModalError("Enter a name and provider before saving the credential.");
+      return;
+    }
+    if (!selectedId) return;
+    setCredentialModalBusy(true);
+    try {
+      if (credentialModal === "create") {
+        await createCredential(selectedId, {
+          name: credentialName.trim(),
+          provider: credentialProvider.trim(),
+          type: "API_KEY",
+          secret: { token: credentialToken },
+        });
+        setMessage("Credential encrypted and saved.");
+      } else if (credentialModalId) {
+        await rotateCredential(credentialModalId, credentialToken);
+        setMessage("Credential rotated. The previous token is no longer active.");
+      }
+      closeCredentialModal(true);
+      await loadCredentials(selectedId);
+    } catch (saveError) {
+      setCredentialModalError(saveError instanceof Error ? saveError.message : "Unable to save credential.");
+    } finally {
+      setCredentialToken("");
+      setCredentialTokenVisible(false);
+      setCredentialModalBusy(false);
+    }
+  }
+
+  async function revokeWorkspaceCredential(credential: Credential) {
+    if (!isOwner) return;
+    setCredentialBusyId(credential.id);
+    setError(null);
+    try {
+      await revokeCredential(credential.id);
+      setCredentials((current) => current.map((item) => item.id === credential.id
+        ? { ...item, status: "REVOKED", revoked_at: new Date().toISOString() }
+        : item));
+      setConfirmingCredentialId(null);
+      setMessage(`${credential.name} was revoked.`);
+    } catch (revokeError) {
+      setError(revokeError instanceof Error ? revokeError.message : "Unable to revoke credential.");
+    } finally {
+      setCredentialBusyId(null);
     }
   }
 
@@ -341,6 +503,19 @@ export default function SettingsPage() {
         <KeyRound size={14} aria-hidden="true" />
         Test model
       </button>
+      <button
+        id="credentials-tab"
+        className={`settings-tab${activeTab === "credentials" ? " active" : ""}`}
+        type="button"
+        role="tab"
+        aria-selected={activeTab === "credentials"}
+        disabled={!selectedId}
+        onClick={() => setActiveTab("credentials")}
+      >
+        <LockKeyhole size={14} aria-hidden="true" />
+        Credentials
+        {selectedId ? <span className="tab-count">{credentials.filter((item) => item.status === "ACTIVE").length}</span> : null}
+      </button>
     </div>
 
     {error ? <p className="form-error" role="alert">{error}</p> : null}
@@ -414,7 +589,7 @@ export default function SettingsPage() {
           <h2>Test Model Connection</h2>
           <p className="panel-copy">Verify a provider key with one low-token request. The key is cleared from this form after the test.</p>
         </div>
-        <span className="status-badge info"><span />No credentials saved</span>
+        <span className="status-badge info"><span />Ephemeral key only</span>
       </div>
 
       <form className="model-test-form" onSubmit={submitModelTest}>
@@ -452,6 +627,32 @@ export default function SettingsPage() {
       {modelTestError ? <div className="model-test-result failed" role="alert"><X size={16} aria-hidden="true" /><div><strong>Request failed</strong><span>{modelTestError}</span></div></div> : null}
       {modelTestResult?.status === "SUCCESS" ? <div className="model-test-result success" role="status"><Check size={16} aria-hidden="true" /><div><strong>Connection successful</strong><span>{modelTestResult.provider} · {modelTestResult.model_name} · {modelTestResult.latency_ms ?? 0} ms</span></div></div> : null}
       {modelTestResult?.status === "FAILED" && modelTestResult.error ? <div className="model-test-result failed" role="alert"><X size={16} aria-hidden="true" /><div><strong>Connection failed</strong><span>{modelTestResult.error.message}</span><small>{modelTestResult.error.code}</small></div></div> : null}
+    </section> : null}
+
+    {!loading && activeTab === "credentials" && selectedId ? <section className="panel credentials-panel" role="tabpanel" aria-labelledby="credentials-tab">
+      <div className="members-heading">
+        <div>
+          <span className="panel-kicker">Encrypted workspace vault</span>
+          <h2>Credentials</h2>
+          <p className="panel-copy">Store API tokens separately from agents and tools. Secret values are never shown again after submission.</p>
+        </div>
+        <div className="credentials-heading-actions">
+          <span className="status-badge success"><span />AES-GCM encrypted</span>
+          {isOwner ? <button ref={credentialTriggerRef} className="button primary-button" type="button" onClick={openCreateCredential}><Plus size={15} aria-hidden="true" />Add credential</button> : null}
+        </div>
+      </div>
+
+      {!isOwner ? <div className="member-readonly-note"><ShieldCheck size={16} aria-hidden="true" />You can view credential metadata, but only the workspace owner can add, rotate, or revoke secrets.</div> : null}
+      <div className="credentials-list" aria-live="polite">
+        {credentialLoading ? <div className="member-list-state"><LoaderCircle className="spin" size={16} aria-hidden="true" />Loading credentials…</div> : null}
+        {!credentialLoading && credentials.length === 0 ? <div className="member-list-state member-empty-state"><LockKeyhole size={25} aria-hidden="true" /><strong>No credentials yet</strong><span>Add an API token to use it from an HTTP tool without exposing it to the model.</span></div> : null}
+        {!credentialLoading && credentials.map((credential) => <div className="credential-row" key={credential.id}>
+          <div className="credential-icon" aria-hidden="true"><KeyRound size={16} /></div>
+          <div className="credential-copy"><strong>{credential.name}</strong><span>{credential.provider} · {credential.type} · Added {joinedDate(credential.created_at)}</span></div>
+          <span className={`status-badge ${credential.status === "ACTIVE" ? "success" : "muted"}`}><span />{credential.status === "ACTIVE" ? "Active" : "Revoked"}</span>
+          {isOwner && credential.status === "ACTIVE" ? confirmingCredentialId === credential.id ? <div className="member-confirm-actions"><button className="text-button" type="button" onClick={() => setConfirmingCredentialId(null)}>Cancel</button><button className="button danger-button" type="button" disabled={credentialBusyId === credential.id} onClick={() => void revokeWorkspaceCredential(credential)}>{credentialBusyId === credential.id ? <LoaderCircle className="spin" size={13} aria-hidden="true" /> : null}Revoke</button></div> : <div className="credential-actions"><button className="icon-button" type="button" aria-label={`Rotate ${credential.name}`} onClick={() => openRotateCredential(credential)}><RotateCcw size={15} aria-hidden="true" /></button><button className="icon-button danger-icon" type="button" aria-label={`Revoke ${credential.name}`} onClick={() => setConfirmingCredentialId(credential.id)}><Trash2 size={15} aria-hidden="true" /></button></div> : null}
+        </div>)}
+      </div>
     </section> : null}
 
     {isCreateModalOpen ? <div
@@ -492,6 +693,31 @@ export default function SettingsPage() {
               Create workspace
             </button>
           </div>
+        </form>
+      </div>
+    </div> : null}
+
+    {credentialModal ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !credentialModalBusy) closeCredentialModal();
+    }}>
+      <div ref={credentialDialogRef} className="modal-dialog credential-modal" role="dialog" aria-modal="true" aria-labelledby="credential-modal-title" onKeyDown={handleCredentialModalKeyDown}>
+        <div className="modal-heading">
+          <div>
+            <span className="panel-kicker">{credentialModal === "create" ? "New vault entry" : "Secret rotation"}</span>
+            <h2 id="credential-modal-title">{credentialModal === "create" ? "Add credential" : `Rotate ${credentialName}`}</h2>
+            <p className="panel-copy">{credentialModal === "create" ? "Save an API token for workspace tools. The token is encrypted before it reaches the database." : "Enter a new token. The previous value will become inaccessible after rotation."}</p>
+          </div>
+          <button className="icon-button modal-close" type="button" aria-label="Close credential dialog" disabled={credentialModalBusy} onClick={() => closeCredentialModal()}><X size={17} aria-hidden="true" /></button>
+        </div>
+        <form className="settings-form modal-form" onSubmit={submitCredential}>
+          {credentialModal === "create" ? <>
+            <label htmlFor="credential-name">Name<input id="credential-name" value={credentialName} onChange={(event) => setCredentialName(event.target.value)} placeholder="GitHub API" required /></label>
+            <label htmlFor="credential-provider">Provider<input id="credential-provider" value={credentialProvider} onChange={(event) => setCredentialProvider(event.target.value)} placeholder="github" required /></label>
+          </> : <div className="credential-rotation-meta"><span>Provider</span><strong>{credentialProvider}</strong><span>Type</span><strong>API_KEY</strong></div>}
+          <label htmlFor="credential-token">API token<input ref={credentialSecretRef} id="credential-token" type={credentialTokenVisible ? "text" : "password"} autoComplete="new-password" value={credentialToken} onChange={(event) => setCredentialToken(event.target.value)} placeholder="Paste token value" required aria-describedby="credential-token-help" /><button className="credential-token-toggle" type="button" aria-label={credentialTokenVisible ? "Hide API token" : "Show API token"} onClick={() => setCredentialTokenVisible((visible) => !visible)}>{credentialTokenVisible ? <EyeOff size={15} aria-hidden="true" /> : <Eye size={15} aria-hidden="true" />}</button></label>
+          <p id="credential-token-help" className="field-helper"><LockKeyhole size={13} aria-hidden="true" /> The token is write-only in VibesFactory and is never returned by the API.</p>
+          {credentialModalError ? <p className="form-error" role="alert">{credentialModalError}</p> : null}
+          <div className="modal-actions"><button className="button secondary-button" type="button" disabled={credentialModalBusy} onClick={() => closeCredentialModal()}>Cancel</button><button className="button primary-button" type="submit" disabled={credentialModalBusy || !credentialToken.trim()}>{credentialModalBusy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <LockKeyhole size={15} aria-hidden="true" />}{credentialModal === "create" ? "Save encrypted credential" : "Rotate credential"}</button></div>
         </form>
       </div>
     </div> : null}

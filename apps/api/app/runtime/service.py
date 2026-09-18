@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
+from ..credentials.service import DatabaseCredentialResolver
 from ..model_providers.contracts import (
     ModelMessage,
     ModelRequest,
@@ -139,7 +140,9 @@ class AgentRuntime:
         self.session = session
         self.registry = registry
         self.context_builder = context_builder or ContextBuilder()
-        self.tool_pipeline = tool_pipeline or ToolExecutionPipeline()
+        self.tool_pipeline = tool_pipeline or ToolExecutionPipeline(
+            credential_resolver=DatabaseCredentialResolver(session)
+        )
         self.secret_redactor = SecretRedactor()
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:

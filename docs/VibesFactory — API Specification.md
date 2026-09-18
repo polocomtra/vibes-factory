@@ -1423,7 +1423,13 @@ Request example for HTTP Tool:
       "query_mapping": {
         "city": "{{city}}"
       },
-      "credential_ref": "vault-reference"
+      "credential_ref": "uuid",
+      "credential_binding": {
+        "location": "HEADER",
+        "name": "Authorization",
+        "prefix": "Bearer",
+        "secret_key": "token"
+      }
     }
   },
   "timeout_seconds": 10,
@@ -1584,6 +1590,10 @@ Request:
 ```
 
 Old secret should become inaccessible after successful rotation.
+
+Credential create, list, rotate and revoke operations never return plaintext
+secrets, ciphertext or encryption key material. Members can list credential
+metadata; only workspace owners can create, rotate or revoke credentials.
 
 ---
 

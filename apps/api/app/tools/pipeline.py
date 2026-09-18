@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..config import get_settings
+from ..credentials.service import CredentialResolutionError
 from ..models import ToolType, ToolVersion
 from .contracts import (
     CredentialResolver,
@@ -14,7 +15,12 @@ from .contracts import (
     UnavailableCredentialResolver,
 )
 from .executors import FunctionToolRegistry, HttpToolExecutor
-from .validation import SchemaDefinitionError, SchemaValidationError, validate
+from .validation import (
+    SchemaDefinitionError,
+    SchemaValidationError,
+    is_empty_object_schema,
+    validate,
+)
 
 _SECRET_KEYS = frozenset(
     {
@@ -109,13 +115,18 @@ class ToolExecutionPipeline:
             )
 
         credential_ref = version.executor_config.get("credential_ref")
+        credential = None
         if credential_ref is not None:
             try:
-                self.credential_resolver.resolve(str(credential_ref))
+                credential = await self.credential_resolver.resolve(
+                    str(credential_ref), context.workspace_id
+                )
+            except CredentialResolutionError as exc:
+                return self._failure(exc.code, exc.message)
             except Exception:
                 return self._failure(
                     "CREDENTIAL_VAULT_UNAVAILABLE",
-                    "Credential-backed tools are not available until Phase 7.",
+                    "The credential vault is unavailable.",
                 )
 
         try:
@@ -130,6 +141,7 @@ class ToolExecutionPipeline:
                     version.executor_config,
                     retry_policy=version.retry_policy,
                     idempotent=version.idempotent,
+                    credential=credential,
                 ).execute(arguments, context)
             else:
                 return self._failure(
@@ -145,8 +157,11 @@ class ToolExecutionPipeline:
                     "error_message": result.error_message or "The tool failed.",
                 }
             )
-        output = self.secret_redactor.redact(result.output or {})
-        if version.output_schema is not None:
+        secret_values = getattr(credential, "secret_values", ())
+        output = self.secret_redactor.redact(result.output or {}, secret_values)
+        if version.output_schema is not None and not is_empty_object_schema(
+            version.output_schema
+        ):
             try:
                 validate(output, version.output_schema)
             except SchemaDefinitionError:

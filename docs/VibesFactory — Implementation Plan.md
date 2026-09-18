@@ -2059,7 +2059,11 @@ provider
 
 credential_type
 
-encrypted_value
+ciphertext
+
+key_version
+
+revoked_at
 
 metadata
 
@@ -2079,6 +2083,13 @@ Production target later:
 ```text
 Google Secret Manager
 ```
+
+Implementation record (Phase 7): credentials are encrypted with AES-GCM from the
+`cryptography` library. The master key is loaded from the backend-only
+`VF_ENCRYPTION_MASTER_KEY` environment variable as URL-safe base64 for exactly 32
+bytes. The database stores only ciphertext, nonce-bearing encrypted payloads and
+the `v1` key version. Secret values are resolved only inside the tool executor;
+they are never returned to the API, frontend, model context, traces or logs.
 
 Database should never contain plaintext secrets.
 
@@ -2111,6 +2122,43 @@ SecretRedactor
 ```
 
 Apply before persistence/logging.
+
+Phase 7 also applies resolved credential values to the centralized redactor
+before HTTP tool output is persisted or returned to the runtime loop. HTTP
+credential references are workspace-validated when a ToolVersion is published.
+Header injection is the only supported Phase 7 placement and stores a non-secret
+template such as `{{credential.token}}` in executor configuration.
+
+## API/UI delivery
+
+Implemented endpoints:
+
+```text
+POST /v1/workspaces/{workspace_id}/credentials
+GET /v1/workspaces/{workspace_id}/credentials
+DELETE /v1/credentials/{credential_id}
+POST /v1/credentials/{credential_id}:rotate
+```
+
+Credential listing returns metadata only. Workspace members may list metadata;
+only workspace owners may create, rotate or revoke credentials. The frontend
+provides a Settings → Credentials surface and an HTTP Tool credential selector;
+secret values are write-only and are never stored in browser state or local
+storage.
+
+## Acceptance criteria
+
+Phase 7 is complete when:
+
+```text
+Owner creates encrypted credential
+→ credential metadata appears in Settings
+→ HTTP Tool references the credential
+→ executor injects the token into the configured header
+→ rotation invalidates the old ciphertext
+→ revoke blocks future resolution
+→ no secret appears in model context, output, trace, logs or API responses
+```
 
 ---
 

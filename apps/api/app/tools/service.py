@@ -8,7 +8,16 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Agent, AgentDraftTool, Tool, ToolStatus, ToolType, ToolVersion
+from ..credentials.service import DatabaseCredentialResolver
+from ..models import (
+    Agent,
+    AgentDraftTool,
+    Credential,
+    Tool,
+    ToolStatus,
+    ToolType,
+    ToolVersion,
+)
 from .catalog import BUILTIN_SLUGS, ensure_builtin_tools
 from .contracts import ToolExecutionContext, ToolResult
 from .executors import HttpToolConfigError, canonical_http_config
@@ -129,6 +138,28 @@ async def create_version(
             executor_config = canonical_http_config(executor_config)
         except HttpToolConfigError as exc:
             raise ToolServiceError(exc.code, exc.message, 422) from exc
+        credential_ref = executor_config.get("credential_ref")
+        if credential_ref is not None:
+            try:
+                credential_id = UUID(str(credential_ref))
+            except ValueError as exc:
+                raise ToolServiceError(
+                    "CREDENTIAL_REFERENCE_INVALID",
+                    "The credential reference is invalid.",
+                    422,
+                ) from exc
+            credential = await session.scalar(
+                select(Credential).where(
+                    Credential.id == credential_id,
+                    Credential.workspace_id == tool.workspace_id,
+                )
+            )
+            if credential is None:
+                raise ToolServiceError(
+                    "CREDENTIAL_WORKSPACE_MISMATCH",
+                    "The credential does not belong to the tool workspace.",
+                    422,
+                )
     next_number = tool.latest_version_number + 1
     version = ToolVersion(
         workspace_id=tool.workspace_id,
@@ -212,9 +243,10 @@ async def test_version(
     request: ToolTestRequest,
     run_id: UUID | None = None,
 ) -> tuple[ToolResult, int]:
-    del session
     started = monotonic()
-    result = await ToolExecutionPipeline().execute(
+    result = await ToolExecutionPipeline(
+        credential_resolver=DatabaseCredentialResolver(session)
+    ).execute(
         version,
         request.arguments,
         ToolExecutionContext(

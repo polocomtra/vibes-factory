@@ -4,20 +4,27 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
+from apps.api.app.credentials.service import ResolvedCredential
+from apps.api.app.models import ToolType
 from apps.api.app.tools.catalog import (
     WEB_SEARCH_INPUT,
     WEB_SEARCH_OUTPUT,
     builtin_definitions,
 )
-from apps.api.app.tools.contracts import ToolExecutionContext
+from apps.api.app.tools.contracts import ToolExecutionContext, ToolResult
 from apps.api.app.tools.executors import (
     ExaWebSearchExecutor,
     HttpToolConfigError,
+    HttpToolExecutor,
     canonical_http_config,
 )
 from apps.api.app.tools.naming import model_tool_name
-from apps.api.app.tools.pipeline import SecretRedactor
-from apps.api.app.tools.validation import SchemaValidationError, validate
+from apps.api.app.tools.pipeline import SecretRedactor, ToolExecutionPipeline
+from apps.api.app.tools.validation import (
+    SchemaValidationError,
+    is_empty_object_schema,
+    validate,
+)
 
 
 class FakeExaClient:
@@ -167,12 +174,151 @@ def test_http_config_rejects_embedded_credentials_and_sensitive_headers() -> Non
         )
 
 
+def test_http_config_normalizes_credential_binding_without_secret() -> None:
+    config = canonical_http_config(
+        {
+            "base_url": "https://example.com",
+            "credential_ref": str(uuid4()),
+            "credential_binding": {
+                "name": "X-API-Key",
+                "prefix": "",
+                "secret_key": "token",
+            },
+        }
+    )
+
+    assert config["headers"] == {"X-API-Key": "{{credential.token}}"}
+    assert "secret-value" not in str(config)
+    assert canonical_http_config(config) == config
+
+
+def test_http_config_rejects_credential_templates_outside_headers() -> None:
+    with pytest.raises(HttpToolConfigError):
+        canonical_http_config(
+            {
+                "base_url": "https://example.com",
+                "credential_ref": str(uuid4()),
+                "query_mapping": {"api_key": "{{credential.token}}"},
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_http_executor_injects_credential_only_at_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class CapturingExecutor(HttpToolExecutor):
+        async def _request_once(
+            self,
+            method: str,
+            url: str,
+            headers: object,
+            params: object,
+            body: object,
+            timeout_seconds: float,
+        ) -> ToolResult:
+            del method, url, params, body, timeout_seconds
+            assert headers == {"Authorization": "Bearer secret-value"}
+            return ToolResult(ok=True, output={"echo": "secret-value"})
+
+    credential = ResolvedCredential(
+        credential_id=uuid4(),
+        provider="github",
+        credential_type="API_KEY",
+        values={"token": "secret-value"},
+    )
+    executor = CapturingExecutor(
+        {
+            "base_url": "https://example.com",
+            "credential_ref": str(credential.credential_id),
+        },
+        credential=credential,
+    )
+
+    async def allow_destination(_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "apps.api.app.tools.executors._assert_public_destination",
+        allow_destination,
+    )
+    result = await executor.execute(
+        {}, ToolExecutionContext(workspace_id=uuid4())
+    )
+    assert result.output == {"echo": "secret-value"}
+
+
 def test_secret_redactor_removes_sensitive_keys_and_values() -> None:
     redacted = SecretRedactor().redact(
         {"token": "do-not-store", "message": "key=do-not-store"},
         ("do-not-store",),
     )
     assert redacted == {"message": "key=[REDACTED]"}
+
+
+def test_empty_object_schema_is_treated_as_omitted_output_contract() -> None:
+    assert is_empty_object_schema(
+        {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    ) is True
+    assert is_empty_object_schema(
+        {
+            "type": "object",
+            "properties": {"status_code": {"type": "integer"}},
+            "additionalProperties": False,
+        }
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_http_tool_without_output_fields_accepts_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHttpExecutor:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def execute(
+            self,
+            _arguments: object,
+            _context: ToolExecutionContext,
+        ) -> ToolResult:
+            return ToolResult(
+                ok=True,
+                output={"status_code": 200, "body": {"ok": True}},
+            )
+
+    monkeypatch.setattr(
+        "apps.api.app.tools.pipeline.HttpToolExecutor", FakeHttpExecutor
+    )
+    version = SimpleNamespace(
+        input_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        },
+        executor_type=ToolType.HTTP,
+        executor_config={"type": "HTTP"},
+        retry_policy={},
+        idempotent=True,
+    )
+
+    result = await ToolExecutionPipeline().execute(
+        version,
+        {},
+        ToolExecutionContext(workspace_id=uuid4()),
+    )
+
+    assert result.ok is True
+    assert result.output == {"status_code": 200, "body": {"ok": True}}
 
 
 def test_model_tool_name_is_provider_safe() -> None:
