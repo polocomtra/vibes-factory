@@ -4,7 +4,7 @@ import json
 import re
 from collections.abc import Mapping
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 from mcp.client.streamable_http import streamable_http_client
@@ -83,7 +83,7 @@ def _headers(
     if has_custom_headers:
         headers: dict[str, str] = {}
         seen: set[str] = set()
-        for raw_header in custom_headers:
+        for raw_header in cast(list[object], custom_headers):
             descriptor = _safe_dict(raw_header)
             header_name = str(descriptor.get("header_name", "")).strip()
             secret_key = str(descriptor.get("secret_key", "")).strip()

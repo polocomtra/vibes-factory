@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import hashlib
 import ipaddress
 import socket
 from collections.abc import Callable, Mapping
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
 import httpx
+import structlog
 from pydantic import SecretStr
 
 from .contracts import ToolExecutionContext, ToolResult
@@ -46,6 +48,7 @@ _BLOCKED_HOSTNAMES = frozenset(
         "instance-data",
     }
 )
+logger = structlog.get_logger(__name__)
 
 
 class HttpToolConfigError(ValueError):
@@ -88,7 +91,8 @@ def _redact_config_keys(value: object, *, in_headers: bool = False) -> None:
             )
             if (
                 normalized in _SENSITIVE_KEYS
-                or in_headers and normalized in _SENSITIVE_KEYS
+                or in_headers
+                and normalized in _SENSITIVE_KEYS
             ) and not credential_template:
                 raise HttpToolConfigError("HTTP tool config cannot contain secrets.")
             _redact_config_keys(child, in_headers=in_headers or normalized == "headers")
@@ -164,9 +168,7 @@ def canonical_http_config(config: Mapping[str, Any]) -> dict[str, Any]:
         ):
             raise HttpToolConfigError("credential_binding contains invalid values.")
         if "credential_ref" not in config:
-            raise HttpToolConfigError(
-                "credential_binding requires credential_ref."
-            )
+            raise HttpToolConfigError("credential_binding requires credential_ref.")
     if legacy_url and not config.get("base_url"):
         path = parsed.path or "/"
         if parsed.query:
@@ -186,12 +188,12 @@ def canonical_http_config(config: Mapping[str, Any]) -> dict[str, Any]:
     ):
         if not isinstance(value, Mapping):
             raise HttpToolConfigError(f"HTTP {name} must be an object.")
-    if _contains_credential_template(path) or _contains_credential_template(
-        query_mapping
-    ) or _contains_credential_template(body_mapping):
-        raise HttpToolConfigError(
-            "Credential injection only supports HTTP headers."
-        )
+    if (
+        _contains_credential_template(path)
+        or _contains_credential_template(query_mapping)
+        or _contains_credential_template(body_mapping)
+    ):
+        raise HttpToolConfigError("Credential injection only supports HTTP headers.")
     normalized_headers = dict(headers)
     if credential_binding is not None:
         header_name = str(credential_binding.get("name", "Authorization"))
@@ -362,42 +364,112 @@ class ExaWebSearchExecutor:
 
         return Exa(api_key)
 
+    @staticmethod
+    def _query_fingerprint(query: str) -> str:
+        return hashlib.sha256(query.encode("utf-8")).hexdigest()[:16]
+
+    def _safe_error_detail(self, error: BaseException) -> str:
+        detail = str(error).strip() or type(error).__name__
+        if self.api_key is not None:
+            secret = self.api_key.get_secret_value()
+            if secret:
+                detail = detail.replace(secret, "[REDACTED]")
+        return detail[:500]
+
+    def _failure(
+        self,
+        *,
+        code: str,
+        message: str,
+        query: str,
+        context: ToolExecutionContext,
+        started: float,
+        error: BaseException | None = None,
+        status_code: int | None = None,
+    ) -> ToolResult:
+        logger.warning(
+            "external_tool_call_failed",
+            provider="exa",
+            tool="web_search",
+            run_id=str(context.run_id) if context.run_id else None,
+            trace_id=str(context.trace_id) if context.trace_id else None,
+            workspace_id=str(context.workspace_id),
+            query_sha256=self._query_fingerprint(query),
+            query_length=len(query),
+            error_code=code,
+            error_type=type(error).__name__ if error else None,
+            error_detail=self._safe_error_detail(error) if error else None,
+            status_code=status_code,
+            duration_ms=max(0, int((monotonic() - started) * 1000)),
+        )
+        return ToolResult(ok=False, error_code=code, error_message=message)
+
     async def execute(
         self, arguments: Mapping[str, Any], context: ToolExecutionContext
     ) -> ToolResult:
+        started = monotonic()
         query = arguments.get("query")
         num_results = arguments.get("num_results", 10)
         if not isinstance(query, str) or not 1 <= len(query) <= 2_000:
-            return ToolResult(
-                ok=False,
-                error_code="EXA_INVALID_ARGUMENT",
-                error_message="The search query is invalid.",
+            return self._failure(
+                code="EXA_INVALID_ARGUMENT",
+                message="The search query is invalid.",
+                query=str(query) if isinstance(query, str) else "",
+                context=context,
+                started=started,
             )
         if (
             isinstance(num_results, bool)
             or not isinstance(num_results, int)
             or not 1 <= num_results <= 10
         ):
-            return ToolResult(
-                ok=False,
-                error_code="EXA_INVALID_ARGUMENT",
-                error_message="The result count must be an integer from 1 to 10.",
+            return self._failure(
+                code="EXA_INVALID_ARGUMENT",
+                message="The result count must be an integer from 1 to 10.",
+                query=query if isinstance(query, str) else "",
+                context=context,
+                started=started,
             )
         if self.api_key is None or not self.api_key.get_secret_value():
-            return ToolResult(
-                ok=False,
-                error_code="EXA_API_KEY_MISSING",
-                error_message="Web search is not configured.",
+            return self._failure(
+                code="EXA_API_KEY_MISSING",
+                message="Web search is not configured.",
+                query=query,
+                context=context,
+                started=started,
             )
         try:
+            logger.info(
+                "external_tool_call_started",
+                provider="exa",
+                tool="web_search",
+                run_id=str(context.run_id) if context.run_id else None,
+                trace_id=str(context.trace_id) if context.trace_id else None,
+                workspace_id=str(context.workspace_id),
+                query_sha256=self._query_fingerprint(query),
+                query_length=len(query),
+                num_results=num_results,
+            )
             client = self.client_factory(self.api_key.get_secret_value())
+            search_and_contents = getattr(client, "search_and_contents", None)
+            search_method = (
+                search_and_contents if callable(search_and_contents) else client.search
+            )
+            search_kwargs: dict[str, Any] = {
+                "num_results": num_results,
+                "type": "auto",
+            }
+            # Current exa-py exposes highlights on search_and_contents. Older
+            # clients accepted the legacy search call with a contents mapping.
+            if callable(search_and_contents):
+                search_kwargs["highlights"] = True
+            else:
+                search_kwargs["contents"] = {"highlights": True}
             response = await asyncio.wait_for(
                 asyncio.to_thread(
-                    client.search,
+                    search_method,
                     query,
-                    num_results=num_results,
-                    type="auto",
-                    contents={"highlights": True},
+                    **search_kwargs,
                 ),
                 timeout=context.timeout_seconds,
             )
@@ -435,6 +507,18 @@ class ExaWebSearchExecutor:
             request_id = _value(response, "request_id")
             if request_id is not None and not isinstance(request_id, str):
                 raise ValueError("request_id")
+            logger.info(
+                "external_tool_call_completed",
+                provider="exa",
+                tool="web_search",
+                run_id=str(context.run_id) if context.run_id else None,
+                trace_id=str(context.trace_id) if context.trace_id else None,
+                workspace_id=str(context.workspace_id),
+                query_sha256=self._query_fingerprint(query),
+                result_count=len(normalized),
+                provider_request_id=request_id,
+                duration_ms=max(0, int((monotonic() - started) * 1000)),
+            )
             return ToolResult(
                 ok=True,
                 output={
@@ -443,33 +527,46 @@ class ExaWebSearchExecutor:
                     "request_id": request_id,
                 },
             )
-        except (TimeoutError, httpx.TimeoutException):
-            return ToolResult(
-                ok=False,
-                error_code="EXA_TIMEOUT",
-                error_message="Web search timed out.",
+        except (TimeoutError, httpx.TimeoutException) as exc:
+            return self._failure(
+                code="EXA_TIMEOUT",
+                message="Web search timed out.",
+                query=query,
+                context=context,
+                started=started,
+                error=exc,
             )
         except Exception as exc:
             name = type(exc).__name__.lower()
             status_code = getattr(exc, "status_code", None)
             if status_code == 429 or "rate" in name or "429" in str(exc):
-                return ToolResult(
-                    ok=False,
-                    error_code="EXA_RATE_LIMITED",
-                    error_message="Web search is temporarily rate limited.",
+                return self._failure(
+                    code="EXA_RATE_LIMITED",
+                    message="Web search is temporarily rate limited.",
+                    query=query,
+                    context=context,
+                    started=started,
+                    error=exc,
+                    status_code=status_code,
                 )
             if isinstance(exc, ValueError):
-                return ToolResult(
-                    ok=False,
-                    error_code="EXA_INVALID_RESPONSE",
-                    error_message=(
-                        "The web search provider returned an invalid response."
-                    ),
+                return self._failure(
+                    code="EXA_INVALID_RESPONSE",
+                    message="The web search provider returned an invalid response.",
+                    query=query,
+                    context=context,
+                    started=started,
+                    error=exc,
+                    status_code=status_code,
                 )
-            return ToolResult(
-                ok=False,
-                error_code="EXA_PROVIDER_ERROR",
-                error_message="The web search provider failed.",
+            return self._failure(
+                code="EXA_PROVIDER_ERROR",
+                message="The web search provider failed.",
+                query=query,
+                context=context,
+                started=started,
+                error=exc,
+                status_code=status_code,
             )
 
 

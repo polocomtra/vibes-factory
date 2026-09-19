@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID, uuid4
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     DateTime,
     Enum,
@@ -64,6 +65,33 @@ class SpanType(StrEnum):
     CONTEXT_BUILD = "CONTEXT_BUILD"
     MODEL = "MODEL"
     TOOL = "TOOL"
+    RETRIEVAL = "RETRIEVAL"
+
+
+class KnowledgeBaseStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class DocumentStatus(StrEnum):
+    UPLOADED = "UPLOADED"
+    PROCESSING = "PROCESSING"
+    READY = "READY"
+    FAILED = "FAILED"
+    DELETED = "DELETED"
+
+
+class JobType(StrEnum):
+    DOCUMENT_INGESTION = "DOCUMENT_INGESTION"
+    DOCUMENT_CLEANUP = "DOCUMENT_CLEANUP"
+
+
+class JobStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class SpanStatus(StrEnum):
@@ -567,6 +595,277 @@ class AgentVersionTool(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class KnowledgeBase(Base):
+    __tablename__ = "knowledge_bases"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[KnowledgeBaseStatus] = mapped_column(
+        Enum(KnowledgeBaseStatus, native_enum=False, length=32),
+        default=KnowledgeBaseStatus.ACTIVE,
+        nullable=False,
+    )
+    embedding_provider: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="sentence-transformers"
+    )
+    embedding_model: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default="intfloat/multilingual-e5-small"
+    )
+    embedding_revision: Mapped[str] = mapped_column(String(255), nullable=False)
+    embedding_dimensions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="384"
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_knowledge_bases_workspace_name"
+        ),
+        Index("ix_knowledge_bases_workspace_status", "workspace_id", "status"),
+    )
+
+
+class Document(Base):
+    __tablename__ = "documents"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    storage_uri: Mapped[str] = mapped_column(Text, nullable=False)
+    checksum_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[DocumentStatus] = mapped_column(
+        Enum(DocumentStatus, native_enum=False, length=32),
+        default=DocumentStatus.UPLOADED,
+        nullable=False,
+    )
+    ingestion_generation: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    active_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    token_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_documents_workspace_status", "workspace_id", "status"),
+        Index("ix_documents_knowledge_base_status", "knowledge_base_id", "status"),
+        UniqueConstraint(
+            "knowledge_base_id", "checksum_sha256", name="uq_documents_kb_checksum"
+        ),
+        UniqueConstraint(
+            "knowledge_base_id", "idempotency_key", name="uq_documents_kb_idempotency"
+        ),
+    )
+
+
+class DocumentChunk(Base):
+    __tablename__ = "document_chunks"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    document_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ingestion_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(384), nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    section: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id",
+            "ingestion_generation",
+            "chunk_index",
+            name="uq_document_chunks_generation_index",
+        ),
+        Index("ix_document_chunks_workspace_kb", "workspace_id", "knowledge_base_id"),
+        Index(
+            "ix_document_chunks_document_generation",
+            "document_id",
+            "ingestion_generation",
+        ),
+    )
+
+
+class AgentDraftKnowledgeBase(Base):
+    __tablename__ = "agent_draft_knowledge_bases"
+
+    agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    retrieval_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentVersionKnowledgeBase(Base):
+    __tablename__ = "agent_version_knowledge_bases"
+
+    agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    knowledge_base_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    retrieval_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    job_type: Mapped[JobType] = mapped_column(
+        Enum(JobType, native_enum=False, length=64), nullable=False
+    )
+    status: Mapped[JobStatus] = mapped_column(
+        Enum(JobStatus, native_enum=False, length=32),
+        default=JobStatus.QUEUED,
+        nullable=False,
+    )
+    resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    resource_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    max_attempts: Mapped[int] = mapped_column(
+        Integer, default=5, server_default="5", nullable=False
+    )
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "job_type", "resource_id", "generation", name="uq_jobs_resource_generation"
+        ),
+        Index("ix_jobs_claim_path", "status", "available_at", "lease_expires_at"),
+        Index("ix_jobs_workspace_status", "workspace_id", "status"),
     )
 
 

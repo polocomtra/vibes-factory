@@ -55,6 +55,32 @@ class RuntimeTool(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class RuntimeKnowledgeBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    knowledge_base_id: UUID
+    name: str
+    mode: Literal["auto", "always"] = "auto"
+    top_k: int = Field(default=5, ge=1, le=20)
+    score_threshold: float | None = None
+    filters: dict[str, object] = Field(default_factory=dict)
+
+
+class Citation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    marker: str
+    chunk_id: UUID
+    document_id: UUID
+    knowledge_base_id: UUID
+    source_name: str
+    page: int | None = None
+    section: str | None = None
+    score: float
+    generation: int
+    excerpt: str = Field(max_length=500)
+
+
 class AgentVersionRuntimeConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -66,6 +92,7 @@ class AgentVersionRuntimeConfig(BaseModel):
     model_name: str
     model_options: dict[str, object] = Field(default_factory=dict)
     tools: tuple[RuntimeTool, ...] = ()
+    knowledge_bases: tuple[RuntimeKnowledgeBinding, ...] = ()
 
 
 class RuntimeSession(BaseModel):
@@ -85,6 +112,8 @@ class AgentRunRequest(BaseModel):
     session: RuntimeSession
     input: TextInput
     execution_budget: ExecutionBudget
+    knowledge_context: str | None = None
+    citations: tuple[Citation, ...] = ()
 
 
 class AgentRunResult(BaseModel):
@@ -96,6 +125,7 @@ class AgentRunResult(BaseModel):
     session_id: UUID
     status: Literal["COMPLETED"]
     output: TextInput
+    citations: tuple[Citation, ...] = ()
     usage: TokenUsage
     estimated_cost: float | None = None
     started_at: datetime
@@ -114,6 +144,9 @@ class RuntimeStreamEvent(BaseModel):
         "tool.started",
         "tool.completed",
         "tool.failed",
+        "retrieval.started",
+        "retrieval.completed",
+        "retrieval.failed",
         "run.completed",
         "run.failed",
     ]

@@ -1,0 +1,12 @@
+[project]
+name = "vibesfactory-embedding"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "huggingface-hub>=0.23,<2",
+  "numpy>=1.26,<3",
+  "onnxruntime>=1.22,<2",
+  "transformers>=4.41,<5",
+  "uvicorn[standard]>=0.32,<1",
+]

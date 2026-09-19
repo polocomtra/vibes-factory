@@ -34,9 +34,7 @@ class MCPHeaderConfig(BaseModel):
         return self
 
 
-def _validate_http_header_name(
-    value: str, *, allow_authorization: bool = False
-) -> str:
+def _validate_http_header_name(value: str, *, allow_authorization: bool = False) -> str:
     normalized = value.strip()
     if not re.fullmatch(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+", normalized):
         raise ValueError("Header names must be valid HTTP field names.")

@@ -94,9 +94,7 @@ def _span_response(span: Span) -> SpanSummaryResponse:
     )
 
 
-async def _trace_for_user(
-    session: AsyncSession, trace_id: UUID, user: User
-) -> Trace:
+async def _trace_for_user(session: AsyncSession, trace_id: UUID, user: User) -> Trace:
     trace = await session.get(Trace, trace_id)
     if trace is None:
         raise _not_found("The trace was not found.")
@@ -162,9 +160,11 @@ async def list_traces(
             )
         )
 
-    rows = (await session.execute(
-        statement.order_by(desc(Trace.started_at), desc(Trace.id)).limit(limit + 1)
-    )).all()
+    rows = (
+        await session.execute(
+            statement.order_by(desc(Trace.started_at), desc(Trace.id)).limit(limit + 1)
+        )
+    ).all()
     has_more = len(rows) > limit
     rows = rows[:limit]
     return TraceCollectionResponse(

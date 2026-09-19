@@ -1,5 +1,13 @@
 # VibesFactory — Entity Relationship Diagram
 
+## Phase 9 relationship addendum
+
+`Workspace 1—N KnowledgeBase 1—N Document 1—N DocumentChunk`; chunks belong to
+one ingestion generation and are queryable only when it is the document's
+active generation. `AgentDraft N—N KnowledgeBase` is mutable while
+`AgentVersion N—N KnowledgeBase` is immutable. `Document 1—N Job` captures
+ingestion and cleanup retries.
+
 **Document Version:** 0.1  
 **Status:** Proposed / Source of Truth  
 **Companion Document:** DATABASE_SCHEMA.md

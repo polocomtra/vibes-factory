@@ -32,7 +32,7 @@ class FakeExaClient:
         self.key = key
         self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def search(self, query: str, **kwargs: object) -> object:
+    def search_and_contents(self, query: str, **kwargs: object) -> object:
         self.calls.append((query, kwargs))
         return SimpleNamespace(
             results=[
@@ -62,7 +62,7 @@ async def test_exa_search_is_called_with_agent_safe_defaults() -> None:
     assert client.calls == [
         (
             "Latest news",
-            {"num_results": 2, "type": "auto", "contents": {"highlights": True}},
+            {"num_results": 2, "type": "auto", "highlights": True},
         )
     ]
     assert result.output == {
@@ -94,7 +94,7 @@ async def test_exa_missing_key_is_safe() -> None:
 @pytest.mark.asyncio
 async def test_exa_search_limits_highlight_context() -> None:
     class LargeFakeExaClient(FakeExaClient):
-        def search(self, query: str, **kwargs: object) -> object:
+        def search_and_contents(self, query: str, **kwargs: object) -> object:
             self.calls.append((query, kwargs))
             return SimpleNamespace(
                 results=[
@@ -242,9 +242,7 @@ async def test_http_executor_injects_credential_only_at_execution(
         "apps.api.app.tools.executors._assert_public_destination",
         allow_destination,
     )
-    result = await executor.execute(
-        {}, ToolExecutionContext(workspace_id=uuid4())
-    )
+    result = await executor.execute({}, ToolExecutionContext(workspace_id=uuid4()))
     assert result.output == {"echo": "secret-value"}
 
 
@@ -257,20 +255,26 @@ def test_secret_redactor_removes_sensitive_keys_and_values() -> None:
 
 
 def test_empty_object_schema_is_treated_as_omitted_output_contract() -> None:
-    assert is_empty_object_schema(
-        {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": False,
-        }
-    ) is True
-    assert is_empty_object_schema(
-        {
-            "type": "object",
-            "properties": {"status_code": {"type": "integer"}},
-            "additionalProperties": False,
-        }
-    ) is False
+    assert (
+        is_empty_object_schema(
+            {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            }
+        )
+        is True
+    )
+    assert (
+        is_empty_object_schema(
+            {
+                "type": "object",
+                "properties": {"status_code": {"type": "integer"}},
+                "additionalProperties": False,
+            }
+        )
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -328,7 +332,7 @@ def test_model_tool_name_is_provider_safe() -> None:
 @pytest.mark.asyncio
 async def test_exa_invalid_provider_shape_is_normalized() -> None:
     class InvalidClient:
-        def search(self, query: str, **kwargs: object) -> object:
+        def search_and_contents(self, query: str, **kwargs: object) -> object:
             return SimpleNamespace(results={"not": "a list"})
 
     result = await ExaWebSearchExecutor(

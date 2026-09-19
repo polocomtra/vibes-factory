@@ -1,5 +1,13 @@
 # VibesFactory — Brand & UI Design System
 
+## Phase 9 Knowledge UI addendum
+
+Knowledge uses the existing Obsidian/Frost semantic tokens and AppShell. The
+list page supports create/archive and readiness counts; detail supports
+keyboard-accessible drag/drop upload, status polling, retry/reprocess/delete
+and responsive document rows. Status is always icon plus text, with one
+atomic status announcement and reduced-motion-safe interaction.
+
 **Document Version:** 1.0  
 **Status:** Approved Baseline  
 **Project:** VibesFactory  

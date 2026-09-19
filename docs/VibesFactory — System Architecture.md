@@ -1,5 +1,14 @@
 # VibesFactory — System Architecture
 
+## Phase 9 implementation addendum
+
+The implemented knowledge path is API → PostgreSQL `jobs` row → worker →
+private BlobStore → parser/chunker → internal embedding HTTP service →
+pgvector. The API never loads model weights. A `RETRIEVAL` span is created
+before context construction; chunks are bounded to 20/8,000 tokens and
+inserted as explicitly untrusted context. Every vector query filters the
+workspace, KB, READY status and active generation.
+
 **Document Version:** 0.2  
 **Architecture Status:** Approved Baseline  
 **Project:** VibesFactory  

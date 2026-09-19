@@ -10,10 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import (
     Agent,
     AgentDraft,
+    AgentDraftKnowledgeBase,
     AgentDraftTool,
     AgentStatus,
     AgentVersion,
+    AgentVersionKnowledgeBase,
     AgentVersionTool,
+    KnowledgeBase,
+    KnowledgeBaseStatus,
     Tool,
     ToolVersion,
 )
@@ -93,7 +97,9 @@ def _normalized_model_config(stored_config: dict[str, Any]) -> dict[str, object]
 
 
 def build_snapshot(
-    draft: AgentDraft, tools: list[dict[str, object]] | None = None
+    draft: AgentDraft,
+    tools: list[dict[str, object]] | None = None,
+    knowledge_bases: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "schema_version": 1,
@@ -106,7 +112,7 @@ def build_snapshot(
         "runtime_config": draft.runtime_config,
         "memory_config": draft.memory_config,
         "tools": tools or [],
-        "knowledge_bases": [],
+        "knowledge_bases": knowledge_bases or [],
         "guardrails": [],
         "child_agents": [],
     }
@@ -303,6 +309,41 @@ async def publish_version(
             }
         )
 
+    knowledge_rows = (
+        await session.execute(
+            select(AgentDraftKnowledgeBase, KnowledgeBase)
+            .join(
+                KnowledgeBase,
+                KnowledgeBase.id == AgentDraftKnowledgeBase.knowledge_base_id,
+            )
+            .where(AgentDraftKnowledgeBase.agent_id == locked_agent.id)
+        )
+    ).all()
+    knowledge_snapshots: list[dict[str, object]] = []
+    for binding, knowledge_base in knowledge_rows:
+        if knowledge_base.workspace_id != locked_agent.workspace_id:
+            raise AgentServiceError(
+                "KNOWLEDGE_WORKSPACE_MISMATCH",
+                "A bound knowledge base does not belong to the agent workspace.",
+                422,
+            )
+        if knowledge_base.status != KnowledgeBaseStatus.ACTIVE:
+            raise AgentServiceError(
+                "KNOWLEDGE_BASE_ARCHIVED",
+                "Archived knowledge bases cannot be published.",
+                409,
+            )
+        knowledge_snapshots.append(
+            {
+                "id": str(knowledge_base.id),
+                "name": knowledge_base.name,
+                "model": knowledge_base.embedding_model,
+                "revision": knowledge_base.embedding_revision,
+                "dimensions": knowledge_base.embedding_dimensions,
+                "retrieval_config": binding.retrieval_config,
+            }
+        )
+
     next_version = locked_agent.latest_version_number + 1
     version = AgentVersion(
         workspace_id=locked_agent.workspace_id,
@@ -314,7 +355,7 @@ async def publish_version(
         model_config=draft.model_config,
         runtime_config=draft.runtime_config,
         memory_config=draft.memory_config,
-        snapshot=build_snapshot(draft, tool_snapshots),
+        snapshot=build_snapshot(draft, tool_snapshots, knowledge_snapshots),
         change_note=change_note,
         created_by=user_id,
     )
@@ -328,6 +369,14 @@ async def publish_version(
                 tool_version_id=binding.tool_version_id,
                 alias=binding.alias,
                 configuration=binding.configuration,
+            )
+        )
+    for binding, _ in knowledge_rows:
+        session.add(
+            AgentVersionKnowledgeBase(
+                agent_version_id=version.id,
+                knowledge_base_id=binding.knowledge_base_id,
+                retrieval_config=binding.retrieval_config,
             )
         )
     await session.commit()

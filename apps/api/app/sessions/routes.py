@@ -112,9 +112,7 @@ async def create_session(
         agent_id=agent.id,
         user_id=user.id,
         title=(
-            payload.title.strip()
-            if payload.title and payload.title.strip()
-            else None
+            payload.title.strip() if payload.title and payload.title.strip() else None
         ),
     )
     session.add(item)

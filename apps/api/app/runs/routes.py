@@ -17,7 +17,9 @@ from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
     Agent,
     AgentVersion,
+    AgentVersionKnowledgeBase,
     AgentVersionTool,
+    KnowledgeBase,
     Message,
     Run,
     Session,
@@ -29,6 +31,7 @@ from ..runtime.contracts import (
     AgentRunRequest,
     AgentVersionRuntimeConfig,
     ExecutionBudget,
+    RuntimeKnowledgeBinding,
     RuntimeSession,
     RuntimeTool,
     SessionMessage,
@@ -119,6 +122,21 @@ async def _build_runtime_request(
             "A published tool does not belong to the agent workspace.",
             status_code=422,
         )
+    knowledge_rows = await session.execute(
+        select(AgentVersionKnowledgeBase, KnowledgeBase)
+        .join(
+            KnowledgeBase,
+            KnowledgeBase.id == AgentVersionKnowledgeBase.knowledge_base_id,
+        )
+        .where(AgentVersionKnowledgeBase.agent_version_id == version.id)
+    )
+    published_knowledge = knowledge_rows.all()
+    if any(kb.workspace_id != agent.workspace_id for _, kb in published_knowledge):
+        raise RuntimeExecutionError(
+            "KNOWLEDGE_WORKSPACE_MISMATCH",
+            "A published knowledge base does not belong to the agent workspace.",
+            status_code=422,
+        )
     budget = ExecutionBudget.model_validate(version.runtime_config)
     return AgentRunRequest(
         workspace_id=agent.workspace_id,
@@ -139,6 +157,22 @@ async def _build_runtime_request(
                     parameters=tool_version.input_schema,
                 )
                 for binding, tool_version, catalog_tool in published_tools
+            ),
+            knowledge_bases=tuple(
+                RuntimeKnowledgeBinding(
+                    knowledge_base_id=kb.id,
+                    name=kb.name,
+                    mode=(
+                        str(binding.retrieval_config.get("mode", "auto"))
+                        if binding.retrieval_config.get("mode", "auto")
+                        in {"auto", "always"}
+                        else "auto"
+                    ),
+                    top_k=int(binding.retrieval_config.get("top_k", 5)),
+                    score_threshold=binding.retrieval_config.get("score_threshold"),
+                    filters=binding.retrieval_config.get("filters", {}),
+                )
+                for binding, kb in published_knowledge
             ),
         ),
         session=RuntimeSession(

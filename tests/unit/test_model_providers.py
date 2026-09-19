@@ -232,7 +232,9 @@ async def test_gemini_normalizes_text_usage_and_model_finish_reason() -> None:
     )
     client = FakeGeminiClient(response)
     provider = GeminiProvider(client_factory=lambda **kwargs: client)
-    result = await provider.generate(request("google", "gemini-2.5-flash"), "temporary-key")
+    result = await provider.generate(
+        request("google", "gemini-2.5-flash"), "temporary-key"
+    )
 
     assert result.content == "OK"
     assert result.finish_reason is None
@@ -322,7 +324,9 @@ async def test_fake_provider_uses_platform_contract_without_network() -> None:
 @pytest.mark.asyncio
 async def test_fake_provider_stream_is_deterministic() -> None:
     provider = FakeModelProvider(
-        response_factory=lambda _: ModelResponse(content="stream me", finish_reason="STOP"),
+        response_factory=lambda _: ModelResponse(
+            content="stream me", finish_reason="STOP"
+        ),
         stream_chunk_size=3,
     )
     stream_request = request("fake").model_copy(update={"stream": True})

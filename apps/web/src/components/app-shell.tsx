@@ -8,7 +8,7 @@ import {
     // Temporarily hidden navigation icons; uncomment with their nav item:
     // Activity,
     Bot,
-    // Boxes,
+    Boxes,
     BrainCircuit,
     ChevronDown,
     CircleHelp,
@@ -54,9 +54,9 @@ const navItems: NavItem[] = [
     { label: "Agents", icon: Bot, group: "Build" },
     { label: "Playground", icon: Code2 },
     // { label: "Workflows", icon: GitBranch },
-    // { label: "Knowledge", icon: Boxes, group: "Connect" },
+    { label: "Knowledge", icon: Boxes, group: "Connect" },
     { label: "Tools", icon: Zap, group: "Connect" },
-    { label: "MCP Servers", icon: Network },
+    { label: "MCP Servers", icon: Network, group: "Connect" },
     // { label: "Evaluations", icon: FlaskConical, group: "Operate" },
     // { label: "Deployments", icon: Cloud },
     { label: "Traces", icon: Radio, group: "Operate" },
@@ -381,6 +381,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (path === "/traces" || path.includes("/traces")) return "Traces";
         if (path.startsWith("/agents")) return "Agents";
         if (path === "/tools" || path.startsWith("/tools/")) return "Tools";
+        if (path === "/knowledge" || path.startsWith("/knowledge/")) return "Knowledge";
         if (path === "/mcp-servers" || path.startsWith("/mcp-servers/"))
             return "MCP Servers";
         if (path === "/settings") return "Settings";
@@ -442,6 +443,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (label === "Dashboard") router.push("/");
         if (label === "Agents") router.push("/agents");
         if (label === "Tools") router.push("/tools");
+        if (label === "Knowledge") router.push("/knowledge");
         if (label === "MCP Servers") router.push("/mcp-servers");
         if (label === "Playground") router.push("/playground");
         if (label === "Traces") router.push("/traces");
@@ -500,11 +502,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 />
 
                 <nav className="sidebar-nav" aria-label="Primary navigation">
-                    {navItems.map((item) => {
+                    {navItems.map((item, index) => {
                         const Icon = item.icon;
+                        const previousItem = navItems[index - 1];
+                        const showGroupLabel =
+                            Boolean(item.group) &&
+                            item.group !== previousItem?.group;
                         return (
                             <div className="nav-entry" key={item.label}>
-                                {item.group ? (
+                                {showGroupLabel ? (
                                     <div className="nav-group-label">
                                         {sidebarCollapsed ? null : item.group}
                                     </div>

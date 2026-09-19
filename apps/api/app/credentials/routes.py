@@ -80,9 +80,7 @@ async def list_credentials_route(
     )
 
 
-@router.get(
-    "/credentials/{credential_id}/keys", response_model=CredentialKeyCollection
-)
+@router.get("/credentials/{credential_id}/keys", response_model=CredentialKeyCollection)
 async def credential_keys_route(
     credential_id: UUID,
     user: User = Depends(get_current_user),
@@ -112,9 +110,7 @@ async def revoke_credential_route(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post(
-    "/credentials/{credential_id}:rotate", response_model=CredentialResponse
-)
+@router.post("/credentials/{credential_id}:rotate", response_model=CredentialResponse)
 async def rotate_credential_route(
     credential_id: UUID,
     payload: CredentialRotateRequest,

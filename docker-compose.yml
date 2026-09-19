@@ -29,12 +29,89 @@ services:
       VF_MCP_OPERATION_TIMEOUT_SECONDS: ${VF_MCP_OPERATION_TIMEOUT_SECONDS:-30}
       VF_MCP_MAX_DISCOVERED_TOOLS: ${VF_MCP_MAX_DISCOVERED_TOOLS:-200}
       VF_MCP_MAX_OUTPUT_BYTES: ${VF_MCP_MAX_OUTPUT_BYTES:-256000}
+      VF_EMBEDDING_SERVICE_URL: http://embedding:8100
+      VF_EMBEDDING_MODEL: ${VF_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+      VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
+      VF_EMBEDDING_ORT_PROVIDER: ${VF_EMBEDDING_ORT_PROVIDER:-CPUExecutionProvider}
+      VF_EMBEDDING_TIMEOUT_SECONDS: ${VF_EMBEDDING_TIMEOUT_SECONDS:-90}
+      VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
+      VF_BLOB_STORAGE_BUCKET: ${VF_BLOB_STORAGE_BUCKET:-}
+      VF_MAX_DOCUMENT_BYTES: ${VF_MAX_DOCUMENT_BYTES:-20971520}
     ports:
       - "8000:8000"
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      embedding:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - blob_data:/var/lib/vibesfactory/blobs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 12
     command: uvicorn apps.api.app.main:app --host 0.0.0.0 --port 8000
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@postgres:5432/vibesfactory
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    command: alembic upgrade head
+
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@postgres:5432/vibesfactory
+      VF_EMBEDDING_SERVICE_URL: http://embedding:8100
+      VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
+      VF_EMBEDDING_TIMEOUT_SECONDS: ${VF_EMBEDDING_TIMEOUT_SECONDS:-90}
+      VF_EMBEDDING_BATCH_SIZE: ${VF_EMBEDDING_BATCH_SIZE:-8}
+      VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
+      VF_BLOB_STORAGE_BUCKET: ${VF_BLOB_STORAGE_BUCKET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      embedding:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - blob_data:/var/lib/vibesfactory/blobs
+    restart: unless-stopped
+    command: python -m apps.api.worker
+
+  embedding:
+    build:
+      context: .
+      dockerfile: apps/embedding/Dockerfile
+      args:
+        VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
+    environment:
+      VF_EMBEDDING_MODEL: ${VF_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+      VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
+      VF_EMBEDDING_ORT_PROVIDER: ${VF_EMBEDDING_ORT_PROVIDER:-CPUExecutionProvider}
+    expose:
+      - "8100"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/ready')"]
+      interval: 10s
+      timeout: 10s
+      start_period: 120s
+      retries: 12
 
   web:
     build:
@@ -42,16 +119,18 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         NEXT_PUBLIC_API_URL: http://localhost:8000
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:8000
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY}
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
     ports:
       - "3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -63,6 +142,7 @@ services:
       - "15432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vibesfactory -d vibesfactory"]
       interval: 5s
@@ -77,3 +157,4 @@ services:
 
 volumes:
   postgres_data:
+  blob_data:

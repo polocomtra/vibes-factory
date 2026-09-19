@@ -1,7 +1,10 @@
 """The single tool execution boundary shared by tests and AgentRuntime."""
 
 from collections.abc import Mapping
+from time import monotonic
 from typing import Any
+
+import structlog
 
 from ..config import get_settings
 from ..credentials.service import CredentialResolutionError
@@ -38,6 +41,7 @@ _SECRET_KEYS = frozenset(
         "x-api-key",
     }
 )
+logger = structlog.get_logger(__name__)
 
 
 class SecretRedactor:
@@ -95,6 +99,22 @@ class ToolExecutionPipeline:
         arguments: Mapping[str, Any],
         context: ToolExecutionContext,
     ) -> ToolResult:
+        started = monotonic()
+        tool_name = getattr(version, "name", "tool")
+        external = version.executor_type in {ToolType.HTTP, ToolType.MCP} or (
+            tool_name == "web_search"
+        )
+        execution_fields = {
+            "tool": tool_name,
+            "tool_version_id": (
+                str(version.id) if getattr(version, "id", None) else None
+            ),
+            "executor_type": version.executor_type.value,
+            "workspace_id": str(context.workspace_id),
+            "run_id": str(context.run_id) if context.run_id else None,
+            "trace_id": str(context.trace_id) if context.trace_id else None,
+            "external": external,
+        }
         try:
             validate(dict(arguments), version.input_schema)
         except SchemaDefinitionError:
@@ -172,10 +192,10 @@ class ToolExecutionPipeline:
                         continue
                     reference = str(raw_header["credential_id"])
                     try:
-                        custom_credentials[reference] = (
-                            await self.credential_resolver.resolve(
-                                reference, context.workspace_id
-                            )
+                        custom_credentials[
+                            reference
+                        ] = await self.credential_resolver.resolve(
+                            reference, context.workspace_id
                         )
                     except CredentialResolutionError as exc:
                         return self._failure(exc.code, exc.message)
@@ -186,6 +206,7 @@ class ToolExecutionPipeline:
                         )
 
         try:
+            logger.info("tool_execution_started", **execution_fields)
             if version.executor_type == ToolType.FUNCTION:
                 result = await self.function_registry.execute(
                     str(version.executor_config.get("function_name", version.name)),
@@ -212,9 +233,22 @@ class ToolExecutionPipeline:
                     "EXECUTOR_TYPE_MISMATCH", "The executor type is unsupported."
                 )
         except Exception:
+            logger.exception(
+                "tool_execution_failed",
+                **execution_fields,
+                error_code="TOOL_EXECUTION_FAILED",
+                duration_ms=max(0, int((monotonic() - started) * 1000)),
+            )
             return self._failure("TOOL_EXECUTION_FAILED", "The tool execution failed.")
 
         if not result.ok:
+            logger.warning(
+                "tool_execution_failed",
+                **execution_fields,
+                error_code=result.error_code or "TOOL_FAILED",
+                error_message=result.error_message or "The tool failed.",
+                duration_ms=max(0, int((monotonic() - started) * 1000)),
+            )
             return result.model_copy(
                 update={
                     "output": None,
@@ -240,9 +274,15 @@ class ToolExecutionPipeline:
                 return self._failure(
                     "TOOL_OUTPUT_INVALID", "The tool returned an invalid output."
                 )
-        return result.model_copy(
+        normalized = result.model_copy(
             update={
                 "output": output,
                 "metadata": self.secret_redactor.redact(result.metadata, secret_values),
             }
         )
+        logger.info(
+            "tool_execution_completed",
+            **execution_fields,
+            duration_ms=max(0, int((monotonic() - started) * 1000)),
+        )
+        return normalized

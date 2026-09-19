@@ -4,7 +4,7 @@ from decimal import Decimal
 from functools import lru_cache
 from typing import Annotated
 
-from pydantic import SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -44,6 +44,19 @@ class Settings(BaseSettings):
     mcp_operation_timeout_seconds: float = 30.0
     mcp_max_discovered_tools: int = 200
     mcp_max_output_bytes: int = 256_000
+    # Host-local worker default. Docker Compose overrides this with the
+    # service DNS name `http://embedding:8100`.
+    embedding_service_url: str = "http://127.0.0.1:8100"
+    embedding_model: str = "intfloat/multilingual-e5-small"
+    embedding_revision: str = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
+    embedding_timeout_seconds: float = Field(default=90.0, gt=0, le=900)
+    embedding_batch_size: int = Field(default=8, ge=1, le=32)
+    # Keep host-local development writable without requiring sudo. Docker
+    # Compose overrides this with its mounted /var/lib/vibesfactory volume.
+    blob_storage_path: str = "~/.vibesfactory/blobs"
+    blob_storage_bucket: str | None = None
+    max_document_bytes: int = 20 * 1024 * 1024
+    ingestion_poll_seconds: float = 1.0
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
     azure_openai_deployment_name: str = "gpt-5.6-luna"

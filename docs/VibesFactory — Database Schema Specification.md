@@ -1,5 +1,12 @@
 # VibesFactory — Database Schema Specification
 
+## Phase 9 executable schema addendum
+
+Migration `0011_phase9_knowledge_rag` is the source of truth for pinned KB
+embedding identity, document checksum/status/generations, `vector(384)` HNSW
+chunks, draft/version bindings and the leased jobs queue. Reprocessing swaps
+generations atomically; delete removes queryability before cleanup.
+
 **Document Version:** 0.1  
 **Status:** Proposed / Source of Truth  
 **Database:** PostgreSQL  

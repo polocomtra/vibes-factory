@@ -191,9 +191,7 @@ async def list_credentials(
     return list(result.all())
 
 
-async def get_credential(
-    session: AsyncSession, credential_id: UUID
-) -> Credential:
+async def get_credential(session: AsyncSession, credential_id: UUID) -> Credential:
     credential = await session.get(Credential, credential_id)
     if credential is None:
         raise CredentialServiceError(
@@ -245,9 +243,7 @@ async def rotate_credential(
     return credential
 
 
-async def revoke_credential(
-    session: AsyncSession, credential: Credential
-) -> None:
+async def revoke_credential(session: AsyncSession, credential: Credential) -> None:
     if credential.revoked_at is None:
         credential.revoked_at = datetime.now(UTC)
         await session.commit()
@@ -259,9 +255,7 @@ class DatabaseCredentialResolver:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
-    async def resolve(
-        self, reference: str, workspace_id: UUID
-    ) -> ResolvedCredential:
+    async def resolve(self, reference: str, workspace_id: UUID) -> ResolvedCredential:
         try:
             credential_id = UUID(reference)
         except ValueError as exc:

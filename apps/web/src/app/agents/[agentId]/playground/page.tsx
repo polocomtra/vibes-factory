@@ -2,6 +2,7 @@
 
 import {
     ArrowLeft,
+    BookOpen,
     Bot,
     Check,
     ChevronDown,
@@ -44,6 +45,7 @@ import {
     fetchSpan,
     fetchTraceSpans,
     type Message,
+    type Citation,
     type Run,
     type Session,
     type Span,
@@ -409,17 +411,103 @@ function MessageContent({ message }: { message: Message }) {
     );
 }
 
+function citationsOf(message: Message): Citation[] {
+    const citations = message.content.citations;
+    return Array.isArray(citations) ? (citations as Citation[]) : [];
+}
+
+function SourcesPanel({ citations }: { citations: Citation[] }) {
+    if (citations.length === 0) return null;
+    return (
+        <details className="sources-panel">
+            <summary className="sources-panel-summary">
+                <span className="sources-panel-title">
+                    <BookOpen size={14} aria-hidden="true" />
+                    <span>
+                        <span className="panel-kicker">Grounded response</span>
+                        <strong>Sources</strong>
+                    </span>
+                </span>
+                <span className="sources-panel-meta">
+                    <span className="status-badge info">
+                        <span aria-hidden="true" />
+                        {citations.length}
+                    </span>
+                    <span className="sources-panel-toggle sources-panel-toggle-closed">
+                        Show sources
+                    </span>
+                    <span className="sources-panel-toggle sources-panel-toggle-open">
+                        Hide sources
+                    </span>
+                    <ChevronDown
+                        className="sources-panel-chevron"
+                        size={15}
+                        aria-hidden="true"
+                    />
+                </span>
+            </summary>
+            <div className="sources-list" aria-label="Retrieved sources">
+                {citations.map((citation) => (
+                    <button
+                        className="source-card"
+                        type="button"
+                        key={citation.marker}
+                        aria-label={`Source ${citation.marker}: ${citation.source_name}${citation.page ? `, page ${citation.page}` : ""}`}
+                        onClick={() =>
+                            document
+                                .getElementById(`source-${citation.marker}`)
+                                ?.scrollIntoView({
+                                    behavior: "smooth",
+                                    block: "center",
+                                })
+                        }
+                    >
+                        <span
+                            className="source-marker"
+                            id={`source-${citation.marker}`}
+                            aria-hidden="true"
+                        >
+                            {citation.marker}
+                        </span>
+                        <span>
+                            <strong>
+                                {citation.source_name}
+                                {citation.page ? ` · p.${citation.page}` : ""}
+                            </strong>
+                            <small>{citation.excerpt}</small>
+                            <small>
+                                Score {citation.score.toFixed(3)} · generation {citation.generation}
+                            </small>
+                        </span>
+                    </button>
+                ))}
+            </div>
+        </details>
+    );
+}
+
 function PlaygroundMessage({
     message,
     agentName,
     tools = [],
+    fallbackCitations = [],
 }: {
     message: Message;
     agentName: string;
     tools?: ToolCallRecord[];
+    fallbackCitations?: Citation[];
 }) {
     const content = textOf(message);
     if (message.role === "TOOL") return null;
+    const usedExternalResearch = tools.some(
+        (tool) => tool.name.trim().toLowerCase() === "web_search",
+    );
+    const citations =
+        message.role === "ASSISTANT" && !usedExternalResearch
+            ? citationsOf(message).length > 0
+                ? citationsOf(message)
+                : fallbackCitations
+            : [];
     return (
         <div
             className={`playground-message-wrap ${message.role.toLowerCase()}`}
@@ -445,6 +533,7 @@ function PlaygroundMessage({
             <div className="message-actions">
                 <CopyButton text={content} />
             </div>
+            {citations.length > 0 ? <SourcesPanel citations={citations} /> : null}
         </div>
     );
 }
@@ -613,6 +702,8 @@ function TraceInspector({
                                             <FileText size={14} />
                                         ) : span.type === "TOOL" ? (
                                             <SearchIcon size={14} />
+                                        ) : span.type === "RETRIEVAL" ? (
+                                            <BookOpen size={14} />
                                         ) : (
                                             <GitBranch size={14} />
                                         )}
@@ -1011,6 +1102,12 @@ export default function PlaygroundPage() {
                     activeRunId = event.data.run_id;
                     setStreamRunId(activeRunId);
                     setStatus("RUNNING");
+                } else if (event.event === "retrieval.started") {
+                    setToolActivity("Retrieving knowledge sources…");
+                } else if (event.event === "retrieval.completed") {
+                    setToolActivity(null);
+                } else if (event.event === "retrieval.failed") {
+                    setToolActivity(null);
                 } else if (event.event === "message.delta") {
                     queueDelta(event.data.delta);
                 } else if (event.event === "tool.started") {
@@ -1281,7 +1378,7 @@ export default function PlaygroundPage() {
                                 ref={messageListRef}
                                 aria-label="Conversation messages"
                             >
-                                {messages.length === 0 && !busy ? (
+                {messages.length === 0 && !busy ? (
                                     <div className="message-empty">
                                         <Bot size={25} aria-hidden="true" />
                                         <strong>Ready when you are</strong>
@@ -1298,6 +1395,13 @@ export default function PlaygroundPage() {
                                                 message={item.message}
                                                 agentName={agent.name}
                                                 tools={item.tools}
+                                                fallbackCitations={
+                                                    lastRun?.id ===
+                                                    item.message.run_id
+                                                        ? (lastRun.output
+                                                              ?.citations ?? [])
+                                                        : []
+                                                }
                                             />
                                         ) : (
                                             <ToolActivityGroup

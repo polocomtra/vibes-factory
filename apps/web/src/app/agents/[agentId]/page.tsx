@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  BookOpen,
   Check,
   ChevronDown,
   Clipboard,
@@ -41,6 +42,14 @@ import {
   type DraftTool,
   type Tool,
 } from "../../../lib/tools";
+import {
+  attachDraftKnowledge,
+  detachDraftKnowledge,
+  listDraftKnowledge,
+  listKnowledgeBases,
+  type KnowledgeBase,
+  type KnowledgeBinding,
+} from "../../../lib/knowledge";
 
 function dateLabel(value: string) {
   return new Intl.DateTimeFormat(undefined, {
@@ -113,7 +122,7 @@ export default function AgentDetailPage() {
   const [selectedVersion, setSelectedVersion] = useState<AgentVersion | null>(
     null,
   );
-  const [tab, setTab] = useState<"configuration" | "versions" | "tools">(
+  const [tab, setTab] = useState<"configuration" | "versions" | "tools" | "knowledge">(
     "configuration",
   );
   const [draftTools, setDraftTools] = useState<DraftTool[]>([]);
@@ -121,6 +130,8 @@ export default function AgentDetailPage() {
     Set<string>
   >(new Set());
   const [catalogTools, setCatalogTools] = useState<Tool[]>([]);
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [knowledgeBindings, setKnowledgeBindings] = useState<KnowledgeBinding[]>([]);
   const [toolFilter, setToolFilter] = useState<ToolFilter>("ALL");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"save" | "publish" | "metadata" | null>(
@@ -140,14 +151,20 @@ export default function AgentDetailPage() {
     setError(null);
     try {
       const agentData = await fetchAgent(agentId);
-      const [draftData, modelData, versionData, draftToolData] =
+      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData] =
         await Promise.all([
           fetchDraft(agentId),
           fetchModels(),
           fetchVersions(agentId),
           fetchDraftTools(agentId),
+          listDraftKnowledge(agentId),
         ]);
       const catalogToolData = await fetchTools(agentData.workspace_id);
+      const knowledgeData = await listKnowledgeBases(
+        agentData.workspace_id,
+        undefined,
+        "ACTIVE",
+      );
       setAgent(agentData);
       setName(agentData.name);
       setDescription(agentData.description ?? "");
@@ -163,6 +180,8 @@ export default function AgentDetailPage() {
         ),
       );
       setCatalogTools(catalogToolData);
+      setKnowledgeBindings(draftKnowledgeData.data);
+      setKnowledgeBases(knowledgeData.data);
       setSelectedVersion(null);
       setDirty(false);
     } catch (reason: unknown) {
@@ -323,6 +342,21 @@ export default function AgentDetailPage() {
     setDirty(true);
     setMessage(null);
     setError(null);
+  }
+
+  async function toggleKnowledge(base: KnowledgeBase, enabled: boolean) {
+    setError(null);
+    try {
+      if (enabled) {
+        const binding = await attachDraftKnowledge(agentId, base.id);
+        setKnowledgeBindings((current) => [...current.filter((item) => item.knowledge_base_id !== base.id), binding]);
+      } else {
+        await detachDraftKnowledge(agentId, base.id);
+        setKnowledgeBindings((current) => current.filter((item) => item.knowledge_base_id !== base.id));
+      }
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to update knowledge binding.");
+    }
   }
 
   function updateRuntime(
@@ -508,6 +542,16 @@ export default function AgentDetailPage() {
           Configuration{dirty ? <span className="tab-count">*</span> : null}
         </button>
         <button
+          className={tab === "knowledge" ? "settings-tab active" : "settings-tab"}
+          type="button"
+          role="tab"
+          aria-selected={tab === "knowledge"}
+          onClick={() => setTab("knowledge")}
+        >
+          <BookOpen size={15} aria-hidden="true" />
+          Knowledge<span className="tab-count">{knowledgeBindings.length}</span>
+        </button>
+        <button
           className={tab === "tools" ? "settings-tab active" : "settings-tab"}
           type="button"
           role="tab"
@@ -544,7 +588,15 @@ export default function AgentDetailPage() {
           {message}
         </div>
       ) : null}
-      {tab === "tools" ? (
+      {tab === "knowledge" ? (
+        <section className="panel agent-tools-panel">
+          <div className="panel-heading"><div><span className="panel-kicker">Grounded context</span><h2>Knowledge bases for this draft</h2></div><BookOpen size={18} aria-hidden="true" /></div>
+          <p className="panel-copy agent-tools-copy">Bindings are snapshotted when you publish. Choose top-k sources per base; advanced filters remain optional.</p>
+          <div className="agent-tool-list">
+            {knowledgeBases.length === 0 ? <div className="agent-tools-filter-empty">No knowledge bases available. Create one from Knowledge.</div> : knowledgeBases.map((base) => { const enabled = knowledgeBindings.some((binding) => binding.knowledge_base_id === base.id); return <label className="agent-tool-row agent-tool-switch-row" key={base.id}><span className="tool-card-icon"><BookOpen size={16} aria-hidden="true" /></span><span className="agent-tool-copy"><strong>{base.name}</strong><small>{base.ready_document_count} ready documents · {base.embedding_model}</small></span><span className={`status-badge ${base.status === "ACTIVE" ? "success" : "muted"}`}><span />{base.status}</span><span className="tool-switch-status"><span>{enabled ? "Attached" : "Detached"}</span><span className="tool-switch"><input type="checkbox" checked={enabled} disabled={base.status !== "ACTIVE"} onChange={(event) => void toggleKnowledge(base, event.target.checked)} aria-label={`${enabled ? "Detach" : "Attach"} ${base.name}`} /><span className="tool-switch-track" aria-hidden="true"><span /></span></span></span></label>; })}
+          </div>
+        </section>
+      ) : tab === "tools" ? (
         <section className="panel agent-tools-panel">
           <div className="panel-heading">
             <div>

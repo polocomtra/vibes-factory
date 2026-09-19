@@ -1,5 +1,18 @@
 # VibesFactory — API Specification
 
+## Phase 9 Knowledge API addendum
+
+KB CRUD, multipart idempotent upload/status/reprocess/delete, debug search,
+embedding model discovery and draft binding CRUD are implemented under `/v1`.
+Uploads return `202` and never expose physical blob paths. Stable errors cover
+unsupported type, size, duplicate, no text, in-progress ingestion, embedding
+failure, retrieval failure, workspace mismatch and archived KBs.
+
+Runtime retrieval bindings support `mode: "auto" | "always"` (default
+`"auto"`). In auto mode, an agent with the `web_search` tool skips Knowledge
+Base retrieval for external-research prompts; explicit document/Knowledge Base
+prompts still retrieve. `"always"` forces retrieval for every request.
+
 **Document Version:** 0.1  
 **Status:** Proposed / Source of Truth  
 **Project:** VibesFactory  
@@ -1760,6 +1773,11 @@ Response `201`.
 
 ## GET `/v1/workspaces/{workspace_id}/knowledge-bases`
 
+Optional query parameter `status=ACTIVE|ARCHIVED` filters the collection before
+pagination. Knowledge and Agent configuration UIs request `status=ACTIVE`, so
+archived knowledge bases remain recoverable through the API but are hidden from
+normal selection and listing views.
+
 ---
 
 # 65. Get Knowledge Base
@@ -1912,9 +1930,12 @@ Request:
 ```json
 {
   "knowledge_base_id": "uuid",
-  "retrieval_config": {
-    "top_k": 5,
-    "score_threshold": 0.6
+  "mode": "auto",
+  "top_k": 5,
+  "score_threshold": 0.6,
+  "filters": {
+    "document_ids": [],
+    "metadata": {}
   }
 }
 ```

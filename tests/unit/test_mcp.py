@@ -85,7 +85,9 @@ def test_bearer_and_custom_headers_are_sent_together() -> None:
     }
 
 
-def test_custom_header_can_use_its_own_secret_store_credential_without_authorization() -> None:
+def test_custom_header_can_use_its_own_secret_store_credential_without_authorization() -> (
+    None
+):
     custom_credential = ResolvedCredential(
         credential_id=uuid4(),
         provider="test",

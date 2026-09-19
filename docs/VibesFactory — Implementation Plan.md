@@ -1776,7 +1776,7 @@ remain deferred to their later milestones.
 
 Support model-controlled actions through a workspace-scoped, immutable tool platform. Phase 6 is complete when the built-in `web_search` Function tool is catalog-ready, testable, attachable to an Agent Draft, copied into published AgentVersion bindings, and executable through the runtime loop.
 
-Implementation record (Phase 6): `web_search` uses Exa Search API through `exa-py`, with `type="auto"` and `contents={"highlights": True}`. The API key is supplied only by `VF_EXA_API_KEY` as a `SecretStr`; it is never persisted, logged, traced, returned to the model, or exposed in the UI. The tool is seeded into every workspace catalog but is not auto-attached to any agent. Exa Agent/Deep Search/full page text/pagination are deferred.
+Implementation record (Phase 6): `web_search` uses the current Exa Search API through `exa-py`, with `type="auto"` and highlights requested through `search_and_contents`. The API key is supplied only by `VF_EXA_API_KEY` as a `SecretStr`; it is never persisted, logged, traced, returned to the model, or exposed in the UI. The tool is seeded into every workspace catalog but is not auto-attached to any agent. Exa Agent/Deep Search/full page text/pagination are deferred.
 
 ---
 
@@ -2281,6 +2281,32 @@ disabled unless an explicit egress/hostname policy is configured.
 ---
 
 # 44. Phase 9 — Knowledge Base and RAG
+
+> **Implementation record (2026-09-18):** Phase 9 now has an executable
+> foundation and vertical slice. The authoritative flow is create KB → upload
+> PDF/TXT/Markdown → durable leased ingestion → pinned multilingual E5-small
+> embedding service → pgvector/HNSW search → draft attachment → immutable
+> AgentVersion binding → runtime retrieval → citations and `RETRIEVAL` span.
+> Earlier exploratory notes in this document are superseded where they differ.
+
+The implementation deliberately keeps model weights out of the API and worker:
+the internal FastAPI embedding service owns ONNX CPU inference and exposes
+`/health`, `/ready` and `/internal/v1/embeddings`. LocalBlobStore and the
+PostgreSQL dispatcher are replaceable adapters for GCS and Cloud Tasks. OCR,
+DOCX, hybrid search, reranking, snapshots and managed embeddings remain out
+of scope. See ADR-011 for the queue decision.
+
+Runtime retrieval uses an explicit `mode` on each immutable Knowledge Base
+binding. The default `auto` mode skips retrieval for external-research intent
+when `web_search` is available, while explicit document/Knowledge Base prompts
+continue to retrieve. `always` is available for agents that require KB context
+on every request. Retrieval and external tool failures are logged with stable
+error codes, duration, trace/run IDs, and redacted provider diagnostics.
+
+Document ingestion calls the CPU embedding service in bounded batches (default
+8 texts) with a 90-second read budget. The embedding service exposes readiness
+after model load, serializes local inference, and moves ONNX work off the HTTP
+event loop so concurrent workers do not make the service appear unavailable.
 
 ## Goal
 

@@ -14,6 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..credentials.service import DatabaseCredentialResolver
+from ..knowledge.embedding import (
+    EmbeddingProvider,
+    EmbeddingUnavailable,
+    HttpEmbeddingProvider,
+)
+from ..knowledge.retrieval import RetrievalResult, merge_results, search_knowledge_base
+from ..knowledge.schemas import RetrievalFilters
 from ..mcp.executor import DatabaseMCPServerResolver
 from ..mcp.manager import MCPManager
 from ..model_providers.contracts import (
@@ -45,11 +52,13 @@ from .context import ContextBuilder, ContextBuildResult
 from .contracts import (
     AgentRunRequest,
     AgentRunResult,
+    Citation,
     RuntimeStreamEvent,
     TextInput,
     TokenUsage,
 )
 from .errors import RuntimeExecutionError
+from .routing import should_retrieve_knowledge
 
 logger = structlog.get_logger(__name__)
 
@@ -138,6 +147,7 @@ class AgentRuntime:
         *,
         context_builder: ContextBuilder | None = None,
         tool_pipeline: ToolExecutionPipeline | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
     ) -> None:
         self.session = session
         self.registry = registry
@@ -148,13 +158,28 @@ class AgentRuntime:
             mcp_server_resolver=DatabaseMCPServerResolver(session),
         )
         self.secret_redactor = SecretRedactor()
+        self.embedding_provider = embedding_provider or HttpEmbeddingProvider(
+            get_settings()
+        )
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
         self._validate_request(request)
         run, trace, root_span, user_message = await self._start_run(request)
         context_span: Span | None = None
         model_span: Span | None = None
+        retrieval_span: Span | None = None
         try:
+            if should_retrieve_knowledge(request):
+                request, retrieval_span = await self._retrieve_knowledge(
+                    request, run, trace, root_span
+                )
+            elif request.agent_version.knowledge_bases:
+                logger.info(
+                    "knowledge_retrieval_skipped",
+                    run_id=str(run.id),
+                    trace_id=str(trace.id),
+                    reason="external_research_intent",
+                )
             context_span = Span(
                 id=uuid4(),
                 trace_id=trace.id,
@@ -375,6 +400,7 @@ class AgentRuntime:
         run, trace, root_span, user_message = await self._start_run(request)
         context_span: Span | None = None
         model_span: Span | None = None
+        retrieval_span: Span | None = None
 
         # _start_run commits RUNNING before this event is exposed to clients.
         yield RuntimeStreamEvent(
@@ -387,6 +413,36 @@ class AgentRuntime:
         )
 
         try:
+            retrieve_knowledge = should_retrieve_knowledge(request)
+            if retrieve_knowledge:
+                yield RuntimeStreamEvent(
+                    event="retrieval.started",
+                    data={
+                        "run_id": str(run.id),
+                        "knowledge_base_count": len(
+                            request.agent_version.knowledge_bases
+                        ),
+                    },
+                )
+                request, retrieval_span = await self._retrieve_knowledge(
+                    request, run, trace, root_span
+                )
+            if retrieval_span is not None:
+                yield RuntimeStreamEvent(
+                    event="retrieval.completed",
+                    data={
+                        "run_id": str(run.id),
+                        "citation_count": len(request.citations),
+                        "duration_ms": retrieval_span.attributes.get("duration_ms", 0),
+                    },
+                )
+            elif request.agent_version.knowledge_bases:
+                logger.info(
+                    "knowledge_retrieval_skipped",
+                    run_id=str(run.id),
+                    trace_id=str(trace.id),
+                    reason="external_research_intent",
+                )
             context_span = Span(
                 id=uuid4(),
                 trace_id=trace.id,
@@ -610,7 +666,14 @@ class AgentRuntime:
                 )
             yield RuntimeStreamEvent(
                 event="message.completed",
-                data={"run_id": str(run.id), "message_id": str(message_id)},
+                data={
+                    "run_id": str(run.id),
+                    "message_id": str(message_id),
+                    "citations": [
+                        citation.model_dump(mode="json")
+                        for citation in request.citations
+                    ],
+                },
             )
             yield RuntimeStreamEvent(
                 event="run.completed",
@@ -634,6 +697,14 @@ class AgentRuntime:
                 model_span.id if model_span else None,
                 error,
             )
+            if error.code in {"EMBEDDING_UNAVAILABLE", "RETRIEVAL_FAILED"}:
+                yield RuntimeStreamEvent(
+                    event="retrieval.failed",
+                    data={
+                        "run_id": str(run.id),
+                        "error": {"code": error.code, "message": error.message},
+                    },
+                )
             yield RuntimeStreamEvent(
                 event="run.failed",
                 data={
@@ -885,12 +956,54 @@ class AgentRuntime:
                     "status": "completed" if succeeded else "failed",
                     "duration_ms": duration_ms,
                 }
-                error_payload = result.get("error")
-                span.error_json = (
-                    error_payload if isinstance(error_payload, dict) else None
-                )
+                error_value = result.get("error")
+                span.error_json = error_value if isinstance(error_value, dict) else None
                 span.completed_at = datetime.now(UTC)
+                log_event = "tool_call_completed" if succeeded else "tool_call_failed"
+                log_method = logger.info if succeeded else logger.warning
+                log_method(
+                    log_event,
+                    run_id=str(run.id),
+                    trace_id=str(trace.id),
+                    workspace_id=str(request.workspace_id),
+                    tool=call.name,
+                    tool_id=(
+                        str(runtime_tool.tool_id)
+                        if runtime_tool and runtime_tool.tool_id
+                        else None
+                    ),
+                    tool_version_id=(
+                        str(runtime_tool.tool_version_id) if runtime_tool else None
+                    ),
+                    duration_ms=duration_ms,
+                    error_code=(
+                        str(error_value.get("code"))
+                        if isinstance(error_value, dict) and error_value.get("code")
+                        else None
+                    ),
+                    error_message=(
+                        str(error_value.get("message"))
+                        if isinstance(error_value, dict) and error_value.get("message")
+                        else None
+                    ),
+                )
             except Exception:
+                logger.exception(
+                    "tool_call_failed",
+                    run_id=str(run.id),
+                    trace_id=str(trace.id),
+                    workspace_id=str(request.workspace_id),
+                    tool=call.name,
+                    tool_id=(
+                        str(runtime_tool.tool_id)
+                        if runtime_tool and runtime_tool.tool_id
+                        else None
+                    ),
+                    tool_version_id=(
+                        str(runtime_tool.tool_version_id) if runtime_tool else None
+                    ),
+                    error_code="TOOL_FAILED",
+                )
                 span.status = SpanStatus.FAILED
                 span.error_json = {
                     "code": "TOOL_FAILED",
@@ -946,6 +1059,125 @@ class AgentRuntime:
             )
         await self.session.commit()
         return results
+
+    async def _retrieve_knowledge(
+        self,
+        request: AgentRunRequest,
+        run: Run,
+        trace: Trace,
+        root_span: Span,
+    ) -> tuple[AgentRunRequest, Span | None]:
+        bindings = request.agent_version.knowledge_bases
+        if not bindings:
+            return request, None
+        span = Span(
+            id=uuid4(),
+            trace_id=trace.id,
+            parent_span_id=root_span.id,
+            run_id=run.id,
+            span_type=SpanType.RETRIEVAL,
+            name="knowledge.retrieve",
+            status=SpanStatus.RUNNING,
+            input={
+                "query": request.input.text,
+                "bindings": [binding.model_dump(mode="json") for binding in bindings],
+            },
+            attributes={"knowledge_base_count": len(bindings)},
+            started_at=datetime.now(UTC),
+        )
+        self.session.add(span)
+        await self.session.flush()
+        started = datetime.now(UTC)
+        try:
+            provider = self.embedding_provider
+            query_embedding = (
+                await provider.embed([request.input.text], "query")
+            ).embeddings[0]
+            all_results: list[RetrievalResult] = []
+            for binding in bindings:
+                filters = RetrievalFilters.model_validate(binding.filters)
+                results, _ = await search_knowledge_base(
+                    self.session,
+                    provider,
+                    request.workspace_id,
+                    binding.knowledge_base_id,
+                    request.input.text,
+                    binding.top_k,
+                    binding.score_threshold,
+                    filters,
+                    query_embedding,
+                )
+                all_results.extend(results)
+            merged = merge_results(all_results)
+            citations = tuple(
+                Citation(
+                    marker=f"S{index}",
+                    chunk_id=result.chunk_id,
+                    document_id=result.document_id,
+                    knowledge_base_id=result.knowledge_base_id,
+                    source_name=result.source_name,
+                    page=result.page,
+                    section=result.section,
+                    score=round(result.score, 6),
+                    generation=result.generation,
+                    excerpt=result.content[:500],
+                )
+                for index, result in enumerate(merged, start=1)
+            )
+            context = "\n\n".join(
+                f"[{citation.marker}] {citation.source_name}"
+                + (f" (page {citation.page})" if citation.page else "")
+                + f": {citation.excerpt}"
+                for citation in citations
+            )
+            span.status = SpanStatus.COMPLETED
+            span.output = {
+                "results": [citation.model_dump(mode="json") for citation in citations]
+            }
+            span.attributes = {
+                **span.attributes,
+                "duration_ms": int(
+                    (datetime.now(UTC) - started).total_seconds() * 1000
+                ),
+                "result_count": len(citations),
+                "query": request.input.text,
+            }
+            span.completed_at = datetime.now(UTC)
+            await self.session.commit()
+            return request.model_copy(
+                update={
+                    "knowledge_context": context or "No matching source was found.",
+                    "citations": citations,
+                }
+            ), span
+        except EmbeddingUnavailable as error:
+            span.status = SpanStatus.FAILED
+            span.error_json = {
+                "code": "EMBEDDING_UNAVAILABLE",
+                "message": "Knowledge retrieval is unavailable.",
+            }
+            span.completed_at = datetime.now(UTC)
+            await self.session.commit()
+            raise RuntimeExecutionError(
+                "EMBEDDING_UNAVAILABLE",
+                "Knowledge retrieval is unavailable.",
+                status_code=503,
+                details={},
+            ) from error
+        except Exception as error:
+            span.status = SpanStatus.FAILED
+            span.error_json = {
+                "code": "RETRIEVAL_FAILED",
+                "message": "Knowledge retrieval failed.",
+            }
+            span.completed_at = datetime.now(UTC)
+            await self.session.commit()
+            raise RuntimeExecutionError(
+                "RETRIEVAL_FAILED",
+                "Knowledge retrieval failed.",
+                status_code=503,
+                details={},
+            ) from error
 
     @staticmethod
     def _validate_request(request: AgentRunRequest) -> None:
@@ -1103,11 +1335,23 @@ class AgentRuntime:
             run_id=run.id,
             role=MessageRole.ASSISTANT,
             sequence_no=int(sequence or 0) + 1,
-            content={"type": "text", "text": response.content},
+            content={
+                "type": "text",
+                "text": response.content,
+                "citations": [
+                    citation.model_dump(mode="json") for citation in request.citations
+                ],
+            },
             token_count=usage.output_tokens,
         )
         run.status = RunStatus.COMPLETED
-        run.output = {"type": "text", "text": response.content}
+        run.output = {
+            "type": "text",
+            "text": response.content,
+            "citations": [
+                citation.model_dump(mode="json") for citation in request.citations
+            ],
+        }
         run.usage = usage.model_dump(exclude_none=True)
         settings = get_settings()
         estimated_cost = None
@@ -1167,6 +1411,7 @@ class AgentRuntime:
             session_id=request.session.id,
             status="COMPLETED",
             output=TextInput(text=response.content),
+            citations=request.citations,
             usage=usage,
             estimated_cost=(
                 float(estimated_cost) if estimated_cost is not None else None

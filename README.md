@@ -1,5 +1,14 @@
 # VibesFactory
 
+## Phase 9 Knowledge Base & RAG
+
+The local stack now includes `api`, `worker`, `embedding`, `web` and
+`pgvector` PostgreSQL. Run `alembic upgrade head` before uploading sources.
+Knowledge uploads accept PDF, UTF-8 TXT and Markdown, ingest asynchronously,
+and expose grounded retrieval with runtime-generated citations. Set
+`VF_EMBEDDING_REVISION` to an immutable Hugging Face revision; `main` is not a
+valid production setting. See `docs/ADR/ADR-011-postgresql-leased-ingestion-queue.md`.
+
 Production-inspired Agentic AI Platform.
 
 ## Local setup
@@ -10,6 +19,26 @@ Requirements: Docker, Python 3.11+, Node.js 22+ and npm.
 cp .env.example .env
 docker compose up --build
 ```
+
+If running API and worker directly on the host instead of Docker Compose, keep
+the embedding service running and wait for model readiness before starting the
+worker:
+
+```bash
+uvicorn apps.embedding.main:app --reload --port 8100
+python -m apps.api.worker
+```
+
+Verify `http://127.0.0.1:8100/ready` returns a JSON response with
+`"status":"ready"`. The worker
+logs the embedding endpoint, batch size, exception type, status code and
+duration when an embedding request fails.
+
+The embedding service performs a real inference warm-up before `/ready` returns
+`200`. It defaults to `CPUExecutionProvider` because the macOS CoreML ONNX
+provider can hang or consume excessive memory for this model. Override
+`VF_EMBEDDING_ORT_PROVIDER` only after validating the provider on the target
+machine.
 
 The local services are available at:
 

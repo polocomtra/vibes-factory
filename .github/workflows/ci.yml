@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_DB: vibesfactory
           POSTGRES_USER: vibesfactory
@@ -59,4 +59,3 @@ jobs:
       - name: Build
         working-directory: apps/web
         run: npm run build
-
