@@ -52,6 +52,18 @@ import {
   type KnowledgeBase,
   type KnowledgeBinding,
 } from "../../../lib/knowledge";
+import {
+  attachDraftGuardrail,
+  detachDraftGuardrail,
+  fetchDraftGuardrails,
+  fetchGuardrailVersions,
+  fetchGuardrails,
+  setDraftGuardrailsEnabled,
+  type DraftGuardrails,
+  type GuardrailPolicy,
+  type GuardrailVersion,
+  type GuardrailHook,
+} from "../../../lib/guardrails";
 
 function dateLabel(value: string) {
   return new Intl.DateTimeFormat(undefined, {
@@ -86,6 +98,7 @@ function initialDraft(): AgentDraft {
       retrieve: { top_k: 5 },
       write: { enabled: true, types: ["PROFILE", "SEMANTIC"] },
     },
+    guardrails_enabled: true,
     updated_at: "",
   };
 }
@@ -129,7 +142,7 @@ export default function AgentDetailPage() {
   const [selectedVersion, setSelectedVersion] = useState<AgentVersion | null>(
     null,
   );
-  const [tab, setTab] = useState<"configuration" | "versions" | "tools" | "knowledge">(
+  const [tab, setTab] = useState<"configuration" | "versions" | "tools" | "knowledge" | "guardrails">(
     "configuration",
   );
   const [draftTools, setDraftTools] = useState<DraftTool[]>([]);
@@ -140,6 +153,9 @@ export default function AgentDetailPage() {
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBindings, setKnowledgeBindings] = useState<KnowledgeBinding[]>([]);
   const [memoryStores, setMemoryStores] = useState<MemoryStore[]>([]);
+  const [draftGuardrails, setDraftGuardrails] = useState<DraftGuardrails | null>(null);
+  const [guardrailPolicies, setGuardrailPolicies] = useState<GuardrailPolicy[]>([]);
+  const [guardrailVersions, setGuardrailVersions] = useState<Record<string, GuardrailVersion[]>>({});
   const [toolFilter, setToolFilter] = useState<ToolFilter>("ALL");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"save" | "publish" | "metadata" | null>(
@@ -159,7 +175,7 @@ export default function AgentDetailPage() {
     setError(null);
     try {
       const agentData = await fetchAgent(agentId);
-      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData, memoryStoreData] =
+      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData, memoryStoreData, guardrailData, policyData] =
         await Promise.all([
           fetchDraft(agentId),
           fetchModels(),
@@ -167,12 +183,17 @@ export default function AgentDetailPage() {
           fetchDraftTools(agentId),
           listDraftKnowledge(agentId),
           listMemoryStores(agentData.workspace_id),
+          fetchDraftGuardrails(agentId),
+          fetchGuardrails(agentData.workspace_id),
         ]);
       const catalogToolData = await fetchTools(agentData.workspace_id);
       const knowledgeData = await listKnowledgeBases(
         agentData.workspace_id,
         undefined,
         "ACTIVE",
+      );
+      const versionEntries = await Promise.all(
+        policyData.map(async (policy) => [policy.id, await fetchGuardrailVersions(policy.id)] as const),
       );
       setAgent(agentData);
       setName(agentData.name);
@@ -192,6 +213,9 @@ export default function AgentDetailPage() {
       setKnowledgeBindings(draftKnowledgeData.data);
       setMemoryStores(memoryStoreData.data);
       setKnowledgeBases(knowledgeData.data);
+      setDraftGuardrails(guardrailData);
+      setGuardrailPolicies(policyData);
+      setGuardrailVersions(Object.fromEntries(versionEntries));
       setSelectedVersion(null);
       setDirty(false);
     } catch (reason: unknown) {
@@ -202,6 +226,29 @@ export default function AgentDetailPage() {
       setLoading(false);
     }
   }, [agentId]);
+
+  async function toggleGuardrails(enabled: boolean) {
+    setError(null);
+    try {
+      setDraftGuardrails(await setDraftGuardrailsEnabled(agentId, enabled));
+      setMessage(enabled ? "Guardrails enabled for future versions." : "Guardrails disabled for future versions.");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to update guardrails.");
+    }
+  }
+
+  async function toggleGuardrailBinding(version: GuardrailVersion, hook: GuardrailHook, shouldAttach: boolean) {
+    if (!draftGuardrails) return;
+    setError(null);
+    try {
+      if (shouldAttach) await attachDraftGuardrail(agentId, version.id, hook);
+      else await detachDraftGuardrail(agentId, version.id, hook);
+      setDraftGuardrails(await fetchDraftGuardrails(agentId));
+      setMessage(shouldAttach ? "Guardrail attached to the draft." : "Guardrail detached from the draft.");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to update guardrail binding.");
+    }
+  }
 
   useEffect(() => {
     void load();
@@ -577,6 +624,16 @@ export default function AgentDetailPage() {
           Tools<span className="tab-count">{pendingToolVersionIds.size}</span>
         </button>
         <button
+          className={tab === "guardrails" ? "settings-tab active" : "settings-tab"}
+          type="button"
+          role="tab"
+          aria-selected={tab === "guardrails"}
+          onClick={() => setTab("guardrails")}
+        >
+          <ShieldCheck size={15} aria-hidden="true" />
+          Guardrails<span className="tab-count">{draftGuardrails?.bindings.length ?? 0}</span>
+        </button>
+        <button
           className={
             tab === "versions" ? "settings-tab active" : "settings-tab"
           }
@@ -603,7 +660,83 @@ export default function AgentDetailPage() {
           {message}
         </div>
       ) : null}
-      {tab === "knowledge" ? (
+      {tab === "guardrails" ? (
+        <section className="panel agent-tools-panel agent-guardrails-panel">
+          <div className="panel-heading">
+            <div>
+              <span className="panel-kicker">Execution boundaries</span>
+              <h2>Guardrails for this draft</h2>
+            </div>
+            <div className="agent-tools-heading-actions guardrail-heading-actions">
+              <span className={`tool-binding-state ${draftGuardrails?.enabled ? "saved" : "unsaved"}`}>
+                {draftGuardrails?.enabled ? "Enabled next publish" : "Disabled next publish"}
+              </span>
+              <label className="guardrail-header-toggle">
+                <span className="sr-only">Enable guardrails for future published versions</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={draftGuardrails?.enabled ?? true}
+                  onChange={(event) => void toggleGuardrails(event.target.checked)}
+                  aria-describedby="guardrails-master-help"
+                />
+                <span className="toggle-control" aria-hidden="true"><span /></span>
+              </label>
+            </div>
+          </div>
+          <p className="panel-copy agent-tools-copy" id="guardrails-master-help">
+            Toggle protection locally, then publish a new immutable agent version. Existing versions are unchanged.
+          </p>
+          {!draftGuardrails?.enabled ? (
+            <div className="form-warning guardrails-disabled-warning" role="status">
+              Guardrails are disabled for the next version. Authentication, authorization, budgets, schema validation, and credential redaction remain active.
+            </div>
+          ) : null}
+          <div className="agent-guardrails-section">
+            <div className="agent-guardrails-section-heading">
+              <div>
+                <span className="panel-kicker">Platform default · v1</span>
+                <h3>Balanced protection</h3>
+              </div>
+              <ShieldCheck size={18} aria-hidden="true" />
+            </div>
+            <article className="agent-guardrail-row agent-guardrail-baseline-row">
+              <span className="tool-card-icon agent-guardrail-icon"><ShieldCheck size={16} aria-hidden="true" /></span>
+              <span className="agent-tool-copy">
+                <strong>Platform baseline</strong>
+                <small>Redacts secrets and PII, limits payload size, and blocks high-risk side-effect tools.</small>
+              </span>
+              <span className={`status-badge ${draftGuardrails?.enabled ? "success" : "muted"}`}><span />{draftGuardrails?.enabled ? "Included" : "Disabled"}</span>
+            </article>
+            <div className="agent-guardrail-tags" aria-label="Platform baseline protections">
+              <span>Secrets + PII</span>
+              <span>Payload limits</span>
+              <span>High-risk tools</span>
+            </div>
+          </div>
+          <div className="agent-guardrails-section agent-guardrails-custom-section">
+            <div className="agent-guardrails-section-heading">
+              <div>
+                <span className="panel-kicker">Workspace policies</span>
+                <h3>Custom guardrails</h3>
+              </div>
+              <span className="code-hint">{guardrailPolicies.length} POLICIES</span>
+            </div>
+            <div className="agent-guardrail-list">
+              {guardrailPolicies.length === 0 ? <div className="agent-tools-filter-empty">No custom policies yet. Create one from the Guardrails workspace page.</div> : guardrailPolicies.map((policy) => (guardrailVersions[policy.id] ?? []).slice(0, 1).map((version) => (
+                <article className="agent-guardrail-row" key={version.id}>
+                  <span className="tool-card-icon agent-guardrail-icon"><ShieldCheck size={16} aria-hidden="true" /></span>
+                  <span className="agent-tool-copy">
+                    <strong>{policy.name} · v{version.version_number}</strong>
+                    <small>{policy.description || "Versioned workspace policy"}</small>
+                  </span>
+                  <div className="guardrail-hook-actions">{(["INPUT", "MODEL_OUTPUT", "TOOL_INPUT", "TOOL_OUTPUT"] as GuardrailHook[]).map((hook) => { const binding = draftGuardrails?.bindings.find((item) => item.guardrail_version_id === version.id && item.hook === hook); return <label key={hook} className={`guardrail-hook-toggle ${binding ? "active" : ""}`}><input type="checkbox" checked={Boolean(binding)} onChange={(event) => void toggleGuardrailBinding(version, hook, event.target.checked)} aria-label={`${binding ? "Detach" : "Attach"} ${policy.name} ${hook}`} /><span>{hook.replace("_", " ")}</span></label>; })}</div>
+                </article>
+              ))) }
+            </div>
+          </div>
+        </section>
+      ) : tab === "knowledge" ? (
         <section className="panel agent-tools-panel">
           <div className="panel-heading"><div><span className="panel-kicker">Grounded context</span><h2>Knowledge bases for this draft</h2></div><BookOpen size={18} aria-hidden="true" /></div>
           <p className="panel-copy agent-tools-copy">Bindings are snapshotted when you publish. Choose top-k sources per base; advanced filters remain optional.</p>
@@ -1110,7 +1243,16 @@ export default function AgentDetailPage() {
                     : "Not saved yet"}
                 </b>
               </span>
+              <span>
+                <strong>Guardrails</strong>
+                <b>{draftGuardrails?.enabled ? "Protected" : "Disabled"}</b>
+              </span>
             </div>
+            {!draftGuardrails?.enabled ? (
+              <div className="form-warning memory-publish-warning" role="status">
+                This version will publish without Phase 11 guardrails. Core platform security remains active.
+              </div>
+            ) : null}
             {draft.memory_config.enabled ? (
               <div className="field-helper memory-publish-warning" role="status">
                 Memory retrieval and asynchronous extraction will be frozen into

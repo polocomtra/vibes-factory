@@ -68,6 +68,7 @@ class SpanType(StrEnum):
     TOOL = "TOOL"
     RETRIEVAL = "RETRIEVAL"
     MEMORY_RETRIEVAL = "MEMORY_RETRIEVAL"
+    GUARDRAIL = "GUARDRAIL"
 
 
 class MemoryType(StrEnum):
@@ -136,6 +137,13 @@ class MCPConnectionStatus(StrEnum):
     UNKNOWN = "UNKNOWN"
     CONNECTED = "CONNECTED"
     FAILED = "FAILED"
+
+
+class GuardrailHook(StrEnum):
+    INPUT = "INPUT"
+    MODEL_OUTPUT = "MODEL_OUTPUT"
+    TOOL_INPUT = "TOOL_INPUT"
+    TOOL_OUTPUT = "TOOL_OUTPUT"
 
 
 class User(Base):
@@ -278,6 +286,9 @@ class AgentDraft(Base):
     memory_config: Mapped[dict[str, Any]] = mapped_column(
         JSONB, default=dict, server_default="{}", nullable=False
     )
+    guardrails_enabled: Mapped[bool] = mapped_column(
+        default=True, server_default="true", nullable=False
+    )
     updated_by: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -312,6 +323,9 @@ class AgentVersion(Base):
     model_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     runtime_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     memory_config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    guardrails_enabled: Mapped[bool] = mapped_column(
+        default=False, server_default="false", nullable=False
+    )
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[UUID] = mapped_column(
@@ -816,6 +830,122 @@ class AgentVersionKnowledgeBase(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class GuardrailPolicy(Base):
+    __tablename__ = "guardrail_policies"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latest_version_number: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_guardrail_policies_workspace_name"
+        ),
+        Index("ix_guardrail_policies_workspace", "workspace_id"),
+    )
+
+
+class GuardrailVersion(Base):
+    __tablename__ = "guardrail_versions"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    guardrail_policy_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("guardrail_policies.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    guardrail_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "guardrail_policy_id",
+            "version_number",
+            name="uq_guardrail_versions_policy_number",
+        ),
+        Index("ix_guardrail_versions_policy", "guardrail_policy_id"),
+    )
+
+
+class AgentDraftGuardrail(Base):
+    __tablename__ = "agent_draft_guardrails"
+
+    agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    guardrail_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("guardrail_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    hook: Mapped[GuardrailHook] = mapped_column(
+        Enum(GuardrailHook, native_enum=False, length=32), primary_key=True
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentVersionGuardrail(Base):
+    __tablename__ = "agent_version_guardrails"
+
+    agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    guardrail_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("guardrail_versions.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    hook: Mapped[GuardrailHook] = mapped_column(
+        Enum(GuardrailHook, native_enum=False, length=32), primary_key=True
+    )
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (Index("ix_agent_version_guardrails_version", "agent_version_id"),)
 
 
 class MemoryStore(Base):

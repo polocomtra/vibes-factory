@@ -895,6 +895,10 @@ Future large trace payloads may be stored in object storage.
 | created_at | TIMESTAMPTZ |
 | updated_at | TIMESTAMPTZ |
 
+Policy names are unique within a workspace. The platform baseline is
+code-managed (`baseline_version = 1`) and does not require a mutable policy
+row.
+
 Tool types:
 
 ```text
@@ -1289,6 +1293,7 @@ Guardrails require versioned configuration for reproducible deployed agents.
 | name | VARCHAR(255) |
 | description | TEXT |
 | latest_version_number | INTEGER |
+| created_by | UUID |
 | created_at | TIMESTAMPTZ |
 | updated_at | TIMESTAMPTZ |
 
@@ -1327,6 +1332,8 @@ hook
 priority
 ```
 
+`agent_drafts.guardrails_enabled` defaults to `true`.
+
 ## Table: `agent_version_guardrails`
 
 ```text
@@ -1350,6 +1357,11 @@ Primary key may include:
 ```text
 (agent_version_id, guardrail_version_id, hook)
 ```
+
+`agent_versions.guardrails_enabled` is immutable. Existing published versions
+are backfilled to `false`; new versions copy the draft setting. The complete
+effective baseline and custom configuration is also copied into the immutable
+`agent_versions.snapshot.guardrails` object.
 
 ---
 
@@ -2133,19 +2145,19 @@ Recommended Alembic migration sequence:
 
 008 mcp
 
-009 knowledge_documents_chunks
+011 knowledge_documents_chunks
 
-010 memory
+012 memory
 
-011 guardrails
+013 guardrails
 
-012 workflows
+014 workflows
 
-013 approvals
+015 approvals
 
-014 evaluations
+016 evaluations
 
-015 deployments_api_keys
+017 deployments_api_keys
 
 016 pricing
 

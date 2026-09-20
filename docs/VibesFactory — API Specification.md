@@ -2102,11 +2102,19 @@ Request:
 }
 ```
 
+## GET `/v1/workspaces/{workspace_id}/guardrails`
+
+Returns the workspace policy catalog with latest version and usage metadata.
+
+## GET `/v1/guardrails/{policy_id}`
+
+Returns one policy when the caller belongs to its workspace.
+
 ---
 
 # 83. Publish Guardrail Version
 
-## POST `/v1/guardrails/{guardrail_id}/versions`
+## POST `/v1/guardrails/{policy_id}/versions`
 
 Request:
 
@@ -2116,14 +2124,30 @@ Request:
   "configuration": {
     "rules": [
       {
-        "type": "TOOL_RISK",
+        "id": "block-high-risk-side-effects",
+        "type": "TOOL_POLICY",
+        "hooks": ["TOOL_INPUT"],
         "minimum_risk": "HIGH",
-        "action": "REQUIRE_APPROVAL"
+        "side_effect_only": true,
+        "action": "BLOCK"
       }
     ]
   }
 }
 ```
+
+Guardrail versions are immutable and version numbers are assigned by the server.
+Supported rule types are `REGEX`, `SECRET_DETECTION`, `PII_REDACTION`,
+`TOOL_POLICY`, and `MAX_PAYLOAD_SIZE`. Tool-version references must belong to
+the policy workspace; invalid or unsafe regular expressions return `422`.
+
+## GET `/v1/guardrails/{policy_id}/versions`
+
+Lists immutable versions in descending version order.
+
+## GET `/v1/guardrails/{policy_id}/versions/{version_id}`
+
+Returns one immutable version and its complete structured configuration.
 
 ---
 
@@ -2140,6 +2164,24 @@ Request:
   "priority": 100
 }
 ```
+
+## GET `/v1/agents/{agent_id}/draft/guardrails`
+
+Returns `guardrails_enabled` plus custom bindings grouped by hook. The
+platform baseline is always shown read-only and uses `baseline_version: 1`.
+
+## PATCH `/v1/agents/{agent_id}/draft/guardrails/settings`
+
+Request: `{ "enabled": true }`. The setting applies only to future published
+versions; disabling it preserves configured bindings and does not disable core
+authentication, authorization, budgets, schema validation, redaction, or
+executor limits.
+
+## DELETE `/v1/agents/{agent_id}/draft/guardrails/{guardrail_version_id}/{hook}`
+
+Detaches a draft binding. Duplicate attachments return `409`; incompatible
+tool-policy hooks return `422`; cross-workspace resources are normalized to
+`404`.
 
 ---
 

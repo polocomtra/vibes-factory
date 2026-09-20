@@ -10,6 +10,7 @@ import {
     Bot,
     Boxes,
     BrainCircuit,
+    ShieldCheck,
     ChevronDown,
     CircleHelp,
     Code2,
@@ -58,6 +59,7 @@ const navItems: NavItem[] = [
     { label: "Memory", icon: BrainCircuit, group: "Connect" },
     { label: "Tools", icon: Zap, group: "Connect" },
     { label: "MCP Servers", icon: Network, group: "Connect" },
+    { label: "Guardrails", icon: ShieldCheck, group: "Platform" },
     // { label: "Evaluations", icon: FlaskConical, group: "Operate" },
     // { label: "Deployments", icon: Cloud },
     { label: "Traces", icon: Radio, group: "Operate" },
@@ -384,6 +386,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (path === "/tools" || path.startsWith("/tools/")) return "Tools";
         if (path === "/knowledge" || path.startsWith("/knowledge/")) return "Knowledge";
         if (path === "/memory" || path.startsWith("/memory/")) return "Memory";
+        if (path === "/guardrails" || path.startsWith("/guardrails/")) return "Guardrails";
         if (path === "/mcp-servers" || path.startsWith("/mcp-servers/"))
             return "MCP Servers";
         if (path === "/settings") return "Settings";
@@ -447,6 +450,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (label === "Tools") router.push("/tools");
         if (label === "Knowledge") router.push("/knowledge");
         if (label === "Memory") router.push("/memory");
+        if (label === "Guardrails") router.push("/guardrails");
         if (label === "MCP Servers") router.push("/mcp-servers");
         if (label === "Playground") router.push("/playground");
         if (label === "Traces") router.push("/traces");

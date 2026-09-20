@@ -2265,6 +2265,25 @@ Complete:
 Green
 ```
 
+## Guardrails UI
+
+Agent Detail includes a Guardrails tab with a semantic switch labeled
+“Enable guardrails for future published versions.” It is on by default. Place a
+read-only platform baseline card first, followed by custom policy-version
+bindings grouped by `INPUT`, `MODEL_OUTPUT`, `TOOL_INPUT`, and `TOOL_OUTPUT`.
+Use existing cards, switches, dialogs, visible focus rings, and Lucide shield
+icons; keep controls touch-safe and usable on narrow screens. When disabled,
+show an amber warning that only future published versions change and core
+platform security remains active. The publish summary must state whether the
+next immutable version is protected.
+
+The workspace Guardrails page uses a policy catalog and structured rule-builder
+dialog. Reveal fields progressively by rule type, provide inline validation and
+a focusable error summary, and label `REQUIRE_APPROVAL` as fail-closed until
+Phase 14. Guardrail spans and playground notices use amber presentation plus
+contextual status text, never color alone. Verify both Obsidian and Frost
+themes and responsive layouts.
+
 ---
 
 # 57. JSON / Trace Payload

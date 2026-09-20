@@ -1,6 +1,7 @@
 """Application services for durable memory CRUD and scope enforcement."""
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import select
@@ -174,9 +175,9 @@ async def update_item(
     if payload.type is not None:
         item.memory_type = payload.type
     if payload.importance is not None:
-        item.importance = payload.importance
+        item.importance = Decimal(str(payload.importance))
     if payload.confidence is not None:
-        item.confidence = payload.confidence
+        item.confidence = Decimal(str(payload.confidence))
     if "expires_at" in payload.model_fields_set:
         item.expires_at = payload.expires_at
     if payload.metadata is not None:

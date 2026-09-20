@@ -216,6 +216,7 @@ class AgentDraftResponse(BaseModel):
     model: ModelConfiguration
     runtime_config: RuntimeConfiguration
     memory_config: MemoryConfiguration
+    guardrails_enabled: bool = True
     updated_at: datetime
 
 
@@ -234,6 +235,7 @@ class AgentVersionResponse(AgentVersionSummary):
     model: ModelConfiguration
     runtime_config: RuntimeConfiguration
     memory_config: MemoryConfiguration
+    guardrails_enabled: bool = False
     snapshot: dict[str, object]
 
 

@@ -1247,6 +1247,15 @@ Output Guardrail
 User
 ```
 
+Phase 11 evaluates these hooks with one provider/tool-independent, immutable
+engine: `INPUT`, `MODEL_OUTPUT`, `TOOL_INPUT`, and `TOOL_OUTPUT`. The balanced
+platform baseline is code-managed as version 1 and is copied into every agent
+version snapshot alongside ordered custom policy versions. Input evaluation
+runs before memory, knowledge, model calls, or raw persistence; streaming
+output is buffered until it has been evaluated. `REDACT` chains transformed
+values, while `BLOCK` and `REQUIRE_APPROVAL` stop evaluation. Approval remains
+fail-closed as `GUARDRAIL_APPROVAL_REQUIRED` until Phase 14.
+
 ---
 
 # 39. Guardrail Decisions
@@ -2471,6 +2480,10 @@ run.completed
 
 run.failed
 ```
+
+Each evaluated hook also emits a `GUARDRAIL` span containing only hook,
+decision, identifiers, byte sizes, match counts, duration, and reason codes.
+Triggered events and logs never contain matched secret text or blocked payloads.
 
 ---
 

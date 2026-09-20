@@ -7,15 +7,21 @@ from uuid import UUID
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..guardrails.contracts import GuardrailConfiguration
+from ..guardrails.engine import default_baseline
 from ..models import (
     Agent,
     AgentDraft,
+    AgentDraftGuardrail,
     AgentDraftKnowledgeBase,
     AgentDraftTool,
     AgentStatus,
     AgentVersion,
+    AgentVersionGuardrail,
     AgentVersionKnowledgeBase,
     AgentVersionTool,
+    GuardrailPolicy,
+    GuardrailVersion,
     KnowledgeBase,
     KnowledgeBaseStatus,
     MemoryStore,
@@ -153,7 +159,15 @@ def build_snapshot(
     draft: AgentDraft,
     tools: list[dict[str, object]] | None = None,
     knowledge_bases: list[dict[str, object]] | None = None,
+    guardrails: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    guardrail_snapshot: object = []
+    if guardrails is not None:
+        guardrail_snapshot = {
+            "enabled": draft.guardrails_enabled,
+            "baseline_version": 1,
+            "policies": guardrails,
+        }
     return {
         "schema_version": 1,
         "instructions": draft.instructions,
@@ -166,7 +180,7 @@ def build_snapshot(
         "memory_config": _memory_config_data(draft.memory_config),
         "tools": tools or [],
         "knowledge_bases": knowledge_bases or [],
-        "guardrails": [],
+        "guardrails": guardrail_snapshot,
         "child_agents": [],
     }
 
@@ -408,6 +422,55 @@ async def publish_version(
         )
 
     next_version = locked_agent.latest_version_number + 1
+    guardrail_rows = (
+        await session.execute(
+            select(AgentDraftGuardrail, GuardrailVersion, GuardrailPolicy)
+            .join(
+                GuardrailVersion,
+                GuardrailVersion.id == AgentDraftGuardrail.guardrail_version_id,
+            )
+            .join(
+                GuardrailPolicy,
+                GuardrailPolicy.id == GuardrailVersion.guardrail_policy_id,
+            )
+            .where(
+                AgentDraftGuardrail.agent_id == locked_agent.id,
+                GuardrailPolicy.workspace_id == locked_agent.workspace_id,
+            )
+            .order_by(AgentDraftGuardrail.priority, GuardrailPolicy.name)
+        )
+    ).all()
+    guardrail_snapshots: list[dict[str, object]] = [
+        {
+            "id": str(version_row.id),
+            "policy_id": str(policy.id),
+            "policy_name": policy.name,
+            "version_number": version_row.version_number,
+            "hook": binding.hook.value,
+            "priority": binding.priority,
+            "type": version_row.guardrail_type,
+            "configuration": version_row.configuration,
+            "source": "CUSTOM",
+        }
+        for binding, version_row, policy in guardrail_rows
+    ]
+    baseline_configuration = GuardrailConfiguration.model_validate(
+        default_baseline().configuration
+    ).model_dump(mode="json")
+    guardrail_snapshots.insert(
+        0,
+        {
+            "id": None,
+            "policy_id": None,
+            "policy_name": "Platform Default",
+            "version_number": 1,
+            "hook": "ALL",
+            "priority": 0,
+            "type": "RULE_SET",
+            "configuration": baseline_configuration,
+            "source": "PLATFORM_DEFAULT",
+        },
+    )
     version = AgentVersion(
         workspace_id=locked_agent.workspace_id,
         agent_id=locked_agent.id,
@@ -418,7 +481,10 @@ async def publish_version(
         model_config=draft.model_config,
         runtime_config=draft.runtime_config,
         memory_config=_memory_config_data(draft.memory_config),
-        snapshot=build_snapshot(draft, tool_snapshots, knowledge_snapshots),
+        guardrails_enabled=draft.guardrails_enabled,
+        snapshot=build_snapshot(
+            draft, tool_snapshots, knowledge_snapshots, guardrail_snapshots
+        ),
         change_note=change_note,
         created_by=user_id,
     )
@@ -440,6 +506,15 @@ async def publish_version(
                 agent_version_id=version.id,
                 knowledge_base_id=binding.knowledge_base_id,
                 retrieval_config=binding.retrieval_config,
+            )
+        )
+    for binding, _, _ in guardrail_rows:
+        session.add(
+            AgentVersionGuardrail(
+                agent_version_id=version.id,
+                guardrail_version_id=binding.guardrail_version_id,
+                hook=binding.hook,
+                priority=binding.priority,
             )
         )
     await session.commit()

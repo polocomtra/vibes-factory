@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Mapping
+from typing import Literal, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,6 +33,7 @@ from ..runtime.contracts import (
     AgentRunRequest,
     AgentVersionRuntimeConfig,
     ExecutionBudget,
+    RuntimeGuardrail,
     RuntimeKnowledgeBinding,
     RuntimeMemoryBinding,
     RuntimeSession,
@@ -141,6 +143,25 @@ async def _build_runtime_request(
         )
     budget = ExecutionBudget.model_validate(version.runtime_config)
     memory_config = MemoryConfiguration.model_validate(version.memory_config)
+    snapshot_guardrails = version.snapshot.get("guardrails", {})
+    guardrail_items = (
+        snapshot_guardrails.get("policies", [])
+        if isinstance(snapshot_guardrails, dict)
+        else []
+    )
+    runtime_guardrails = tuple(
+        RuntimeGuardrail(
+            version_id=item.get("id"),
+            source=item.get("source", "CUSTOM"),
+            configuration=item.get("configuration", {}),
+            hooks=(cast(str, item["hook"]),)
+            if isinstance(item.get("hook"), str) and item["hook"] != "ALL"
+            else (),
+            priority=int(item.get("priority", 100)),
+        )
+        for item in guardrail_items
+        if isinstance(item, dict)
+    )
     return AgentRunRequest(
         workspace_id=agent.workspace_id,
         agent_version=AgentVersionRuntimeConfig(
@@ -165,11 +186,14 @@ async def _build_runtime_request(
                 RuntimeKnowledgeBinding(
                     knowledge_base_id=kb.id,
                     name=kb.name,
-                    mode=(
-                        str(binding.retrieval_config.get("mode", "auto"))
-                        if binding.retrieval_config.get("mode", "auto")
-                        in {"auto", "always"}
-                        else "auto"
+                    mode=cast(
+                        Literal["auto", "always"],
+                        (
+                            str(binding.retrieval_config.get("mode", "auto"))
+                            if binding.retrieval_config.get("mode", "auto")
+                            in {"auto", "always"}
+                            else "auto"
+                        ),
                     ),
                     top_k=int(binding.retrieval_config.get("top_k", 5)),
                     score_threshold=binding.retrieval_config.get("score_threshold"),
@@ -187,6 +211,8 @@ async def _build_runtime_request(
                 if memory_config.enabled and memory_config.memory_store_id is not None
                 else None
             ),
+            guardrails_enabled=version.guardrails_enabled,
+            guardrails=runtime_guardrails,
         ),
         session=RuntimeSession(
             id=conversation.id,

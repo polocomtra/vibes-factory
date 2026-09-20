@@ -2881,6 +2881,28 @@ spans/events.
 
 Never expose sensitive matched values unnecessarily.
 
+## Phase 11 Acceptance Criteria
+
+- New and existing agent drafts default to guardrails enabled; the setting is
+  copied into each immutable published version. Existing published versions
+  remain disabled for historical reproducibility.
+- The platform baseline redacts recognizable secrets and deterministic PII,
+  blocks oversized payloads, and blocks high-risk side-effect tools until the
+  Phase 14 approval subsystem exists.
+- Input, model output, tool input, and tool output all pass through the same
+  provider-independent deterministic evaluator. Redacted values are the only
+  values persisted, sent to providers, passed to executors, or emitted over
+  SSE.
+- Guardrail policy versions and agent bindings are workspace-scoped and
+  immutable after publication. Published agent snapshots contain the complete
+  effective guardrail configuration.
+- Every evaluated hook creates a `GUARDRAIL` span without sensitive payloads;
+  streaming clients receive `guardrail.triggered` only for redaction, block,
+  or approval-required decisions.
+- Approval requests, persisted pending actions, `WAITING_APPROVAL`, and resume
+  execution remain deferred to Phase 14; `REQUIRE_APPROVAL` fails closed in
+  Phase 11.
+
 ---
 
 # 71. Phase 12 — Workflow Engine v1

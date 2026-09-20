@@ -14,6 +14,7 @@ from .config import get_settings
 from .credentials.routes import router as credential_router
 from .db import check_database, dispose_engine
 from .errors import error_response, register_exception_handlers
+from .guardrails.routes import router as guardrail_router
 from .knowledge.routes import router as knowledge_router
 from .logging import configure_logging
 from .mcp.routes import router as mcp_router
@@ -67,6 +68,7 @@ app.include_router(credential_router)
 app.include_router(mcp_router)
 app.include_router(knowledge_router)
 app.include_router(memory_router)
+app.include_router(guardrail_router)
 
 
 @app.get("/health", tags=["system"])

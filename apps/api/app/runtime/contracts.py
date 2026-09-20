@@ -84,6 +84,16 @@ class RuntimeMemoryResult(BaseModel):
     scope: str
 
 
+class RuntimeGuardrail(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    version_id: UUID | None = None
+    source: Literal["CUSTOM", "PLATFORM_DEFAULT"] = "CUSTOM"
+    configuration: dict[str, object] = Field(default_factory=dict)
+    hooks: tuple[str, ...] = ()
+    priority: int = Field(default=100, ge=0, le=1000)
+
+
 class Citation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -112,6 +122,8 @@ class AgentVersionRuntimeConfig(BaseModel):
     tools: tuple[RuntimeTool, ...] = ()
     knowledge_bases: tuple[RuntimeKnowledgeBinding, ...] = ()
     memory: RuntimeMemoryBinding | None = None
+    guardrails_enabled: bool = False
+    guardrails: tuple[RuntimeGuardrail, ...] = ()
 
 
 class RuntimeSession(BaseModel):
@@ -170,6 +182,7 @@ class RuntimeStreamEvent(BaseModel):
         "retrieval.completed",
         "retrieval.failed",
         "memory.retrieved",
+        "guardrail.triggered",
         "run.completed",
         "run.failed",
     ]

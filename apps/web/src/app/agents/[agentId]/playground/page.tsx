@@ -17,6 +17,7 @@ import {
     Plus,
     Search as SearchIcon,
     Send,
+    ShieldCheck,
     X,
 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
@@ -717,6 +718,8 @@ function TraceInspector({
                                             <BookOpen size={14} />
                                         ) : span.type === "MEMORY_RETRIEVAL" ? (
                                             <BrainCircuit size={14} />
+                                        ) : span.type === "GUARDRAIL" ? (
+                                            <ShieldCheck size={14} />
                                         ) : (
                                             <GitBranch size={14} />
                                         )}
@@ -1197,6 +1200,14 @@ export default function PlaygroundPage() {
                               ? `Loaded ${event.data.memory_count} memory ${event.data.memory_count === 1 ? "item" : "items"}…`
                               : null,
                     );
+                } else if (event.event === "guardrail.triggered") {
+                    setToolActivity(
+                        event.data.decision === "REDACT"
+                            ? `Guardrail redacted ${event.data.hook.toLowerCase().replace("_", " ")} content.`
+                            : event.data.decision === "REQUIRE_APPROVAL"
+                              ? `Guardrail requires approval for ${event.data.hook.toLowerCase().replace("_", " ")}; this phase fails closed.`
+                              : `Guardrail blocked ${event.data.hook.toLowerCase().replace("_", " ")} content.`,
+                    );
                 } else if (event.event === "message.delta") {
                     queueDelta(event.data.delta);
                 } else if (event.event === "tool.started") {
@@ -1211,7 +1222,9 @@ export default function PlaygroundPage() {
                     terminal = "COMPLETED";
                 } else if (event.event === "run.failed") {
                     terminal = "FAILED";
-                    failureMessage = event.data.error.message;
+                    failureMessage = event.data.error.code.startsWith("GUARDRAIL") || event.data.error.code.startsWith("TOOL_") && event.data.error.code.includes("GUARDRAIL")
+                        ? `${event.data.error.message} Review the agent's Guardrails tab to adjust the next published version.`
+                        : event.data.error.message;
                 }
             }
             flushDelta();

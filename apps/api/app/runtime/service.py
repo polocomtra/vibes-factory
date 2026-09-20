@@ -14,6 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
 from ..credentials.service import DatabaseCredentialResolver
+from ..guardrails.contracts import (
+    GuardrailContext,
+    GuardrailDecision,
+    GuardrailEvaluation,
+)
+from ..guardrails.engine import GuardrailEngine, GuardrailPolicyInput
 from ..knowledge.embedding import (
     EmbeddingProvider,
     EmbeddingUnavailable,
@@ -33,6 +39,7 @@ from ..model_providers.contracts import (
 from ..model_providers.errors import ProviderError
 from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
+    GuardrailHook,
     Job,
     JobStatus,
     JobType,
@@ -46,11 +53,12 @@ from ..models import (
     SpanStatus,
     SpanType,
     Tool,
+    ToolRiskLevel,
     ToolVersion,
     Trace,
     TraceStatus,
 )
-from ..tools.contracts import ToolExecutionContext
+from ..tools.contracts import ToolExecutionContext, ToolResult
 from ..tools.pipeline import SecretRedactor, ToolExecutionPipeline
 from .budget import ExecutionBudgetTracker, estimate_model_cost, estimate_model_request
 from .context import ContextBuilder, ContextBuildResult
@@ -167,15 +175,213 @@ class AgentRuntime:
         self.embedding_provider = embedding_provider or HttpEmbeddingProvider(
             get_settings()
         )
+        self.guardrail_engine = GuardrailEngine()
+        self._guardrail_events: list[dict[str, object]] = []
+        # The model context must contain the evaluated tool arguments, never
+        # the provider's original (potentially sensitive) arguments.
+        self._safe_tool_calls: tuple[ModelToolCall, ...] = ()
+
+    def _guardrail_policies(
+        self, request: AgentRunRequest, hook: GuardrailHook
+    ) -> tuple[GuardrailPolicyInput, ...]:
+        if not request.agent_version.guardrails_enabled:
+            return ()
+        policies: list[GuardrailPolicyInput] = []
+        for item in request.agent_version.guardrails:
+            try:
+                hooks = (
+                    tuple(GuardrailHook(value) for value in item.hooks)
+                    if item.hooks
+                    else tuple(GuardrailHook)
+                )
+            except ValueError:
+                continue
+            if hook not in hooks:
+                continue
+            policies.append(
+                GuardrailPolicyInput(
+                    configuration=item.configuration,
+                    hooks=hooks,
+                    priority=item.priority,
+                    version_id=item.version_id,
+                    source=item.source,
+                )
+            )
+        return tuple(policies)
+
+    async def _evaluate_guardrail(
+        self,
+        request: AgentRunRequest,
+        run: Run,
+        trace: Trace,
+        parent_span: Span,
+        hook: GuardrailHook,
+        payload: object,
+        *,
+        tool_version_id: UUID | None = None,
+        tool_name: str | None = None,
+        tool_risk: ToolRiskLevel | None = None,
+        tool_side_effect: bool = False,
+    ) -> GuardrailEvaluation:
+        started = datetime.now(UTC)
+        try:
+            context = GuardrailContext(
+                hook=hook,
+                workspace_id=request.workspace_id,
+                run_id=run.id,
+                trace_id=trace.id,
+                tool_version_id=tool_version_id,
+                tool_name=tool_name,
+                tool_risk=tool_risk,
+                tool_side_effect=tool_side_effect,
+                payload=payload,
+            )
+            evaluation = self.guardrail_engine.evaluate(
+                context, self._guardrail_policies(request, hook)
+            )
+        except Exception as exc:
+            raise RuntimeExecutionError(
+                "GUARDRAIL_CONFIGURATION_INVALID",
+                "The published guardrail configuration is invalid.",
+                status_code=422,
+            ) from exc
+        span = Span(
+            id=uuid4(),
+            trace_id=trace.id,
+            parent_span_id=parent_span.id,
+            run_id=run.id,
+            span_type=SpanType.GUARDRAIL,
+            name=f"guardrail.{hook.value.lower()}",
+            status=(
+                SpanStatus.FAILED
+                if evaluation.decision
+                in {GuardrailDecision.BLOCK, GuardrailDecision.REQUIRE_APPROVAL}
+                else SpanStatus.COMPLETED
+            ),
+            input={"hook": hook.value, "bytes": evaluation.input_bytes},
+            output={"hook": hook.value, "bytes": evaluation.output_bytes},
+            attributes={
+                "hook": hook.value,
+                "decision": evaluation.decision.value,
+                "policy_version_id": (
+                    str(evaluation.policy_version_id)
+                    if evaluation.policy_version_id
+                    else None
+                ),
+                "policy_source": evaluation.policy_source,
+                "rule_id": evaluation.rule_id,
+                "reason_code": evaluation.reason_code,
+                "match_count": evaluation.match_count,
+                "duration_ms": max(
+                    0, int((datetime.now(UTC) - started).total_seconds() * 1000)
+                ),
+            },
+            error_json=(
+                {
+                    "code": (
+                        "GUARDRAIL_APPROVAL_REQUIRED"
+                        if evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL
+                        else "GUARDRAIL_BLOCKED"
+                    ),
+                    "message": "The guardrail blocked this operation.",
+                }
+                if evaluation.decision
+                in {GuardrailDecision.BLOCK, GuardrailDecision.REQUIRE_APPROVAL}
+                else None
+            ),
+            started_at=started,
+            completed_at=datetime.now(UTC),
+        )
+        self.session.add(span)
+        await self.session.commit()
+        if evaluation.triggered:
+            self._guardrail_events.append(
+                {
+                    "run_id": str(run.id),
+                    "hook": hook.value,
+                    "decision": evaluation.decision.value,
+                    "rule_id": evaluation.rule_id,
+                    "reason_code": evaluation.reason_code,
+                    "match_count": evaluation.match_count,
+                }
+            )
+            logger.info(
+                {
+                    GuardrailDecision.REDACT: "guardrail.redacted",
+                    GuardrailDecision.BLOCK: "guardrail.blocked",
+                    GuardrailDecision.REQUIRE_APPROVAL: "guardrail.approval_required",
+                }.get(evaluation.decision, "guardrail.triggered"),
+                outcome=(
+                    "redacted"
+                    if evaluation.decision == GuardrailDecision.REDACT
+                    else "blocked"
+                    if evaluation.decision == GuardrailDecision.BLOCK
+                    else "approval_required"
+                ),
+                run_id=str(run.id),
+                trace_id=str(trace.id),
+                hook=hook.value,
+                decision=evaluation.decision.value,
+                reason_code=evaluation.reason_code,
+                match_count=evaluation.match_count,
+            )
+        return evaluation
+
+    async def _apply_input_guardrail(
+        self,
+        request: AgentRunRequest,
+        run: Run,
+        root_span: Span,
+        user_message: Message,
+        trace: Trace,
+    ) -> AgentRunRequest:
+        evaluation = await self._evaluate_guardrail(
+            request, run, trace, root_span, GuardrailHook.INPUT, request.input.text
+        )
+        if evaluation.decision == GuardrailDecision.BLOCK:
+            raise RuntimeExecutionError(
+                "GUARDRAIL_BLOCKED",
+                "The input was blocked by a guardrail.",
+                status_code=422,
+            )
+        if evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL:
+            raise RuntimeExecutionError(
+                "GUARDRAIL_APPROVAL_REQUIRED",
+                "This input requires approval before it can be processed.",
+                status_code=422,
+            )
+        text = str(evaluation.value)
+        request = request.model_copy(update={"input": TextInput(text=text)})
+        safe_input = request.input.model_dump()
+        run.input = safe_input
+        run.metadata_json = {
+            **run.metadata_json,
+            "input_bytes": len(text.encode("utf-8")),
+            "guardrail_pending": False,
+        }
+        root_span.input = safe_input
+        root_span.attributes = {
+            **root_span.attributes,
+            "input_bytes": len(text.encode("utf-8")),
+            "guardrail_pending": False,
+        }
+        user_message.content = safe_input
+        user_message.token_count = max(1, (len(text) + 3) // 4)
+        await self.session.commit()
+        return request
 
     async def run(self, request: AgentRunRequest) -> AgentRunResult:
         self._validate_request(request)
+        self._guardrail_events.clear()
         run, trace, root_span, user_message = await self._start_run(request)
         context_span: Span | None = None
         model_span: Span | None = None
         retrieval_span: Span | None = None
         _memory_span: Span | None = None
         try:
+            request = await self._apply_input_guardrail(
+                request, run, root_span, user_message, trace
+            )
             if request.agent_version.memory is not None:
                 request, _memory_span = await self._retrieve_memory(
                     request, run, trace, root_span
@@ -267,6 +473,29 @@ class AgentRuntime:
                 response = await asyncio.wait_for(
                     provider.generate(context.request, api_key), timeout=remaining
                 )
+                output_evaluation = await self._evaluate_guardrail(
+                    request,
+                    run,
+                    trace,
+                    model_span,
+                    GuardrailHook.MODEL_OUTPUT,
+                    response.content,
+                )
+                if output_evaluation.decision == GuardrailDecision.BLOCK:
+                    raise RuntimeExecutionError(
+                        "GUARDRAIL_BLOCKED",
+                        "The model output was blocked by a guardrail.",
+                        status_code=422,
+                    )
+                if output_evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL:
+                    raise RuntimeExecutionError(
+                        "GUARDRAIL_APPROVAL_REQUIRED",
+                        "The model output requires approval before it can be returned.",
+                        status_code=422,
+                    )
+                response = response.model_copy(
+                    update={"content": str(output_evaluation.value)}
+                )
                 tracker.record_response(response, context.request)
                 if not response.tool_calls:
                     break
@@ -282,7 +511,7 @@ class AgentRuntime:
                 assistant_message = ModelMessage(
                     role="assistant",
                     content=response.content,
-                    tool_calls=response.tool_calls,
+                    tool_calls=self._safe_tool_calls,
                 )
                 next_messages = (
                     tuple(context.request.messages)
@@ -408,6 +637,7 @@ class AgentRuntime:
         """Run the Phase 4 lifecycle while yielding normalized text events."""
 
         self._validate_request(request)
+        self._guardrail_events.clear()
         run, trace, root_span, user_message = await self._start_run(request)
         context_span: Span | None = None
         model_span: Span | None = None
@@ -425,6 +655,14 @@ class AgentRuntime:
         )
 
         try:
+            request = await self._apply_input_guardrail(
+                request, run, root_span, user_message, trace
+            )
+            while self._guardrail_events:
+                yield RuntimeStreamEvent(
+                    event="guardrail.triggered",
+                    data=self._guardrail_events.pop(0),
+                )
             if request.agent_version.memory is not None:
                 request, memory_span = await self._retrieve_memory(
                     request, run, trace, root_span
@@ -552,10 +790,6 @@ class AgentRuntime:
                         if event.type == "text_delta":
                             if event.text:
                                 final_iteration_text.append(event.text)
-                                yield RuntimeStreamEvent(
-                                    event="message.delta",
-                                    data={"run_id": str(run.id), "delta": event.text},
-                                )
                         elif event.type == "completed":
                             final_response = event.response
                 if final_response is None:
@@ -564,6 +798,36 @@ class AgentRuntime:
                         "The provider stream ended without a completed response.",
                         status_code=502,
                     )
+                streamed_iteration = "".join(final_iteration_text)
+                if streamed_iteration and final_response.content != streamed_iteration:
+                    raise RuntimeExecutionError(
+                        "PROVIDER_INVALID_RESPONSE",
+                        "The streamed response did not match its final content.",
+                        status_code=502,
+                    )
+                output_evaluation = await self._evaluate_guardrail(
+                    request,
+                    run,
+                    trace,
+                    model_span,
+                    GuardrailHook.MODEL_OUTPUT,
+                    final_response.content,
+                )
+                if output_evaluation.decision == GuardrailDecision.BLOCK:
+                    raise RuntimeExecutionError(
+                        "GUARDRAIL_BLOCKED",
+                        "The model output was blocked by a guardrail.",
+                        status_code=422,
+                    )
+                if output_evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL:
+                    raise RuntimeExecutionError(
+                        "GUARDRAIL_APPROVAL_REQUIRED",
+                        "The model output requires approval before it can be returned.",
+                        status_code=422,
+                    )
+                final_response = final_response.model_copy(
+                    update={"content": str(output_evaluation.value)}
+                )
                 tracker.record_response(final_response, stream_request)
                 if not final_response.tool_calls:
                     break
@@ -620,6 +884,11 @@ class AgentRuntime:
                             "duration_ms": record.duration_ms,
                         },
                     )
+                while self._guardrail_events:
+                    yield RuntimeStreamEvent(
+                        event="guardrail.triggered",
+                        data=self._guardrail_events.pop(0),
+                    )
                 tool_messages = [record.message for record in records]
                 stream_request = context.request.model_copy(
                     update={
@@ -628,7 +897,7 @@ class AgentRuntime:
                             ModelMessage(
                                 role="assistant",
                                 content=final_response.content,
-                                tool_calls=final_response.tool_calls,
+                                tool_calls=self._safe_tool_calls,
                             ),
                         )
                         + tuple(tool_messages),
@@ -645,18 +914,25 @@ class AgentRuntime:
             # Validate only the final model iteration. Text from a tool-call
             # iteration is not part of the final assistant answer and must not
             # be compared against the next model response.
-            streamed_text = "".join(final_iteration_text)
-            if streamed_text and final_response.content != streamed_text:
-                raise RuntimeExecutionError(
-                    "PROVIDER_INVALID_RESPONSE",
-                    "The streamed response did not match its final content.",
-                    status_code=502,
-                )
             if not final_response.content and not final_iteration_text:
                 raise RuntimeExecutionError(
                     "PROVIDER_INVALID_RESPONSE",
                     "The provider returned no text content.",
                     status_code=502,
+                )
+
+            while self._guardrail_events:
+                yield RuntimeStreamEvent(
+                    event="guardrail.triggered",
+                    data=self._guardrail_events.pop(0),
+                )
+            for index in range(0, len(final_response.content), 512):
+                yield RuntimeStreamEvent(
+                    event="message.delta",
+                    data={
+                        "run_id": str(run.id),
+                        "delta": final_response.content[index : index + 512],
+                    },
                 )
 
             usage = tracker.usage()
@@ -728,6 +1004,11 @@ class AgentRuntime:
                         "run_id": str(run.id),
                         "error": {"code": error.code, "message": error.message},
                     },
+                )
+            while self._guardrail_events:
+                yield RuntimeStreamEvent(
+                    event="guardrail.triggered",
+                    data=self._guardrail_events.pop(0),
                 )
             yield RuntimeStreamEvent(
                 event="run.failed",
@@ -843,6 +1124,36 @@ class AgentRuntime:
         by_id = {
             version.id: (version, catalog_tool) for version, catalog_tool in versions
         }
+        prepared_calls: list[tuple[ModelToolCall, str | None]] = []
+        for call in calls:
+            runtime_tool = by_name.get(call.name)
+            version_pair = (
+                by_id.get(runtime_tool.tool_version_id) if runtime_tool else None
+            )
+            version = version_pair[0] if version_pair else None
+            blocked_code: str | None = None
+            safe_call = call
+            if version is not None and runtime_tool is not None:
+                evaluation = await self._evaluate_guardrail(
+                    request,
+                    run,
+                    trace,
+                    parent_span,
+                    GuardrailHook.TOOL_INPUT,
+                    call.arguments,
+                    tool_version_id=version.id,
+                    tool_name=call.name,
+                    tool_risk=version.risk_level,
+                    tool_side_effect=version.side_effect,
+                )
+                if evaluation.decision == GuardrailDecision.BLOCK:
+                    blocked_code = "TOOL_GUARDRAIL_BLOCKED"
+                elif evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL:
+                    blocked_code = "GUARDRAIL_APPROVAL_REQUIRED"
+                elif isinstance(evaluation.value, dict):
+                    safe_call = call.model_copy(update={"arguments": evaluation.value})
+            prepared_calls.append((safe_call, blocked_code))
+        self._safe_tool_calls = tuple(call for call, _ in prepared_calls)
         results: list[ToolExecutionRecord] = []
         redactor = self.secret_redactor
         sequence = await self.session.scalar(
@@ -862,13 +1173,13 @@ class AgentRuntime:
                 content={
                     "type": "tool_calls",
                     "tool_calls": [
-                        redactor.redact(call.model_dump()) for call in calls
+                        redactor.redact(call.model_dump()) for call, _ in prepared_calls
                     ],
                 },
             )
         )
         next_sequence += 1
-        for call in calls:
+        for call, blocked_code in prepared_calls:
             runtime_tool = by_name.get(call.name)
             version_pair = (
                 by_id.get(runtime_tool.tool_version_id) if runtime_tool else None
@@ -905,7 +1216,20 @@ class AgentRuntime:
             self.session.add(span)
             await self.session.flush()
             try:
-                if version is None or runtime_tool is None:
+                if blocked_code is not None:
+                    result = {
+                        "ok": False,
+                        "error": {
+                            "code": blocked_code,
+                            "message": (
+                                "The tool call was blocked by a guardrail."
+                                if blocked_code == "TOOL_GUARDRAIL_BLOCKED"
+                                else "The tool call requires approval before execution."
+                            ),
+                        },
+                    }
+                    succeeded = False
+                elif version is None or runtime_tool is None:
                     result = {
                         "ok": False,
                         "error": {
@@ -947,6 +1271,39 @@ class AgentRuntime:
                             ),
                         ),
                     )
+                    if execution.ok and execution.output is not None:
+                        output_evaluation = await self._evaluate_guardrail(
+                            request,
+                            run,
+                            trace,
+                            span,
+                            GuardrailHook.TOOL_OUTPUT,
+                            execution.output,
+                            tool_version_id=version.id,
+                            tool_name=call.name,
+                            tool_risk=version.risk_level,
+                            tool_side_effect=version.side_effect,
+                        )
+                        if output_evaluation.decision in {
+                            GuardrailDecision.BLOCK,
+                            GuardrailDecision.REQUIRE_APPROVAL,
+                        }:
+                            execution = ToolResult(
+                                ok=False,
+                                error_code=(
+                                    "TOOL_OUTPUT_GUARDRAIL_BLOCKED"
+                                    if output_evaluation.decision
+                                    == GuardrailDecision.BLOCK
+                                    else "GUARDRAIL_APPROVAL_REQUIRED"
+                                ),
+                                error_message=(
+                                    "The tool output was blocked by a guardrail."
+                                ),
+                            )
+                        elif isinstance(output_evaluation.value, dict):
+                            execution = execution.model_copy(
+                                update={"output": output_evaluation.value}
+                            )
                     succeeded = execution.ok
                     result = {"ok": execution.ok}
                     if execution.metadata:
@@ -1387,6 +1744,7 @@ class AgentRuntime:
 
         now = datetime.now(UTC)
         run_id = uuid4()
+        safe_input = {"type": "text", "text": "[GUARDRAIL_PENDING]"}
         trace = Trace(
             id=uuid4(),
             workspace_id=request.workspace_id,
@@ -1403,8 +1761,13 @@ class AgentRuntime:
             trace_id=trace.id,
             root_run_id=run_id,
             status=RunStatus.QUEUED,
-            input=request.input.model_dump(),
+            input=safe_input,
             execution_budget=request.execution_budget.model_dump(),
+            metadata_json={
+                "input_type": request.input.type,
+                "input_bytes": len(request.input.text.encode("utf-8")),
+                "guardrail_pending": True,
+            },
             started_at=now,
         )
         root_span = Span(
@@ -1414,8 +1777,13 @@ class AgentRuntime:
             span_type=SpanType.RUN,
             name="agent.run",
             status=SpanStatus.RUNNING,
-            input=request.input.model_dump(),
-            attributes={"agent_version_id": str(request.agent_version.id)},
+            input=safe_input,
+            attributes={
+                "agent_version_id": str(request.agent_version.id),
+                "input_type": request.input.type,
+                "input_bytes": len(request.input.text.encode("utf-8")),
+                "guardrail_pending": True,
+            },
             started_at=now,
         )
         sequence = await self.session.scalar(
@@ -1430,8 +1798,8 @@ class AgentRuntime:
             run_id=run.id,
             role=MessageRole.USER,
             sequence_no=int(sequence or 0) + 1,
-            content=request.input.model_dump(),
-            token_count=max(1, (len(request.input.text) + 3) // 4),
+            content=safe_input,
+            token_count=1,
         )
         conversation.last_activity_at = now
         # Flush the circular trace/run dependency in a safe order: the trace

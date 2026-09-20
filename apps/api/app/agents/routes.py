@@ -103,6 +103,7 @@ def _draft_response(draft: AgentDraft) -> AgentDraftResponse:
         ),
         runtime_config=RuntimeConfiguration.model_validate(draft.runtime_config),
         memory_config=MemoryConfiguration.model_validate(draft.memory_config),
+        guardrails_enabled=draft.guardrails_enabled,
         updated_at=draft.updated_at,
     )
 
@@ -120,6 +121,7 @@ def _version_response(version: AgentVersion) -> AgentVersionResponse:
         ),
         runtime_config=RuntimeConfiguration.model_validate(version.runtime_config),
         memory_config=MemoryConfiguration.model_validate(version.memory_config),
+        guardrails_enabled=version.guardrails_enabled,
         snapshot=version.snapshot,
     )
 

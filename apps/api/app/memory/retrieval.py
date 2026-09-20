@@ -7,6 +7,7 @@ from uuid import UUID
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from ..knowledge.embedding import EmbeddingProvider
 from ..models import MemoryItem
@@ -23,7 +24,7 @@ class MemoryRetrievalResult:
     score: float
 
 
-def memory_scope_clause(user_id: UUID, agent_id: UUID | None) -> object:
+def memory_scope_clause(user_id: UUID, agent_id: UUID | None) -> ColumnElement[bool]:
     user_scope = and_(
         MemoryItem.user_id == user_id,
         or_(MemoryItem.agent_id.is_(None), MemoryItem.agent_id == agent_id)

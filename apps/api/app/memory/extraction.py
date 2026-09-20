@@ -2,6 +2,7 @@
 
 import json
 from collections.abc import Iterable
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -188,8 +189,8 @@ async def persist_candidates(
             existing.content = candidate.content
             existing.embedding = embedding
             existing.memory_type = candidate.type
-            existing.importance = candidate.importance
-            existing.confidence = candidate.confidence
+            existing.importance = Decimal(str(candidate.importance))
+            existing.confidence = Decimal(str(candidate.confidence))
             existing.source_session_id = session_id
             existing.source_run_id = run_id
             existing.metadata_json = {"extracted": True, "superseded": True}
