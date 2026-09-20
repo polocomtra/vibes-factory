@@ -55,6 +55,7 @@ const navItems: NavItem[] = [
     { label: "Playground", icon: Code2 },
     // { label: "Workflows", icon: GitBranch },
     { label: "Knowledge", icon: Boxes, group: "Connect" },
+    { label: "Memory", icon: BrainCircuit, group: "Connect" },
     { label: "Tools", icon: Zap, group: "Connect" },
     { label: "MCP Servers", icon: Network, group: "Connect" },
     // { label: "Evaluations", icon: FlaskConical, group: "Operate" },
@@ -382,6 +383,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (path.startsWith("/agents")) return "Agents";
         if (path === "/tools" || path.startsWith("/tools/")) return "Tools";
         if (path === "/knowledge" || path.startsWith("/knowledge/")) return "Knowledge";
+        if (path === "/memory" || path.startsWith("/memory/")) return "Memory";
         if (path === "/mcp-servers" || path.startsWith("/mcp-servers/"))
             return "MCP Servers";
         if (path === "/settings") return "Settings";
@@ -444,6 +446,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (label === "Agents") router.push("/agents");
         if (label === "Tools") router.push("/tools");
         if (label === "Knowledge") router.push("/knowledge");
+        if (label === "Memory") router.push("/memory");
         if (label === "MCP Servers") router.push("/mcp-servers");
         if (label === "Playground") router.push("/playground");
         if (label === "Traces") router.push("/traces");

@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  BrainCircuit,
   BookOpen,
   Check,
   ChevronDown,
@@ -36,6 +37,7 @@ import {
   type AgentVersionSummary,
   type ModelDefinition,
 } from "../../../lib/agents";
+import { listMemoryStores, type MemoryStore, type MemoryType } from "../../../lib/memory";
 import {
   fetchDraftTools,
   fetchTools,
@@ -78,7 +80,12 @@ function initialDraft(): AgentDraft {
       max_total_tokens: 100000,
       timeout_seconds: 120,
     },
-    memory_config: { enabled: false },
+    memory_config: {
+      enabled: false,
+      memory_store_id: null,
+      retrieve: { top_k: 5 },
+      write: { enabled: true, types: ["PROFILE", "SEMANTIC"] },
+    },
     updated_at: "",
   };
 }
@@ -132,6 +139,7 @@ export default function AgentDetailPage() {
   const [catalogTools, setCatalogTools] = useState<Tool[]>([]);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBindings, setKnowledgeBindings] = useState<KnowledgeBinding[]>([]);
+  const [memoryStores, setMemoryStores] = useState<MemoryStore[]>([]);
   const [toolFilter, setToolFilter] = useState<ToolFilter>("ALL");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<"save" | "publish" | "metadata" | null>(
@@ -151,13 +159,14 @@ export default function AgentDetailPage() {
     setError(null);
     try {
       const agentData = await fetchAgent(agentId);
-      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData] =
+      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData, memoryStoreData] =
         await Promise.all([
           fetchDraft(agentId),
           fetchModels(),
           fetchVersions(agentId),
           fetchDraftTools(agentId),
           listDraftKnowledge(agentId),
+          listMemoryStores(agentData.workspace_id),
         ]);
       const catalogToolData = await fetchTools(agentData.workspace_id);
       const knowledgeData = await listKnowledgeBases(
@@ -181,6 +190,7 @@ export default function AgentDetailPage() {
       );
       setCatalogTools(catalogToolData);
       setKnowledgeBindings(draftKnowledgeData.data);
+      setMemoryStores(memoryStoreData.data);
       setKnowledgeBases(knowledgeData.data);
       setSelectedVersion(null);
       setDirty(false);
@@ -216,6 +226,11 @@ export default function AgentDetailPage() {
     setBusy("save");
     setError(null);
     setMessage(null);
+    if (draft.memory_config.enabled && !draft.memory_config.memory_store_id) {
+      setError("Choose a memory store before enabling long-term memory.");
+      setBusy(null);
+      return;
+    }
     const model =
       draft.model.provider === "azure_openai"
         ? {
@@ -916,9 +931,9 @@ export default function AgentDetailPage() {
             <div className="panel-heading">
               <div>
                 <span className="panel-kicker">Memory</span>
-                <h2>Memory configuration</h2>
+                <h2>Long-term memory</h2>
               </div>
-              <span className="status-badge muted">Phase 2 placeholder</span>
+              <span className={`status-badge ${draft.memory_config.enabled ? "success" : "muted"}`}><span />{draft.memory_config.enabled ? "Enabled" : "Disabled"}</span>
             </div>
             <label className="toggle-row">
               <input
@@ -940,10 +955,17 @@ export default function AgentDetailPage() {
               <span className="toggle-copy">
                 <strong>Enable long-term memory</strong>
                 <small>
-                  Persistence and retrieval arrive in a later runtime milestone.
+                  Store durable user facts separately from session history. Memory content is reference data, not instructions.
                 </small>
               </span>
             </label>
+            {draft.memory_config.enabled ? <div className="memory-config-grid">
+              <label>Memory store<select value={draft.memory_config.memory_store_id ?? ""} onChange={(event) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, memory_store_id: event.target.value || null } })}><option value="">Select a memory store</option>{memoryStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select><small>{memoryStores.length ? "Published versions keep this binding immutable." : "Create a store from the Memory page first."}</small></label>
+              <label>Retrieve top-k<input type="number" min="1" max="20" value={draft.memory_config.retrieve.top_k} onChange={(event) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, retrieve: { top_k: Number(event.target.value) || 1 } } })} /><small>How many relevant memories enter each run.</small></label>
+              <label className="toggle-row memory-write-toggle"><input type="checkbox" checked={draft.memory_config.write.enabled} onChange={(event) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, write: { ...draft.memory_config.write, enabled: event.target.checked } } })} /><span className="toggle-control" aria-hidden="true"><span /></span><span className="toggle-copy"><strong>Extract after successful runs</strong><small>Candidate extraction runs asynchronously and never blocks chat.</small></span></label>
+              <fieldset className="memory-types-fieldset"><legend>Memory types to extract</legend><div className="memory-type-options">{(["PROFILE", "SEMANTIC", "SUMMARY", "PROCEDURAL"] as MemoryType[]).map((memoryType) => <label className="toggle-row memory-type-switch" key={memoryType}><input type="checkbox" role="switch" aria-label={`Extract ${memoryType.toLowerCase()} memories`} checked={draft.memory_config.write.types.includes(memoryType)} onChange={(event) => { const types = event.target.checked ? [...draft.memory_config.write.types, memoryType] : draft.memory_config.write.types.filter((item) => item !== memoryType); updateDraft({ ...draft, memory_config: { ...draft.memory_config, write: { ...draft.memory_config.write, types: types.length ? types : ["PROFILE"] } } }); }} /><span className="toggle-control" aria-hidden="true"><span /></span><span className="toggle-copy"><strong>{memoryType}</strong></span></label>)}</div></fieldset>
+            </div> : null}
+            <button className="text-button memory-browser-link" type="button" onClick={() => router.push("/memory")}><BrainCircuit size={14} aria-hidden="true" />Open memory browser</button>
           </section>
         </main>
       ) : (
@@ -1089,6 +1111,13 @@ export default function AgentDetailPage() {
                 </b>
               </span>
             </div>
+            {draft.memory_config.enabled ? (
+              <div className="field-helper memory-publish-warning" role="status">
+                Memory retrieval and asynchronous extraction will be frozen into
+                this published version. Future memory configuration changes
+                require another publish.
+              </div>
+            ) : null}
             <label className="publish-note-field">
               Change note{" "}
               <textarea

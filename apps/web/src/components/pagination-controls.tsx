@@ -1,11 +1,15 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 
-export const PAGE_SIZE_OPTIONS = [5, 10, 15, 20, 25, 50] as const;
+export const PAGE_SIZE_OPTIONS = [6, 12, 18, 24, 30, 48] as const;
 
 type PaginationControlsProps = {
     page: number;
     pageSize: number;
-    totalItems: number;
+    totalItems?: number;
+    hasNextPage?: boolean;
+    hasPreviousPage?: boolean;
+    disabled?: boolean;
+    resetPageOnSizeChange?: boolean;
     onPageChange: (page: number) => void;
     onPageSizeChange: (pageSize: number) => void;
     ariaLabel: string;
@@ -15,16 +19,36 @@ export function PaginationControls({
     page,
     pageSize,
     totalItems,
+    hasNextPage,
+    hasPreviousPage,
+    disabled = false,
+    resetPageOnSizeChange = true,
     onPageChange,
     onPageSizeChange,
     ariaLabel,
 }: PaginationControlsProps) {
     if (totalItems === 0) return null;
 
-    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
-    const currentPage = Math.min(Math.max(page, 1), totalPages);
-    const firstItem = (currentPage - 1) * pageSize + 1;
-    const lastItem = Math.min(currentPage * pageSize, totalItems);
+    const totalPages = totalItems
+        ? Math.max(1, Math.ceil(totalItems / pageSize))
+        : null;
+    const currentPage = totalPages
+        ? Math.min(Math.max(page, 1), totalPages)
+        : Math.max(page, 1);
+    const firstItem = totalItems
+        ? (currentPage - 1) * pageSize + 1
+        : null;
+    const lastItem = totalItems
+        ? Math.min(currentPage * pageSize, totalItems)
+        : null;
+    const previousDisabled = disabled ||
+        (hasPreviousPage !== undefined
+            ? !hasPreviousPage
+            : currentPage === 1);
+    const nextDisabled = disabled ||
+        (hasNextPage !== undefined
+            ? !hasNextPage
+            : currentPage === totalPages);
 
     return (
         <div className="pagination-footer">
@@ -34,9 +58,10 @@ export function PaginationControls({
                     <select
                         value={pageSize}
                         aria-label="Items per page"
+                        disabled={disabled}
                         onChange={(event) => {
                             onPageSizeChange(Number(event.target.value));
-                            onPageChange(1);
+                            if (resetPageOnSizeChange) onPageChange(1);
                         }}
                     >
                         {PAGE_SIZE_OPTIONS.map((option) => (
@@ -47,14 +72,16 @@ export function PaginationControls({
                     </select>
                 </label>
                 <span className="pagination-summary" aria-live="polite">
-                    Showing {firstItem}–{lastItem} of {totalItems}
+                    {totalItems
+                        ? `Showing ${firstItem}–${lastItem} of ${totalItems}`
+                        : `Page ${currentPage}`}
                 </span>
                 <div className="pagination-actions">
                     <button
                         className="button secondary-button pagination-button"
                         type="button"
                         onClick={() => onPageChange(currentPage - 1)}
-                        disabled={currentPage === 1}
+                        disabled={previousDisabled}
                     >
                         <ChevronLeft size={15} aria-hidden="true" />
                         Previous
@@ -63,7 +90,7 @@ export function PaginationControls({
                         className="button secondary-button pagination-button"
                         type="button"
                         onClick={() => onPageChange(currentPage + 1)}
-                        disabled={currentPage === totalPages}
+                        disabled={nextDisabled}
                     >
                         Next
                         <ChevronRight size={15} aria-hidden="true" />

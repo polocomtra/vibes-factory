@@ -17,6 +17,7 @@ from .errors import error_response, register_exception_handlers
 from .knowledge.routes import router as knowledge_router
 from .logging import configure_logging
 from .mcp.routes import router as mcp_router
+from .memory.routes import router as memory_router
 from .middleware import request_id_middleware
 from .model_providers.routes import router as model_provider_router
 from .runs.routes import router as run_router
@@ -65,6 +66,7 @@ app.include_router(tool_router)
 app.include_router(credential_router)
 app.include_router(mcp_router)
 app.include_router(knowledge_router)
+app.include_router(memory_router)
 
 
 @app.get("/health", tags=["system"])

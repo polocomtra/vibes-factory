@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +66,24 @@ class RuntimeKnowledgeBinding(BaseModel):
     filters: dict[str, object] = Field(default_factory=dict)
 
 
+class RuntimeMemoryBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    memory_store_id: UUID
+    top_k: int = Field(default=5, ge=1, le=20)
+    write_enabled: bool = True
+    write_types: tuple[str, ...] = ("PROFILE", "SEMANTIC")
+
+
+class RuntimeMemoryResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    item_id: UUID
+    content: str
+    score: float
+    scope: str
+
+
 class Citation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -93,6 +111,7 @@ class AgentVersionRuntimeConfig(BaseModel):
     model_options: dict[str, object] = Field(default_factory=dict)
     tools: tuple[RuntimeTool, ...] = ()
     knowledge_bases: tuple[RuntimeKnowledgeBinding, ...] = ()
+    memory: RuntimeMemoryBinding | None = None
 
 
 class RuntimeSession(BaseModel):
@@ -101,6 +120,7 @@ class RuntimeSession(BaseModel):
     id: UUID
     agent_id: UUID
     workspace_id: UUID
+    user_id: UUID = Field(default_factory=uuid4)
     messages: tuple[SessionMessage, ...] = ()
 
 
@@ -114,6 +134,8 @@ class AgentRunRequest(BaseModel):
     execution_budget: ExecutionBudget
     knowledge_context: str | None = None
     citations: tuple[Citation, ...] = ()
+    memory_context: str | None = None
+    memory_results: tuple[RuntimeMemoryResult, ...] = ()
 
 
 class AgentRunResult(BaseModel):
@@ -147,6 +169,7 @@ class RuntimeStreamEvent(BaseModel):
         "retrieval.started",
         "retrieval.completed",
         "retrieval.failed",
+        "memory.retrieved",
         "run.completed",
         "run.failed",
     ]

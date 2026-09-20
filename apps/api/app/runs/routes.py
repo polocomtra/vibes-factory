@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents.authorization import require_agent_access
+from ..agents.schemas import MemoryConfiguration
 from ..auth.dependencies import get_current_user
 from ..config import get_settings
 from ..db import get_session
@@ -32,6 +33,7 @@ from ..runtime.contracts import (
     AgentVersionRuntimeConfig,
     ExecutionBudget,
     RuntimeKnowledgeBinding,
+    RuntimeMemoryBinding,
     RuntimeSession,
     RuntimeTool,
     SessionMessage,
@@ -138,6 +140,7 @@ async def _build_runtime_request(
             status_code=422,
         )
     budget = ExecutionBudget.model_validate(version.runtime_config)
+    memory_config = MemoryConfiguration.model_validate(version.memory_config)
     return AgentRunRequest(
         workspace_id=agent.workspace_id,
         agent_version=AgentVersionRuntimeConfig(
@@ -174,11 +177,22 @@ async def _build_runtime_request(
                 )
                 for binding, kb in published_knowledge
             ),
+            memory=(
+                RuntimeMemoryBinding(
+                    memory_store_id=memory_config.memory_store_id,
+                    top_k=memory_config.retrieve.top_k,
+                    write_enabled=memory_config.write.enabled,
+                    write_types=tuple(item.value for item in memory_config.write.types),
+                )
+                if memory_config.enabled and memory_config.memory_store_id is not None
+                else None
+            ),
         ),
         session=RuntimeSession(
             id=conversation.id,
             agent_id=conversation.agent_id,
             workspace_id=conversation.workspace_id,
+            user_id=user.id,
             messages=history,
         ),
         input=payload.input,

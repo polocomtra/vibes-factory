@@ -18,6 +18,7 @@ from ..models import (
     AgentVersionTool,
     KnowledgeBase,
     KnowledgeBaseStatus,
+    MemoryStore,
     Tool,
     ToolVersion,
 )
@@ -28,6 +29,7 @@ from .schemas import (
     AgentDraftUpdateRequest,
     AgentUpdateRequest,
     DraftValidationIssue,
+    MemoryConfiguration,
     ModelConfiguration,
     RuntimeConfiguration,
 )
@@ -76,7 +78,50 @@ def validate_draft(draft: AgentDraft) -> list[DraftValidationIssue]:
                 message="Instructions must not be blank.",
             )
         )
+    try:
+        MemoryConfiguration.model_validate(draft.memory_config)
+    except ValueError as exc:
+        issues.append(
+            DraftValidationIssue(
+                code="MEMORY_CONFIG_INVALID",
+                field="memory_config",
+                message=str(exc),
+            )
+        )
     return issues
+
+
+async def validate_memory_configuration(
+    session: AsyncSession,
+    workspace_id: UUID,
+    value: MemoryConfiguration | dict[str, Any],
+) -> MemoryConfiguration:
+    """Validate the shared memory contract and its workspace binding."""
+
+    try:
+        config = MemoryConfiguration.model_validate(value)
+    except ValueError as error:
+        raise AgentServiceError(
+            "MEMORY_CONFIG_INVALID",
+            str(error),
+            422,
+            {"field": "memory_config"},
+        ) from error
+    if config.enabled and config.memory_store_id is not None:
+        store = await session.scalar(
+            select(MemoryStore).where(
+                MemoryStore.id == config.memory_store_id,
+                MemoryStore.workspace_id == workspace_id,
+            )
+        )
+        if store is None:
+            raise AgentServiceError(
+                "MEMORY_STORE_NOT_FOUND",
+                "The configured memory store does not belong to the agent workspace.",
+                422,
+                {"field": "memory_config.memory_store_id"},
+            )
+    return config
 
 
 def _normalized_model_config(stored_config: dict[str, Any]) -> dict[str, object]:
@@ -96,6 +141,14 @@ def _normalized_model_config(stored_config: dict[str, Any]) -> dict[str, object]
     }
 
 
+def _memory_config_data(
+    value: MemoryConfiguration | dict[str, Any],
+) -> dict[str, Any]:
+    """Return a JSON-safe memory configuration for JSONB persistence."""
+
+    return MemoryConfiguration.model_validate(value).model_dump(mode="json")
+
+
 def build_snapshot(
     draft: AgentDraft,
     tools: list[dict[str, object]] | None = None,
@@ -110,7 +163,7 @@ def build_snapshot(
             **_normalized_model_config(draft.model_config),
         },
         "runtime_config": draft.runtime_config,
-        "memory_config": draft.memory_config,
+        "memory_config": _memory_config_data(draft.memory_config),
         "tools": tools or [],
         "knowledge_bases": knowledge_bases or [],
         "guardrails": [],
@@ -135,6 +188,9 @@ async def create_agent(
             422,
             {"field": "model.name"},
         )
+    memory_config = await validate_memory_configuration(
+        session, workspace_id, payload.memory_config
+    )
     existing = await session.scalar(
         select(Agent).where(
             Agent.workspace_id == workspace_id,
@@ -165,7 +221,7 @@ async def create_agent(
             model_name=selected_model.name,
             model_config=selected_model.model_dump(exclude={"provider", "name"}),
             runtime_config=payload.runtime_config.model_dump(),
-            memory_config=payload.memory_config.model_dump(),
+            memory_config=_memory_config_data(memory_config),
             updated_by=user_id,
         )
     )
@@ -235,7 +291,10 @@ async def update_draft(
         "memory_config" in payload.model_fields_set
         and payload.memory_config is not None
     ):
-        draft.memory_config = payload.memory_config.model_dump()
+        memory_config = await validate_memory_configuration(
+            session, agent.workspace_id, payload.memory_config
+        )
+        draft.memory_config = _memory_config_data(memory_config)
     draft.updated_by = user_id
     await session.commit()
     await session.refresh(draft)
@@ -270,6 +329,10 @@ async def publish_version(
             422,
             {"errors": [issue.model_dump() for issue in issues]},
         )
+
+    await validate_memory_configuration(
+        session, locked_agent.workspace_id, draft.memory_config
+    )
 
     bindings = await session.execute(
         select(AgentDraftTool, ToolVersion, Tool)
@@ -354,7 +417,7 @@ async def publish_version(
         model_name=draft.model_name,
         model_config=draft.model_config,
         runtime_config=draft.runtime_config,
-        memory_config=draft.memory_config,
+        memory_config=_memory_config_data(draft.memory_config),
         snapshot=build_snapshot(draft, tool_snapshots, knowledge_snapshots),
         change_note=change_note,
         created_by=user_id,

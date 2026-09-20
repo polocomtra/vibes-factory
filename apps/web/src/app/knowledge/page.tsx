@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { AppShell } from "../../components/app-shell";
+import { PaginationControls } from "../../components/pagination-controls";
 import { apiFetch, readApiError } from "../../lib/api";
 import {
     archiveKnowledgeBase,
@@ -44,6 +45,12 @@ export default function KnowledgePage() {
     const creatingRef = useRef(false);
     const [workspace, setWorkspace] = useState<Workspace | null>(null);
     const [items, setItems] = useState<KnowledgeBase[]>([]);
+    const [currentPage, setCurrentPage] = useState(1);
+    const [pageSize, setPageSize] = useState(12);
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [cursorHistory, setCursorHistory] = useState<Array<string | undefined>>([
+        undefined,
+    ]);
     const [loading, setLoading] = useState(true);
     const [workspaceLoading, setWorkspaceLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -80,8 +87,14 @@ export default function KnowledgePage() {
                     selected.id,
                     undefined,
                     "ACTIVE",
+                    12,
                 );
-                if (!cancelled) setItems(page.data);
+                if (!cancelled) {
+                    setItems(page.data);
+                    setNextCursor(page.pagination.next_cursor);
+                    setCurrentPage(1);
+                    setCursorHistory([undefined]);
+                }
             } catch (reason: unknown) {
                 if (!cancelled) {
                     setError(
@@ -103,6 +116,58 @@ export default function KnowledgePage() {
             cancelled = true;
         };
     }, []);
+
+    async function loadPage(
+        cursor: string | undefined,
+        targetPage: number,
+        size = pageSize,
+    ) {
+        if (!workspace) return;
+        setLoading(true);
+        setError(null);
+        try {
+            const page = await listKnowledgeBases(
+                workspace.id,
+                cursor,
+                "ACTIVE",
+                size,
+            );
+            setItems(page.data);
+            setNextCursor(page.pagination.next_cursor);
+            setCurrentPage(targetPage);
+            setCursorHistory((current) => {
+                const next = current.slice(0, targetPage);
+                next[targetPage - 1] = cursor;
+                return next;
+            });
+        } catch (reason: unknown) {
+            setError(
+                reason instanceof Error
+                    ? reason.message
+                    : "Unable to load knowledge bases.",
+            );
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function changePage(targetPage: number) {
+        if (!workspace || targetPage < 1 || targetPage === currentPage) {
+            return;
+        }
+        const cursor =
+            targetPage > currentPage
+                ? nextCursor ?? undefined
+                : cursorHistory[targetPage - 1];
+        if (targetPage > currentPage && !nextCursor) return;
+        await loadPage(cursor, targetPage);
+    }
+
+    async function changePageSize(size: number) {
+        setPageSize(size);
+        setCursorHistory([undefined]);
+        await loadPage(undefined, 1, size);
+    }
 
     useEffect(() => {
         if (!createOpen) return;
@@ -353,6 +418,18 @@ export default function KnowledgePage() {
                         ))}
                     </section>
                 )}
+
+                <PaginationControls
+                    page={currentPage}
+                    pageSize={pageSize}
+                    hasPreviousPage={currentPage > 1}
+                    hasNextPage={Boolean(nextCursor)}
+                    disabled={loading}
+                    resetPageOnSizeChange={false}
+                    onPageChange={(page) => void changePage(page)}
+                    onPageSizeChange={(size) => void changePageSize(size)}
+                    ariaLabel="Knowledge bases pagination"
+                />
 
                 {createOpen ? (
                     <div

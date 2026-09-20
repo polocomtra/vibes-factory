@@ -23,6 +23,7 @@ from ..knowledge.retrieval import RetrievalResult, merge_results, search_knowled
 from ..knowledge.schemas import RetrievalFilters
 from ..mcp.executor import DatabaseMCPServerResolver
 from ..mcp.manager import MCPManager
+from ..memory.retrieval import search_memory
 from ..model_providers.contracts import (
     ModelMessage,
     ModelRequest,
@@ -32,6 +33,10 @@ from ..model_providers.contracts import (
 from ..model_providers.errors import ProviderError
 from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
+    Job,
+    JobStatus,
+    JobType,
+    MemoryStore,
     Message,
     MessageRole,
     Run,
@@ -53,6 +58,7 @@ from .contracts import (
     AgentRunRequest,
     AgentRunResult,
     Citation,
+    RuntimeMemoryResult,
     RuntimeStreamEvent,
     TextInput,
     TokenUsage,
@@ -168,7 +174,12 @@ class AgentRuntime:
         context_span: Span | None = None
         model_span: Span | None = None
         retrieval_span: Span | None = None
+        _memory_span: Span | None = None
         try:
+            if request.agent_version.memory is not None:
+                request, _memory_span = await self._retrieve_memory(
+                    request, run, trace, root_span
+                )
             if should_retrieve_knowledge(request):
                 request, retrieval_span = await self._retrieve_knowledge(
                     request, run, trace, root_span
@@ -401,6 +412,7 @@ class AgentRuntime:
         context_span: Span | None = None
         model_span: Span | None = None
         retrieval_span: Span | None = None
+        memory_span: Span | None = None
 
         # _start_run commits RUNNING before this event is exposed to clients.
         yield RuntimeStreamEvent(
@@ -413,6 +425,18 @@ class AgentRuntime:
         )
 
         try:
+            if request.agent_version.memory is not None:
+                request, memory_span = await self._retrieve_memory(
+                    request, run, trace, root_span
+                )
+                yield RuntimeStreamEvent(
+                    event="memory.retrieved",
+                    data={
+                        "run_id": str(run.id),
+                        "memory_count": len(request.memory_results),
+                        "degraded": memory_span.status == SpanStatus.FAILED,
+                    },
+                )
             retrieve_knowledge = should_retrieve_knowledge(request)
             if retrieve_knowledge:
                 yield RuntimeStreamEvent(
@@ -1179,6 +1203,131 @@ class AgentRuntime:
                 details={},
             ) from error
 
+    async def _retrieve_memory(
+        self,
+        request: AgentRunRequest,
+        run: Run,
+        trace: Trace,
+        root_span: Span,
+    ) -> tuple[AgentRunRequest, Span]:
+        binding = request.agent_version.memory
+        if binding is None:
+            raise RuntimeExecutionError(
+                "MEMORY_OPERATION_FAILED",
+                "Memory configuration is unavailable.",
+                status_code=500,
+            )
+        span = Span(
+            id=uuid4(),
+            trace_id=trace.id,
+            parent_span_id=root_span.id,
+            run_id=run.id,
+            span_type=SpanType.MEMORY_RETRIEVAL,
+            name="memory.retrieve",
+            status=SpanStatus.RUNNING,
+            input={
+                "query": request.input.text,
+                "memory_store_id": str(binding.memory_store_id),
+            },
+            attributes={"memory_store_id": str(binding.memory_store_id)},
+            started_at=datetime.now(UTC),
+        )
+        self.session.add(span)
+        await self.session.flush()
+        started = datetime.now(UTC)
+        try:
+            store = await self.session.scalar(
+                select(MemoryStore).where(
+                    MemoryStore.id == binding.memory_store_id,
+                    MemoryStore.workspace_id == request.workspace_id,
+                )
+            )
+            if store is None:
+                raise ValueError("memory store is not available")
+            results, _ = await search_memory(
+                self.session,
+                self.embedding_provider,
+                request.workspace_id,
+                binding.memory_store_id,
+                request.session.user_id,
+                request.agent_version.agent_id,
+                request.input.text,
+                binding.top_k,
+            )
+            memory_results = tuple(
+                RuntimeMemoryResult(
+                    item_id=result.item.id,
+                    content=result.item.content[:1_000],
+                    score=round(result.score, 6),
+                    scope=("agent-global" if result.item.user_id is None else "user"),
+                )
+                for result in results
+            )
+            context = "\n\n".join(
+                f"[{index}] ({result.scope}, score={result.score:.3f}) {result.content}"
+                for index, result in enumerate(memory_results, start=1)
+            )
+            span.status = SpanStatus.COMPLETED
+            span.output = {
+                "items": [result.model_dump(mode="json") for result in memory_results]
+            }
+            span.attributes = {
+                **span.attributes,
+                "duration_ms": int(
+                    (datetime.now(UTC) - started).total_seconds() * 1000
+                ),
+                "result_count": len(memory_results),
+                "item_ids": [str(result.item_id) for result in memory_results],
+                "scores": [result.score for result in memory_results],
+            }
+            span.completed_at = datetime.now(UTC)
+            await self.session.commit()
+            return request.model_copy(
+                update={
+                    "memory_context": context or None,
+                    "memory_results": memory_results,
+                }
+            ), span
+        except Exception as error:
+            await self.session.rollback()
+            failed_span = Span(
+                id=span.id,
+                trace_id=trace.id,
+                parent_span_id=root_span.id,
+                run_id=run.id,
+                span_type=SpanType.MEMORY_RETRIEVAL,
+                name="memory.retrieve",
+                status=SpanStatus.FAILED,
+                input={
+                    "query": request.input.text,
+                    "memory_store_id": str(binding.memory_store_id),
+                },
+                attributes={
+                    "memory_store_id": str(binding.memory_store_id),
+                    "degraded": True,
+                    "result_count": 0,
+                    "item_ids": [],
+                    "duration_ms": int(
+                        (datetime.now(UTC) - started).total_seconds() * 1000
+                    ),
+                },
+                error_json={
+                    "code": "MEMORY_OPERATION_FAILED",
+                    "message": "Memory retrieval was unavailable.",
+                },
+                started_at=span.started_at,
+                completed_at=datetime.now(UTC),
+            )
+            self.session.add(failed_span)
+            await self.session.commit()
+            logger.warning(
+                "memory_retrieval_degraded",
+                run_id=str(run.id),
+                trace_id=str(trace.id),
+                error_type=type(error).__name__,
+            )
+            return request, failed_span
+
     @staticmethod
     def _validate_request(request: AgentRunRequest) -> None:
         if not (
@@ -1403,6 +1552,42 @@ class AgentRuntime:
         if conversation is not None:
             conversation.last_activity_at = now
         self.session.add(assistant)
+        if (
+            request.agent_version.memory is not None
+            and request.agent_version.memory.write_enabled
+        ):
+            extraction_exists = await self.session.scalar(
+                select(Job.id).where(
+                    Job.job_type == JobType.MEMORY_EXTRACTION,
+                    Job.resource_id == run.id,
+                    Job.generation == 1,
+                )
+            )
+            if extraction_exists is None:
+                self.session.add(
+                    Job(
+                        workspace_id=request.workspace_id,
+                        job_type=JobType.MEMORY_EXTRACTION,
+                        status=JobStatus.QUEUED,
+                        resource_type="run",
+                        resource_id=run.id,
+                        generation=1,
+                        payload={
+                            "run_id": str(run.id),
+                            "trace_id": str(trace.id),
+                            "session_id": str(request.session.id),
+                            "user_id": str(request.session.user_id),
+                            "agent_id": str(request.agent_version.agent_id),
+                            "agent_version_id": str(request.agent_version.id),
+                            "memory_store_id": str(
+                                request.agent_version.memory.memory_store_id
+                            ),
+                            "write_types": list(
+                                request.agent_version.memory.write_types
+                            ),
+                        },
+                    )
+                )
         await self.session.commit()
         return AgentRunResult(
             run_id=run.id,

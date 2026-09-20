@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from ..models import AgentStatus
+from ..models import AgentStatus, MemoryType
 
 DEFAULT_RUNTIME_CONFIG = {
     "max_steps": 20,
@@ -76,10 +76,38 @@ class RuntimeConfiguration(BaseModel):
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
 
 
+class MemoryRetrieveConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    top_k: int = Field(default=5, ge=1, le=20)
+
+
+class MemoryWriteConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    types: list[MemoryType] = Field(
+        default_factory=lambda: [MemoryType.PROFILE, MemoryType.SEMANTIC],
+        min_length=1,
+        max_length=4,
+    )
+
+
 class MemoryConfiguration(BaseModel):
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    memory_store_id: UUID | None = None
+    retrieve: MemoryRetrieveConfiguration = Field(
+        default_factory=MemoryRetrieveConfiguration
+    )
+    write: MemoryWriteConfiguration = Field(default_factory=MemoryWriteConfiguration)
+
+    @model_validator(mode="after")
+    def require_store_when_enabled(self) -> "MemoryConfiguration":
+        if self.enabled and self.memory_store_id is None:
+            raise ValueError("memory_store_id is required when memory is enabled")
+        return self
 
 
 class AgentCreateRequest(BaseModel):

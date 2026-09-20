@@ -216,7 +216,8 @@ function MCPServerGroupCard({
                 </span>
             </div>
             <p>
-                {group.tools.length} imported MCP {group.tools.length === 1 ? "tool" : "tools"} ready to use.
+                {group.tools.length} imported MCP{" "}
+                {group.tools.length === 1 ? "tool" : "tools"} ready to use.
             </p>
             <div className="tool-agent-card-meta">
                 <span>
@@ -229,7 +230,15 @@ function MCPServerGroupCard({
                 </span>
                 <span>
                     <small>Versions</small>
-                    <b>{new Set(group.tools.map((tool) => tool.latest_version_number)).size}</b>
+                    <b>
+                        {
+                            new Set(
+                                group.tools.map(
+                                    (tool) => tool.latest_version_number,
+                                ),
+                            ).size
+                        }
+                    </b>
                 </span>
             </div>
             <footer>
@@ -286,7 +295,9 @@ function MCPToolsModal({
                         <p className="panel-kicker">MCP SERVER</p>
                         <h2 id="tools-mcp-modal-title">{group.name}</h2>
                         <p className="panel-copy">
-                            {group.tools.length} imported tool{group.tools.length === 1 ? "" : "s"}. Select one to inspect its immutable schema.
+                            {group.tools.length} imported tool
+                            {group.tools.length === 1 ? "" : "s"}. Select one to
+                            inspect its immutable schema.
                         </p>
                     </div>
                     <button
@@ -299,7 +310,11 @@ function MCPToolsModal({
                         <X size={16} aria-hidden="true" />
                     </button>
                 </header>
-                <div className="tools-mcp-list" role="list" aria-label={`${group.name} imported tools`}>
+                <div
+                    className="tools-mcp-list"
+                    role="list"
+                    aria-label={`${group.name} imported tools`}
+                >
                     {group.tools.map((tool) => (
                         <MCPToolListItem
                             key={tool.id}
@@ -1058,9 +1073,10 @@ function CreateToolModal({
                     name: form.name.trim(),
                     description: form.description.trim() || null,
                     input_schema: schemaFromFields(form.inputFields),
-                    output_schema: form.outputFields.length > 0
-                        ? schemaFromFields(form.outputFields)
-                        : null,
+                    output_schema:
+                        form.outputFields.length > 0
+                            ? schemaFromFields(form.outputFields)
+                            : null,
                     executor: {
                         type: "HTTP",
                         config: {
@@ -2157,7 +2173,7 @@ export default function ToolsPage() {
     const [search, setSearch] = useState("");
     const [toolFilter, setToolFilter] = useState<ToolFilter>("ALL");
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(5);
+    const [pageSize, setPageSize] = useState(6);
     const [viewMode, setViewMode] = useState<ViewMode>("grid");
     const [selectedTool, setSelectedTool] = useState<Tool | null>(null);
     const [selectedMcpGroup, setSelectedMcpGroup] =
@@ -2231,9 +2247,12 @@ export default function ToolsPage() {
             const matchesFilter =
                 toolFilter === "ALL" ||
                 (toolFilter === "BUILT_IN" && tool.built_in) ||
-                (toolFilter === "HTTP" && !tool.built_in && tool.type === "HTTP") ||
+                (toolFilter === "HTTP" &&
+                    !tool.built_in &&
+                    tool.type === "HTTP") ||
                 (toolFilter === "MCP" && tool.type === "MCP");
-            const matchesSearch = !normalized ||
+            const matchesSearch =
+                !normalized ||
                 [
                     tool.name,
                     tool.slug,
@@ -2251,7 +2270,9 @@ export default function ToolsPage() {
 
     const mcpGroups = useMemo<MCPToolGroup[]>(() => {
         const groups = new Map<string, MCPToolGroup>();
-        for (const tool of filteredTools.filter((item) => item.type === "MCP")) {
+        for (const tool of filteredTools.filter(
+            (item) => item.type === "MCP",
+        )) {
             const groupId = tool.mcp_server_id ?? `tool:${tool.id}`;
             const existing = groups.get(groupId);
             if (existing) existing.tools.push(tool);
@@ -2263,14 +2284,17 @@ export default function ToolsPage() {
                 });
             }
         }
-        return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+        return Array.from(groups.values()).sort((a, b) =>
+            a.name.localeCompare(b.name),
+        );
     }, [filteredTools]);
 
     useEffect(() => {
         setPage(1);
     }, [search, toolFilter]);
 
-    const paginatedItemCount = toolFilter === "MCP" ? mcpGroups.length : filteredTools.length;
+    const paginatedItemCount =
+        toolFilter === "MCP" ? mcpGroups.length : filteredTools.length;
     const totalPages = Math.max(1, Math.ceil(paginatedItemCount / pageSize));
     const currentPage = Math.min(page, totalPages);
     const visibleMcpGroups = mcpGroups.slice(
@@ -2312,11 +2336,19 @@ export default function ToolsPage() {
         setError(null);
         try {
             await deleteTool(tool.id);
-            setTools((current) => current.filter((item) => item.id !== tool.id));
-            setSelectedTool((current) => (current?.id === tool.id ? null : current));
+            setTools((current) =>
+                current.filter((item) => item.id !== tool.id),
+            );
+            setSelectedTool((current) =>
+                current?.id === tool.id ? null : current,
+            );
             setSelectedMcpGroup(null);
         } catch (reason: unknown) {
-            setError(reason instanceof Error ? reason.message : "Unable to delete tool.");
+            setError(
+                reason instanceof Error
+                    ? reason.message
+                    : "Unable to delete tool.",
+            );
         }
     }
 
@@ -2324,196 +2356,238 @@ export default function ToolsPage() {
         <AppShell>
             <div className="pagination-page">
                 <div className="page-header tools-page-header">
-                <div>
-                    <p className="eyebrow">VibesFactory / Build</p>
-                    <h1>Tools</h1>
-                    <p className="page-description">
-                        Browse, inspect and test immutable capabilities
-                        available to this workspace.
-                    </p>
-                </div>
-                <div className="tools-header-actions">
-                    <div className="tool-page-health">
-                        <span className="status-pulse" aria-hidden="true" />
-                        Catalog ready
+                    <div>
+                        <p className="eyebrow">VibesFactory / Build</p>
+                        <h1>Tools</h1>
+                        <p className="page-description">
+                            Browse, inspect and test immutable capabilities
+                            available to this workspace.
+                        </p>
                     </div>
-                    <button
-                        className="button primary-button"
-                        type="button"
-                        onClick={() => setCreateOpen(true)}
-                    >
-                        <Plus size={15} aria-hidden="true" />
-                        New tool
-                    </button>
-                </div>
-                </div>
-
-            {error ? (
-                <div className="form-error tool-alert" role="alert">
-                    <AlertCircle size={16} aria-hidden="true" />
-                    {error}
-                </div>
-            ) : null}
-            {!workspace && !loading ? (
-                <section className="panel tool-empty">
-                    <Zap size={28} aria-hidden="true" />
-                    <h2>Create a workspace first</h2>
-                    <p className="panel-copy">
-                        Built-in tools are scoped to a workspace.
-                    </p>
-                </section>
-            ) : null}
-            {loading ? (
-                <section className="panel agent-state">
-                    <LoaderCircle
-                        className="spin"
-                        size={18}
-                        aria-hidden="true"
-                    />
-                    Loading tool catalog…
-                </section>
-            ) : null}
-
-            {workspace && !loading ? (
-                <>
-                    <section
-                        className="tools-toolbar"
-                        aria-label="Tool catalog controls"
-                    >
-                        <label className="agent-search">
-                            <Search size={16} aria-hidden="true" />
-                            <span className="sr-only">Search tools</span>
-                            <input
-                                value={search}
-                                onChange={(event) =>
-                                    setSearch(event.target.value)
-                                }
-                                placeholder="Search tools…"
-                            />
-                        </label>
-                        <div className="tool-type-filters" aria-label="Filter tools by type">
-                            {([
-                                ["ALL", "All", tools.length],
-                                ["BUILT_IN", "Built-in", tools.filter((tool) => tool.built_in).length],
-                                ["HTTP", "HTTPS", tools.filter((tool) => !tool.built_in && tool.type === "HTTP").length],
-                                ["MCP", "MCP", tools.filter((tool) => tool.type === "MCP").length],
-                            ] as Array<[ToolFilter, string, number]>).map(([value, label, count]) => (
-                                <button
-                                    className={toolFilter === value ? "selected" : ""}
-                                    type="button"
-                                    key={value}
-                                    aria-pressed={toolFilter === value}
-                                    onClick={() => setToolFilter(value)}
-                                >
-                                    {label}<span>{count}</span>
-                                </button>
-                            ))}
+                    <div className="tools-header-actions">
+                        <div className="tool-page-health">
+                            <span className="status-pulse" aria-hidden="true" />
+                            Catalog ready
                         </div>
-                        <div className="layout-toggle" aria-label="Tool layout">
-                            <button
-                                type="button"
-                                className={
-                                    viewMode === "grid" ? "selected" : ""
-                                }
-                                aria-label="Grid view"
-                                aria-pressed={viewMode === "grid"}
-                                onClick={() => changeView("grid")}
-                            >
-                                <LayoutGrid size={15} aria-hidden="true" />
-                            </button>
-                            <button
-                                type="button"
-                                className={
-                                    viewMode === "list" ? "selected" : ""
-                                }
-                                aria-label="List view"
-                                aria-pressed={viewMode === "list"}
-                                onClick={() => changeView("list")}
-                            >
-                                <List size={15} aria-hidden="true" />
-                            </button>
-                        </div>
-                    </section>
-                    {filteredTools.length === 0 ? (
-                        <section className="panel tool-empty">
-                            <Search size={25} aria-hidden="true" />
-                            <h2>No tools found</h2>
-                            <p className="panel-copy">
-                                Try a different name, slug, provider or executor
-                                type.
-                            </p>
-                        </section>
-                    ) : (
-                        <section
-                            className={
-                                "tools-card-grid " +
-                                (viewMode === "list" ? "list-view" : "")
-                            }
-                            aria-label={
-                                viewMode === "grid" ? "Tool cards" : "Tool list"
-                            }
+                        <button
+                            className="button primary-button"
+                            type="button"
+                            onClick={() => setCreateOpen(true)}
                         >
-                            {toolFilter === "MCP"
-                                ? visibleMcpGroups.map((group) => (
-                                      <MCPServerGroupCard
-                                          key={group.id}
-                                          group={group}
-                                          onOpen={setSelectedMcpGroup}
-                                      />
-                                  ))
-                                : visibleTools.map((tool) => (
-                                        <ToolCard
-                                            key={tool.id}
-                                            tool={tool}
-                                            onOpen={openTool}
-                                            onDelete={handleDeleteTool}
-                                        />
+                            <Plus size={15} aria-hidden="true" />
+                            New tool
+                        </button>
+                    </div>
+                </div>
+
+                {error ? (
+                    <div className="form-error tool-alert" role="alert">
+                        <AlertCircle size={16} aria-hidden="true" />
+                        {error}
+                    </div>
+                ) : null}
+                {!workspace && !loading ? (
+                    <section className="panel tool-empty">
+                        <Zap size={28} aria-hidden="true" />
+                        <h2>Create a workspace first</h2>
+                        <p className="panel-copy">
+                            Built-in tools are scoped to a workspace.
+                        </p>
+                    </section>
+                ) : null}
+                {loading ? (
+                    <section className="panel agent-state">
+                        <LoaderCircle
+                            className="spin"
+                            size={18}
+                            aria-hidden="true"
+                        />
+                        Loading tool catalog…
+                    </section>
+                ) : null}
+
+                {workspace && !loading ? (
+                    <>
+                        <section
+                            className="tools-toolbar"
+                            aria-label="Tool catalog controls"
+                        >
+                            <label className="agent-search">
+                                <Search size={16} aria-hidden="true" />
+                                <span className="sr-only">Search tools</span>
+                                <input
+                                    value={search}
+                                    onChange={(event) =>
+                                        setSearch(event.target.value)
+                                    }
+                                    placeholder="Search tools…"
+                                />
+                            </label>
+                            <div
+                                className="tool-type-filters"
+                                aria-label="Filter tools by type"
+                            >
+                                {(
+                                    [
+                                        ["ALL", "All", tools.length],
+                                        [
+                                            "BUILT_IN",
+                                            "Built-in",
+                                            tools.filter(
+                                                (tool) => tool.built_in,
+                                            ).length,
+                                        ],
+                                        [
+                                            "HTTP",
+                                            "HTTPS",
+                                            tools.filter(
+                                                (tool) =>
+                                                    !tool.built_in &&
+                                                    tool.type === "HTTP",
+                                            ).length,
+                                        ],
+                                        [
+                                            "MCP",
+                                            "MCP",
+                                            tools.filter(
+                                                (tool) => tool.type === "MCP",
+                                            ).length,
+                                        ],
+                                    ] as Array<[ToolFilter, string, number]>
+                                ).map(([value, label, count]) => (
+                                    <button
+                                        className={
+                                            toolFilter === value
+                                                ? "selected"
+                                                : ""
+                                        }
+                                        type="button"
+                                        key={value}
+                                        aria-pressed={toolFilter === value}
+                                        onClick={() => setToolFilter(value)}
+                                    >
+                                        {label}
+                                        <span>{count}</span>
+                                    </button>
                                 ))}
+                            </div>
+                            <div
+                                className="layout-toggle"
+                                aria-label="Tool layout"
+                            >
+                                <button
+                                    type="button"
+                                    className={
+                                        viewMode === "grid" ? "selected" : ""
+                                    }
+                                    aria-label="Grid view"
+                                    aria-pressed={viewMode === "grid"}
+                                    onClick={() => changeView("grid")}
+                                >
+                                    <LayoutGrid size={15} aria-hidden="true" />
+                                </button>
+                                <button
+                                    type="button"
+                                    className={
+                                        viewMode === "list" ? "selected" : ""
+                                    }
+                                    aria-label="List view"
+                                    aria-pressed={viewMode === "list"}
+                                    onClick={() => changeView("list")}
+                                >
+                                    <List size={15} aria-hidden="true" />
+                                </button>
+                            </div>
                         </section>
-                    )}
-                    <PaginationControls page={currentPage} pageSize={pageSize} totalItems={paginatedItemCount} onPageChange={setPage} onPageSizeChange={setPageSize} ariaLabel="Tools pagination" />
-                </>
-            ) : null}
-            {selectedTool ? (
-                <ToolDetailModal
-                    tool={selectedTool}
-                    versionDetail={versionDetail}
-                    onClose={() => setSelectedTool(null)}
-                />
-            ) : null}
-            {selectedMcpGroup ? (
-                <MCPToolsModal
-                    group={selectedMcpGroup}
-                    onClose={() => setSelectedMcpGroup(null)}
-                    onInspect={(tool) => {
-                        setSelectedMcpGroup(null);
-                        openTool(tool);
-                    }}
-                    onDelete={handleDeleteTool}
-                />
-            ) : null}
-            {workspace && createOpen ? (
-                <CreateToolModal
-                    workspaceId={workspace.id}
-                    onClose={() => setCreateOpen(false)}
-                    onCreated={async () => {
-                        setCreateOpen(false);
-                        setError(null);
-                        setLoading(true);
-                        try {
-                            setTools(await fetchTools(workspace.id));
-                        } catch (reason: unknown) {
-                            setError(
-                                reason instanceof Error
-                                    ? reason.message
-                                    : "Unable to refresh the tool catalog.",
-                            );
-                        } finally {
-                            setLoading(false);
-                        }
-                    }}
-                />
-            ) : null}
+                        {filteredTools.length === 0 ? (
+                            <section className="panel tool-empty">
+                                <Search size={25} aria-hidden="true" />
+                                <h2>No tools found</h2>
+                                <p className="panel-copy">
+                                    Try a different name, slug, provider or
+                                    executor type.
+                                </p>
+                            </section>
+                        ) : (
+                            <section
+                                className={
+                                    "tools-card-grid " +
+                                    (viewMode === "list" ? "list-view" : "")
+                                }
+                                aria-label={
+                                    viewMode === "grid"
+                                        ? "Tool cards"
+                                        : "Tool list"
+                                }
+                            >
+                                {toolFilter === "MCP"
+                                    ? visibleMcpGroups.map((group) => (
+                                          <MCPServerGroupCard
+                                              key={group.id}
+                                              group={group}
+                                              onOpen={setSelectedMcpGroup}
+                                          />
+                                      ))
+                                    : visibleTools.map((tool) => (
+                                          <ToolCard
+                                              key={tool.id}
+                                              tool={tool}
+                                              onOpen={openTool}
+                                              onDelete={handleDeleteTool}
+                                          />
+                                      ))}
+                            </section>
+                        )}
+                        <PaginationControls
+                            page={currentPage}
+                            pageSize={pageSize}
+                            totalItems={paginatedItemCount}
+                            onPageChange={setPage}
+                            onPageSizeChange={setPageSize}
+                            ariaLabel="Tools pagination"
+                        />
+                    </>
+                ) : null}
+                {selectedTool ? (
+                    <ToolDetailModal
+                        tool={selectedTool}
+                        versionDetail={versionDetail}
+                        onClose={() => setSelectedTool(null)}
+                    />
+                ) : null}
+                {selectedMcpGroup ? (
+                    <MCPToolsModal
+                        group={selectedMcpGroup}
+                        onClose={() => setSelectedMcpGroup(null)}
+                        onInspect={(tool) => {
+                            setSelectedMcpGroup(null);
+                            openTool(tool);
+                        }}
+                        onDelete={handleDeleteTool}
+                    />
+                ) : null}
+                {workspace && createOpen ? (
+                    <CreateToolModal
+                        workspaceId={workspace.id}
+                        onClose={() => setCreateOpen(false)}
+                        onCreated={async () => {
+                            setCreateOpen(false);
+                            setError(null);
+                            setLoading(true);
+                            try {
+                                setTools(await fetchTools(workspace.id));
+                            } catch (reason: unknown) {
+                                setError(
+                                    reason instanceof Error
+                                        ? reason.message
+                                        : "Unable to refresh the tool catalog.",
+                                );
+                            } finally {
+                                setLoading(false);
+                            }
+                        }}
+                    />
+                ) : null}
             </div>
         </AppShell>
     );

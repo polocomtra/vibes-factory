@@ -285,6 +285,25 @@ async def patch_agent_draft(
     return _draft_response(draft)
 
 
+@router.patch("/agents/{agent_id}/draft/memory", response_model=AgentDraftResponse)
+async def patch_agent_memory(
+    payload: MemoryConfiguration,
+    agent: Agent = Depends(require_agent_access),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> AgentDraftResponse:
+    try:
+        draft = await update_draft(
+            session,
+            agent,
+            user.id,
+            AgentDraftUpdateRequest(memory_config=payload),
+        )
+    except AgentServiceError as error:
+        raise _service_error(error) from error
+    return _draft_response(draft)
+
+
 @router.post(
     "/agents/{agent_id}/draft:validate", response_model=DraftValidationResponse
 )

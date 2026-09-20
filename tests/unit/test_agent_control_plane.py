@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -9,6 +10,7 @@ from apps.api.app.agents.catalog import find_model
 from apps.api.app.agents.schemas import (
     AgentCreateRequest,
     AgentVersionSummary,
+    MemoryConfiguration,
     ModelConfiguration,
 )
 from apps.api.app.agents.service import build_snapshot, validate_draft
@@ -85,6 +87,31 @@ def test_snapshot_contains_future_binding_slots() -> None:
     assert snapshot["knowledge_bases"] == []
     assert snapshot["guardrails"] == []
     assert snapshot["child_agents"] == []
+
+
+def test_memory_snapshot_is_json_safe_when_store_id_is_a_uuid() -> None:
+    store_id = uuid4()
+    payload = valid_create_payload()
+    assert payload.model is not None
+    draft = AgentDraft(
+        agent_id=uuid4(),
+        instructions=payload.instructions,
+        model_provider=payload.model.provider,
+        model_name=payload.model.name,
+        model_config=payload.model.model_dump(exclude={"provider", "name"}),
+        runtime_config=payload.runtime_config.model_dump(),
+        memory_config=MemoryConfiguration(
+            enabled=True,
+            memory_store_id=store_id,
+        ).model_dump(),
+        updated_by=uuid4(),
+        updated_at=datetime.now(UTC),
+    )
+
+    snapshot = build_snapshot(draft)
+
+    assert snapshot["memory_config"]["memory_store_id"] == str(store_id)
+    json.dumps(snapshot)
 
 
 def test_agent_version_summary_serializes_sqlalchemy_style_attributes() -> None:

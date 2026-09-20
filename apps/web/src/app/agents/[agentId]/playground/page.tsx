@@ -3,6 +3,7 @@
 import {
     ArrowLeft,
     BookOpen,
+    BrainCircuit,
     Bot,
     Check,
     ChevronDown,
@@ -622,6 +623,16 @@ function TraceInspector({
         }
     }
 
+    const memoryItems =
+        selected?.type === "MEMORY_RETRIEVAL" && selected.output
+            ? Array.isArray(selected.output.items)
+                ? selected.output.items.filter(
+                      (item): item is Record<string, unknown> =>
+                          typeof item === "object" && item !== null,
+                  )
+                : []
+            : [];
+
     if (!portalReady) return null;
 
     return createPortal(
@@ -704,6 +715,8 @@ function TraceInspector({
                                             <SearchIcon size={14} />
                                         ) : span.type === "RETRIEVAL" ? (
                                             <BookOpen size={14} />
+                                        ) : span.type === "MEMORY_RETRIEVAL" ? (
+                                            <BrainCircuit size={14} />
                                         ) : (
                                             <GitBranch size={14} />
                                         )}
@@ -803,6 +816,74 @@ function TraceInspector({
                                             </span>
                                         </div>
                                     </section>
+                                    {selected.type === "MEMORY_RETRIEVAL" ? (
+                                        <section
+                                            className="trace-memory-panel"
+                                            aria-label="Memory retrieval details"
+                                        >
+                                            <div className="trace-usage-heading">
+                                                <h4>Memory retrieval</h4>
+                                                <span>
+                                                    {memoryItems.length} result
+                                                    {memoryItems.length === 1
+                                                        ? ""
+                                                        : "s"}
+                                                </span>
+                                            </div>
+                                            <div className="trace-memory-meta">
+                                                <span>
+                                                    <small>Store</small>
+                                                    <b>
+                                                        {String(
+                                                            selected.attributes
+                                                                .memory_store_id ??
+                                                                "—",
+                                                        ).slice(0, 12)}
+                                                        …
+                                                    </b>
+                                                </span>
+                                                <span>
+                                                    <small>State</small>
+                                                    <b>
+                                                        {selected.attributes
+                                                            .degraded
+                                                            ? "Degraded"
+                                                            : "Available"}
+                                                    </b>
+                                                </span>
+                                            </div>
+                                            {memoryItems.length ? (
+                                                <ul className="trace-memory-items">
+                                                    {memoryItems.map((item, index) => (
+                                                        <li
+                                                            key={String(
+                                                                item.item_id ??
+                                                                    `memory-${index}`,
+                                                            )}
+                                                        >
+                                                            <span>
+                                                                {String(
+                                                                    item.scope ??
+                                                                        "memory",
+                                                                )} · score {String(item.score ?? "—")}
+                                                            </span>
+                                                            <p>
+                                                                {String(
+                                                                    item.content ??
+                                                                        "",
+                                                                )}
+                                                            </p>
+                                                        </li>
+                                                    ))}
+                                                </ul>
+                                            ) : (
+                                                <p className="panel-copy">
+                                                    No durable memories were
+                                                    returned for this input.
+                                                </p>
+                                            )}
+                                        </section>
+                                    ) : null}
                                     <h4>Attributes</h4>
                                     <pre>
                                         {JSON.stringify(
@@ -1108,6 +1189,14 @@ export default function PlaygroundPage() {
                     setToolActivity(null);
                 } else if (event.event === "retrieval.failed") {
                     setToolActivity(null);
+                } else if (event.event === "memory.retrieved") {
+                    setToolActivity(
+                        event.data.degraded
+                            ? "Memory unavailable; continuing without it…"
+                            : event.data.memory_count
+                              ? `Loaded ${event.data.memory_count} memory ${event.data.memory_count === 1 ? "item" : "items"}…`
+                              : null,
+                    );
                 } else if (event.event === "message.delta") {
                     queueDelta(event.data.delta);
                 } else if (event.event === "tool.started") {

@@ -35,7 +35,9 @@ class PostgresJobDispatcher:
             workspace_id=workspace_id,
             job_type=job_type,
             status=JobStatus.QUEUED,
-            resource_type="document",
+            resource_type=(
+                "run" if job_type == JobType.MEMORY_EXTRACTION else "document"
+            ),
             resource_id=resource_id,
             generation=generation,
             payload=dict(payload),

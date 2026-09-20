@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -66,6 +67,14 @@ class SpanType(StrEnum):
     MODEL = "MODEL"
     TOOL = "TOOL"
     RETRIEVAL = "RETRIEVAL"
+    MEMORY_RETRIEVAL = "MEMORY_RETRIEVAL"
+
+
+class MemoryType(StrEnum):
+    PROFILE = "PROFILE"
+    SEMANTIC = "SEMANTIC"
+    SUMMARY = "SUMMARY"
+    PROCEDURAL = "PROCEDURAL"
 
 
 class KnowledgeBaseStatus(StrEnum):
@@ -84,6 +93,7 @@ class DocumentStatus(StrEnum):
 class JobType(StrEnum):
     DOCUMENT_INGESTION = "DOCUMENT_INGESTION"
     DOCUMENT_CLEANUP = "DOCUMENT_CLEANUP"
+    MEMORY_EXTRACTION = "MEMORY_EXTRACTION"
 
 
 class JobStatus(StrEnum):
@@ -805,6 +815,124 @@ class AgentVersionKnowledgeBase(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class MemoryStore(Base):
+    __tablename__ = "memory_stores"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    embedding_provider: Mapped[str] = mapped_column(
+        String(64), nullable=False, server_default="sentence-transformers"
+    )
+    embedding_model: Mapped[str] = mapped_column(
+        String(255), nullable=False, server_default="intfloat/multilingual-e5-small"
+    )
+    embedding_revision: Mapped[str] = mapped_column(String(255), nullable=False)
+    embedding_dimensions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="384"
+    )
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_memory_stores_workspace_name"
+        ),
+        Index("ix_memory_stores_workspace", "workspace_id"),
+    )
+
+
+class MemoryItem(Base):
+    __tablename__ = "memory_items"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    memory_store_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("memory_stores.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    agent_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    memory_type: Mapped[MemoryType] = mapped_column(
+        Enum(MemoryType, native_enum=False, length=32), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
+    importance: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3), nullable=True)
+    source_session_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "user_id IS NOT NULL OR agent_id IS NOT NULL",
+            name="ck_memory_items_meaningful_scope",
+        ),
+        Index("ix_memory_items_store_user", "memory_store_id", "user_id"),
+        Index("ix_memory_items_store_agent", "memory_store_id", "agent_id"),
+        Index("ix_memory_items_expiry", "expires_at", "deleted_at"),
+        Index("ix_memory_items_workspace", "workspace_id"),
     )
 
 
