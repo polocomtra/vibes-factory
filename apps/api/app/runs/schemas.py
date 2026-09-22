@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..models import RunStatus
 from ..runtime.contracts import TextInput
@@ -22,6 +22,7 @@ class RunCreateRequest(BaseModel):
 class RunErrorResponse(BaseModel):
     code: str
     message: str
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 class RunResponse(BaseModel):
@@ -31,6 +32,7 @@ class RunResponse(BaseModel):
     session_id: UUID | None
     parent_run_id: UUID | None
     root_run_id: UUID
+    agent_depth: int
     trace_id: UUID
     status: RunStatus
     input: dict[str, Any]
@@ -41,3 +43,8 @@ class RunResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+
+
+class RunCollectionResponse(BaseModel):
+    data: list[RunResponse]
+    pagination: dict[str, str | bool | None]

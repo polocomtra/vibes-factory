@@ -16,6 +16,9 @@ import {
   Save,
   ShieldCheck,
   Sparkles,
+  Plus,
+  Trash2,
+  Users,
   X,
   Zap,
 } from "lucide-react";
@@ -24,17 +27,23 @@ import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "../../../components/app-shell";
 import { ModelSelect } from "../../../components/model-select";
+import { PrimarySelect } from "../../../components/primary-select";
 import { apiFetch, readApiError } from "../../../lib/api";
 import {
   fetchAgent,
+  fetchAgents,
   fetchDraft,
   fetchModels,
   fetchVersion,
   fetchVersions,
+  fetchChildAgentBindings,
+  addChildAgentBinding,
+  deleteChildAgentBinding,
   type Agent,
   type AgentDraft,
   type AgentVersion,
   type AgentVersionSummary,
+  type ChildAgentBinding,
   type ModelDefinition,
 } from "../../../lib/agents";
 import { listMemoryStores, type MemoryStore, type MemoryType } from "../../../lib/memory";
@@ -139,10 +148,19 @@ export default function AgentDetailPage() {
   const [draft, setDraft] = useState<AgentDraft>(initialDraft);
   const [models, setModels] = useState<ModelDefinition[]>([]);
   const [versions, setVersions] = useState<AgentVersionSummary[]>([]);
+  const [workspaceAgents, setWorkspaceAgents] = useState<Agent[]>([]);
+  const [childBindings, setChildBindings] = useState<ChildAgentBinding[]>([]);
+  const [childAgentId, setChildAgentId] = useState("");
+  const [childVersionId, setChildVersionId] = useState("");
+  const [childVersions, setChildVersions] = useState<AgentVersionSummary[]>([]);
+  const [childVersionsLoading, setChildVersionsLoading] = useState(false);
+  const [childAlias, setChildAlias] = useState("");
+  const [childDescription, setChildDescription] = useState("");
+  const [bindingBusy, setBindingBusy] = useState(false);
   const [selectedVersion, setSelectedVersion] = useState<AgentVersion | null>(
     null,
   );
-  const [tab, setTab] = useState<"configuration" | "versions" | "tools" | "knowledge" | "guardrails">(
+  const [tab, setTab] = useState<"configuration" | "versions" | "tools" | "knowledge" | "guardrails" | "delegation">(
     "configuration",
   );
   const [draftTools, setDraftTools] = useState<DraftTool[]>([]);
@@ -175,7 +193,7 @@ export default function AgentDetailPage() {
     setError(null);
     try {
       const agentData = await fetchAgent(agentId);
-      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData, memoryStoreData, guardrailData, policyData] =
+      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData, memoryStoreData, guardrailData, policyData, workspaceAgentData, childBindingData] =
         await Promise.all([
           fetchDraft(agentId),
           fetchModels(),
@@ -185,6 +203,8 @@ export default function AgentDetailPage() {
           listMemoryStores(agentData.workspace_id),
           fetchDraftGuardrails(agentId),
           fetchGuardrails(agentData.workspace_id),
+          fetchAgents(agentData.workspace_id),
+          fetchChildAgentBindings(agentId),
         ]);
       const catalogToolData = await fetchTools(agentData.workspace_id);
       const knowledgeData = await listKnowledgeBases(
@@ -201,6 +221,8 @@ export default function AgentDetailPage() {
       setDraft(draftData);
       setModels(modelData);
       setVersions(versionData);
+      setWorkspaceAgents(workspaceAgentData);
+      setChildBindings(childBindingData);
       setDraftTools(draftToolData);
       setPendingToolVersionIds(
         new Set(
@@ -226,6 +248,76 @@ export default function AgentDetailPage() {
       setLoading(false);
     }
   }, [agentId]);
+
+  useEffect(() => {
+    if (!childAgentId) {
+      setChildVersions([]);
+      setChildVersionId("");
+      setChildVersionsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setChildVersionsLoading(true);
+    void fetchVersions(childAgentId)
+      .then((versions) => {
+        if (cancelled) return;
+        setChildVersions(versions);
+        setChildVersionId(versions[0]?.id ?? "");
+      })
+      .catch((reason: unknown) => {
+        if (cancelled) return;
+        setChildVersions([]);
+        setChildVersionId("");
+        setError(reason instanceof Error ? reason.message : "Unable to load child versions.");
+      })
+      .finally(() => {
+        if (!cancelled) setChildVersionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [childAgentId]);
+
+  async function attachChildAgent() {
+    if (!childAgentId || !childVersionId || !childAlias.trim()) {
+      setError("Choose a published child version and provide an alias.");
+      return;
+    }
+    setError(null);
+    setBindingBusy(true);
+    try {
+      const binding = await addChildAgentBinding(agentId, {
+        child_agent_id: childAgentId,
+        child_agent_version_id: childVersionId,
+        alias: childAlias.trim(),
+        description: childDescription.trim() || null,
+      });
+      setChildBindings((current) => [...current, binding].sort((left, right) => left.alias.localeCompare(right.alias)));
+      setChildAgentId("");
+      setChildVersionId("");
+      setChildAlias("");
+      setChildDescription("");
+      setMessage("Child-agent binding added. Publish a new version to pin it.");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to add child-agent binding.");
+    } finally {
+      setBindingBusy(false);
+    }
+  }
+
+  async function detachChildAgent(childId: string) {
+    setError(null);
+    setBindingBusy(true);
+    try {
+      await deleteChildAgentBinding(agentId, childId);
+      setChildBindings((current) => current.filter((binding) => binding.child_agent_id !== childId));
+      setMessage("Child-agent binding removed from the draft.");
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to remove child-agent binding.");
+    } finally {
+      setBindingBusy(false);
+    }
+  }
 
   async function toggleGuardrails(enabled: boolean) {
     setError(null);
@@ -555,6 +647,10 @@ export default function AgentDetailPage() {
               ? `v${agent.latest_version_number} published`
               : "Draft only"}
           </span>
+          <span className={`status-badge ${childBindings.length ? "info" : "muted"}`} title={childBindings.length ? "This agent can delegate to child agents" : "This agent has no child-agent delegation configured"}>
+            <span />
+            {childBindings.length ? `Delegating · ${childBindings.length}` : "Single agent"}
+          </span>
           <button
             className="button secondary-button command-button"
             type="button"
@@ -634,6 +730,16 @@ export default function AgentDetailPage() {
           Guardrails<span className="tab-count">{draftGuardrails?.bindings.length ?? 0}</span>
         </button>
         <button
+          className={tab === "delegation" ? "settings-tab active" : "settings-tab"}
+          type="button"
+          role="tab"
+          aria-selected={tab === "delegation"}
+          onClick={() => setTab("delegation")}
+        >
+          <Users size={15} aria-hidden="true" />
+          Delegation<span className="tab-count">{childBindings.length}</span>
+        </button>
+        <button
           className={
             tab === "versions" ? "settings-tab active" : "settings-tab"
           }
@@ -660,7 +766,121 @@ export default function AgentDetailPage() {
           {message}
         </div>
       ) : null}
-      {tab === "guardrails" ? (
+      {tab === "delegation" ? (
+        <section className="panel agent-tools-panel agent-supervisor-panel">
+          <div className="agent-supervisor-header">
+            <div className="agent-supervisor-heading">
+              <span className="agent-supervisor-icon"><Users size={18} aria-hidden="true" /></span>
+              <div>
+                <span className="panel-kicker">Optional agent capability</span>
+                <h2>Delegation</h2>
+                <p className="panel-copy">Choose the published agent versions this agent can delegate work to.</p>
+              </div>
+            </div>
+            <span className="agent-supervisor-count">{childBindings.length} {childBindings.length === 1 ? "binding" : "bindings"}</span>
+          </div>
+
+          <div className="agent-supervisor-notice" role="note">
+            <GitBranch size={15} aria-hidden="true" />
+            <span>Delegation bindings stay in the draft until you publish a new immutable agent version.</span>
+          </div>
+
+          <div className="agent-supervisor-bindings" aria-label="Configured child agents">
+            {childBindings.length === 0 ? (
+              <div className="agent-supervisor-empty">
+                <Users size={20} aria-hidden="true" />
+                <div>
+                  <strong>No child agents yet</strong>
+                  <p>Add a published child version below to let this agent delegate a focused task.</p>
+                </div>
+              </div>
+            ) : childBindings.map((binding) => {
+              const child = workspaceAgents.find((item) => item.id === binding.child_agent_id);
+              return <article className="agent-supervisor-binding" key={binding.child_agent_id}>
+                <div className="agent-supervisor-binding-icon"><Users size={16} aria-hidden="true" /></div>
+                <div className="agent-supervisor-binding-copy">
+                  <div className="agent-supervisor-binding-title">
+                    <strong>{binding.alias}</strong>
+                    <span className="agent-supervisor-status attached">Attached · draft</span>
+                  </div>
+                  <span>{child?.name ?? "Child agent"}</span>
+                  <small>Version {binding.child_agent_version_id.slice(0, 8)} · {binding.description || "No description"}</small>
+                </div>
+                <button className="icon-button danger" type="button" onClick={() => void detachChildAgent(binding.child_agent_id)} disabled={bindingBusy} aria-label={`Remove ${binding.alias}`} title={`Remove ${binding.alias}`}>
+                  {bindingBusy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <Trash2 size={15} aria-hidden="true" />}
+                </button>
+              </article>;
+            })}
+          </div>
+
+          <div className="agent-supervisor-form-card">
+            <div className="agent-supervisor-form-heading">
+              <div>
+                <h3>Add child agent</h3>
+                <p>Select a published version and give it a stable alias this agent can call.</p>
+              </div>
+              <Plus size={18} aria-hidden="true" />
+            </div>
+            <div className="agent-supervisor-form">
+              <label className="agent-supervisor-field">
+                <span>Child agent</span>
+                <PrimarySelect
+                  value={childAgentId}
+                  options={workspaceAgents
+                    .filter((item) => item.id !== agentId)
+                    .map((item) => ({
+                      value: item.id,
+                      label: item.name,
+                      secondary: item.slug,
+                    }))}
+                  placeholder="Choose an agent"
+                  ariaLabel="Child agent"
+                  onChange={setChildAgentId}
+                  disabled={bindingBusy}
+                  searchable
+                  searchPlaceholder="Search child agents…"
+                  emptyMessage="No matching child agents found."
+                />
+                <small id="supervisor-child-agent-help">Only agents in this workspace are available.</small>
+              </label>
+              <label className="agent-supervisor-field">
+                <span>Published version</span>
+                <PrimarySelect
+                  value={childVersionId}
+                  options={childVersions.map((version) => ({
+                    value: version.id,
+                    label: `v${version.version_number}`,
+                    secondary: version.id.slice(0, 8),
+                  }))}
+                  placeholder={childVersionsLoading ? "Loading versions…" : "Choose a version"}
+                  ariaLabel="Published version"
+                  onChange={setChildVersionId}
+                  disabled={!childAgentId || childVersionsLoading || bindingBusy}
+                  emptyMessage="This agent has no published versions."
+                />
+                <small id="supervisor-child-version-help">The version is pinned when you publish.</small>
+              </label>
+              <label className="agent-supervisor-field" htmlFor="supervisor-child-alias">
+                <span>Tool alias</span>
+                <input id="supervisor-child-alias" value={childAlias} onChange={(event) => setChildAlias(event.target.value)} placeholder="research" disabled={bindingBusy} aria-describedby="supervisor-child-alias-help" />
+                <small id="supervisor-child-alias-help">Use a short, unique name such as <code>research</code>.</small>
+              </label>
+              <label className="agent-supervisor-field" htmlFor="supervisor-child-description">
+                <span>Description <em>Optional</em></span>
+                <input id="supervisor-child-description" value={childDescription} onChange={(event) => setChildDescription(event.target.value)} placeholder="Delegates research tasks" disabled={bindingBusy} />
+                <small>Explain when this agent should delegate to the child.</small>
+              </label>
+            </div>
+            <div className="agent-supervisor-form-actions">
+              <span>Self-reference and duplicate aliases are rejected automatically.</span>
+              <button className="button primary-button" type="button" onClick={() => void attachChildAgent()} disabled={bindingBusy || !childAgentId || !childVersionId || !childAlias.trim()}>
+                {bindingBusy ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <Plus size={15} aria-hidden="true" />}
+                {bindingBusy ? "Attaching…" : "Attach child"}
+              </button>
+            </div>
+          </div>
+        </section>
+      ) : tab === "guardrails" ? (
         <section className="panel agent-tools-panel agent-guardrails-panel">
           <div className="panel-heading">
             <div>
@@ -1093,7 +1313,7 @@ export default function AgentDetailPage() {
               </span>
             </label>
             {draft.memory_config.enabled ? <div className="memory-config-grid">
-              <label>Memory store<select value={draft.memory_config.memory_store_id ?? ""} onChange={(event) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, memory_store_id: event.target.value || null } })}><option value="">Select a memory store</option>{memoryStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}</select><small>{memoryStores.length ? "Published versions keep this binding immutable." : "Create a store from the Memory page first."}</small></label>
+              <label>Memory store<PrimarySelect value={draft.memory_config.memory_store_id ?? ""} options={memoryStores.map((store) => ({ value: store.id, label: store.name }))} placeholder="Select a memory store" ariaLabel="Memory store" onChange={(value) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, memory_store_id: value || null } })} emptyMessage="No memory stores available." /><small>{memoryStores.length ? "Published versions keep this binding immutable." : "Create a store from the Memory page first."}</small></label>
               <label>Retrieve top-k<input type="number" min="1" max="20" value={draft.memory_config.retrieve.top_k} onChange={(event) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, retrieve: { top_k: Number(event.target.value) || 1 } } })} /><small>How many relevant memories enter each run.</small></label>
               <label className="toggle-row memory-write-toggle"><input type="checkbox" checked={draft.memory_config.write.enabled} onChange={(event) => updateDraft({ ...draft, memory_config: { ...draft.memory_config, write: { ...draft.memory_config.write, enabled: event.target.checked } } })} /><span className="toggle-control" aria-hidden="true"><span /></span><span className="toggle-copy"><strong>Extract after successful runs</strong><small>Candidate extraction runs asynchronously and never blocks chat.</small></span></label>
               <fieldset className="memory-types-fieldset"><legend>Memory types to extract</legend><div className="memory-type-options">{(["PROFILE", "SEMANTIC", "SUMMARY", "PROCEDURAL"] as MemoryType[]).map((memoryType) => <label className="toggle-row memory-type-switch" key={memoryType}><input type="checkbox" role="switch" aria-label={`Extract ${memoryType.toLowerCase()} memories`} checked={draft.memory_config.write.types.includes(memoryType)} onChange={(event) => { const types = event.target.checked ? [...draft.memory_config.write.types, memoryType] : draft.memory_config.write.types.filter((item) => item !== memoryType); updateDraft({ ...draft, memory_config: { ...draft.memory_config, write: { ...draft.memory_config.write, types: types.length ? types : ["PROFILE"] } } }); }} /><span className="toggle-control" aria-hidden="true"><span /></span><span className="toggle-copy"><strong>{memoryType}</strong></span></label>)}</div></fieldset>

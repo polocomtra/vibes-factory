@@ -329,7 +329,7 @@ async def get_workflow_draft(
     return WorkflowDraftResponse(
         workflow_id=workflow.id,
         revision=draft.revision,
-        definition=draft.definition,
+        definition=WorkflowDefinition.model_validate(draft.definition),
         updated_at=draft.updated_at,
     )
 
@@ -349,7 +349,7 @@ async def update_workflow_draft(
     return WorkflowDraftResponse(
         workflow_id=workflow.id,
         revision=draft.revision,
-        definition=draft.definition,
+        definition=WorkflowDefinition.model_validate(draft.definition),
         updated_at=draft.updated_at,
     )
 

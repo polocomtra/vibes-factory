@@ -14,7 +14,7 @@ import { publishWorkflow, runWorkflow, saveWorkflowDraft, validateWorkflowDraft,
 type CanvasNodeData = { label: string; type: DefinitionNode["type"]; config: Record<string, unknown> };
 type CanvasNode = Node<CanvasNodeData>;
 
-const colors: Record<DefinitionNode["type"], string> = { START: "#16c784", END: "#f0445e", AGENT: "#7047ff", TOOL: "#38bdf8", CONDITION: "#f5a524", TRANSFORM: "#9b7dff" };
+const colors: Record<DefinitionNode["type"], string> = { START: "var(--success)", END: "var(--error)", AGENT: "var(--brand-primary)", TOOL: "var(--info)", CONDITION: "var(--warning)", TRANSFORM: "var(--focus-ring)" };
 const typeLabels: Record<DefinitionNode["type"], string> = { START: "Start", END: "End", AGENT: "Agent", TOOL: "Tool", CONDITION: "Condition", TRANSFORM: "Transform" };
 
 function WorkflowNode({ data, selected }: NodeProps<CanvasNode>) {

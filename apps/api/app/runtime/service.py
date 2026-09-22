@@ -59,10 +59,18 @@ from ..models import (
     Trace,
     TraceStatus,
     User,
+    WorkflowEventType,
+    WorkflowRun,
+    WorkflowRunEvent,
 )
 from ..tools.contracts import ToolExecutionContext, ToolResult
 from ..tools.pipeline import SecretRedactor, ToolExecutionPipeline
-from .budget import ExecutionBudgetTracker, estimate_model_cost, estimate_model_request
+from .budget import (
+    ExecutionBudgetTracker,
+    ExecutionContext,
+    estimate_model_cost,
+    estimate_model_request,
+)
 from .context import ContextBuilder, ContextBuildResult
 from .contracts import (
     AgentRunRequest,
@@ -88,6 +96,7 @@ class ToolExecutionRecord:
     succeeded: bool
     duration_ms: int
     span_id: UUID
+    child_run_id: UUID | None = None
 
 
 _SECRET_METADATA_KEYS = frozenset(
@@ -182,6 +191,7 @@ class AgentRuntime:
         # The model context must contain the evaluated tool arguments, never
         # the provider's original (potentially sensitive) arguments.
         self._safe_tool_calls: tuple[ModelToolCall, ...] = ()
+        self._execution_context: ExecutionContext | None = None
 
     def _guardrail_policies(
         self, request: AgentRunRequest, hook: GuardrailHook
@@ -210,6 +220,28 @@ class AgentRuntime:
                 )
             )
         return tuple(policies)
+
+    async def _workflow_child_event(
+        self,
+        run: Run,
+        event_type: WorkflowEventType,
+        data: dict[str, object],
+    ) -> None:
+        if run.workflow_run_id is None:
+            return
+        workflow_run = await self.session.get(WorkflowRun, run.workflow_run_id)
+        if workflow_run is None:
+            return
+        sequence = workflow_run.next_event_sequence
+        workflow_run.next_event_sequence += 1
+        self.session.add(
+            WorkflowRunEvent(
+                workflow_run_id=workflow_run.id,
+                sequence=sequence,
+                event_type=event_type,
+                data=data,
+            )
+        )
 
     async def _evaluate_guardrail(
         self,
@@ -372,10 +404,26 @@ class AgentRuntime:
         await self.session.commit()
         return request
 
-    async def run(self, request: AgentRunRequest) -> AgentRunResult:
+    async def run(
+        self,
+        request: AgentRunRequest,
+        *,
+        execution_context: ExecutionContext | None = None,
+    ) -> AgentRunResult:
         self._validate_request(request)
         self._guardrail_events.clear()
-        run, trace, root_span, user_message = await self._start_run(request)
+        if execution_context is None:
+            execution_context = ExecutionContext(
+                budget={
+                    **request.execution_budget.model_dump(),
+                    "max_agent_runs": request.execution_budget.max_model_calls,
+                },
+                trace_id=uuid4(),
+            )
+        self._execution_context = execution_context
+        run, trace, root_span, user_message = await self._start_run(
+            request, execution_context
+        )
         context_span: Span | None = None
         model_span: Span | None = None
         retrieval_span: Span | None = None
@@ -438,13 +486,24 @@ class AgentRuntime:
             context_span.completed_at = datetime.now(UTC)
             await self.session.commit()
 
-            tracker = ExecutionBudgetTracker(request)
-            if context.input_token_estimate > request.execution_budget.max_total_tokens:
+            tracker = ExecutionBudgetTracker(request, execution_context)
+            if execution_context is not None:
+                execution_context.increment("agent_runs", limit_name="max_agent_runs")
+            if context.input_token_estimate > execution_context.budget.get(
+                "max_total_tokens", request.execution_budget.max_total_tokens
+            ):
                 raise RuntimeExecutionError(
                     "RUN_LIMIT_EXCEEDED",
                     "Agent execution exceeded its configured token limit.",
                     status_code=422,
-                    details={"budget": "max_total_tokens"},
+                    details={
+                        "budget": "max_total_tokens",
+                        "used": context.input_token_estimate,
+                        "limit": execution_context.budget.get(
+                            "max_total_tokens",
+                            request.execution_budget.max_total_tokens,
+                        ),
+                    },
                 )
             provider = self.registry.resolve(request.agent_version.model_provider)
             api_key = self.registry.builtin_api_key(
@@ -634,13 +693,27 @@ class AgentRuntime:
             ) from None
 
     async def stream(
-        self, request: AgentRunRequest
+        self,
+        request: AgentRunRequest,
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> AsyncIterator[RuntimeStreamEvent]:
         """Run the Phase 4 lifecycle while yielding normalized text events."""
 
         self._validate_request(request)
         self._guardrail_events.clear()
-        run, trace, root_span, user_message = await self._start_run(request)
+        if execution_context is None:
+            execution_context = ExecutionContext(
+                budget={
+                    **request.execution_budget.model_dump(),
+                    "max_agent_runs": request.execution_budget.max_model_calls,
+                },
+                trace_id=uuid4(),
+            )
+        self._execution_context = execution_context
+        run, trace, root_span, user_message = await self._start_run(
+            request, execution_context
+        )
         context_span: Span | None = None
         model_span: Span | None = None
         retrieval_span: Span | None = None
@@ -746,14 +819,25 @@ class AgentRuntime:
             context_span.completed_at = datetime.now(UTC)
             await self.session.commit()
 
-            if context.input_token_estimate > request.execution_budget.max_total_tokens:
+            if context.input_token_estimate > execution_context.budget.get(
+                "max_total_tokens", request.execution_budget.max_total_tokens
+            ):
                 raise RuntimeExecutionError(
                     "RUN_LIMIT_EXCEEDED",
                     "Agent execution exceeded its configured token limit.",
                     status_code=422,
-                    details={"budget": "max_total_tokens"},
+                    details={
+                        "budget": "max_total_tokens",
+                        "used": context.input_token_estimate,
+                        "limit": execution_context.budget.get(
+                            "max_total_tokens",
+                            request.execution_budget.max_total_tokens,
+                        ),
+                    },
                 )
-            tracker = ExecutionBudgetTracker(request)
+            tracker = ExecutionBudgetTracker(request, execution_context)
+            if execution_context is not None:
+                execution_context.increment("agent_runs", limit_name="max_agent_runs")
             stream_request = context.request.model_copy(update={"stream": True})
             provider = self.registry.resolve_streaming(
                 request.agent_version.model_provider
@@ -922,6 +1006,13 @@ class AgentRuntime:
                                 if record_tool
                                 and record_tool.kind == "child_agent"
                                 and record_tool.child_agent_id
+                                else None
+                            ),
+                            "child_run_id": (
+                                str(record.child_run_id)
+                                if record_tool
+                                and record_tool.kind == "child_agent"
+                                and record.child_run_id
                                 else None
                             ),
                             "tool": record.name,
@@ -1149,6 +1240,7 @@ class AgentRuntime:
         timeout_seconds: float,
     ) -> list[ToolExecutionRecord]:
         """Resolve published bindings and execute through the shared pipeline."""
+        execution_context = self._execution_context
         versions = list(
             (
                 await self.session.execute(
@@ -1252,6 +1344,20 @@ class AgentRuntime:
                     if runtime_tool
                     else None,
                     "tool_name": call.name,
+                    "child_agent_id": (
+                        str(runtime_tool.child_agent_id)
+                        if runtime_tool
+                        and runtime_tool.kind == "child_agent"
+                        and runtime_tool.child_agent_id
+                        else None
+                    ),
+                    "child_agent_version_id": (
+                        str(runtime_tool.child_agent_version_id)
+                        if runtime_tool
+                        and runtime_tool.kind == "child_agent"
+                        and runtime_tool.child_agent_version_id
+                        else None
+                    ),
                     "status": "running",
                     "duration_ms": 0,
                     "untrusted_external_content": call.name == "web_search",
@@ -1260,6 +1366,7 @@ class AgentRuntime:
             )
             self.session.add(span)
             await self.session.flush()
+            child_run_id: UUID | None = None
             try:
                 if blocked_code is not None:
                     result = {
@@ -1289,35 +1396,26 @@ class AgentRuntime:
                     }
                     succeeded = False
                 elif runtime_tool is not None and runtime_tool.kind == "child_agent":
-                    child_count = int(run.metadata_json.get("child_run_count", 0))
-                    child_tokens = int(run.metadata_json.get("child_total_tokens", 0))
-                    if child_tokens >= request.execution_budget.max_total_tokens:
-                        result = {
-                            "ok": False,
-                            "error": {
-                                "code": "TOTAL_TOKEN_BUDGET_EXCEEDED",
-                                "message": "The shared child-agent token budget was exceeded.",
-                            },
-                        }
-                        succeeded = False
-                    elif child_count >= request.execution_budget.max_child_runs:
-                        result = {
-                            "ok": False,
-                            "error": {
-                                "code": "CHILD_RUN_BUDGET_EXCEEDED",
-                                "message": "The child-agent run budget was exceeded.",
-                            },
-                        }
-                        succeeded = False
-                    elif run.agent_depth >= request.execution_budget.max_agent_depth:
-                        result = {
-                            "ok": False,
-                            "error": {
-                                "code": "AGENT_DEPTH_EXCEEDED",
-                                "message": "The child-agent depth budget was exceeded.",
-                            },
-                        }
-                        succeeded = False
+                    if execution_context is None:
+                        execution_context = ExecutionContext(
+                            budget=request.execution_budget.model_dump(),
+                            trace_id=trace.id,
+                            root_run_id=run.root_run_id,
+                            parent_run_id=run.id,
+                            parent_span_id=span.id,
+                            agent_depth=run.agent_depth,
+                        )
+                        self._execution_context = execution_context
+                    try:
+                        if run.agent_depth + 1 > execution_context.budget.get(
+                            "max_agent_depth", request.execution_budget.max_agent_depth
+                        ):
+                            execution_context.limit("agent_depth", "max_agent_depth")
+                        execution_context.increment(
+                            "child_runs", limit_name="max_child_runs"
+                        )
+                    except RuntimeExecutionError:
+                        raise
                     else:
                         child_agent = await self.session.get(
                             Agent, runtime_tool.child_agent_id
@@ -1328,17 +1426,21 @@ class AgentRuntime:
                             or user is None
                             or child_agent.workspace_id != request.workspace_id
                         ):
-                            result = {
-                                "ok": False,
-                                "error": {
-                                    "code": "CHILD_AGENT_NOT_FOUND",
-                                    "message": "The child agent is not available.",
-                                },
-                            }
-                            succeeded = False
+                            raise RuntimeExecutionError(
+                                "CHILD_AGENT_NOT_FOUND",
+                                "The child agent is not available.",
+                                status_code=404,
+                            )
                         else:
                             from ..runs.routes import _build_runtime_request
                             from ..runs.schemas import RunCreateRequest
+
+                            if runtime_tool.child_agent_version_id is None:
+                                raise RuntimeExecutionError(
+                                    "CHILD_AGENT_VERSION_NOT_FOUND",
+                                    "The child agent version is not available.",
+                                    status_code=422,
+                                )
 
                             child_session = Session(
                                 workspace_id=request.workspace_id,
@@ -1365,73 +1467,136 @@ class AgentRuntime:
                                 user,
                                 self.session,
                             )
+                            child_context = execution_context.fork(
+                                parent_run_id=run.id,
+                                parent_span_id=span.id,
+                                agent_depth=run.agent_depth + 1,
+                            )
+                            child_context.cancel_check = execution_context.cancel_check
+                            span.span_type = SpanType.CHILD_AGENT
+                            await self._workflow_child_event(
+                                run,
+                                WorkflowEventType.CHILD_AGENT_STARTED,
+                                {
+                                    "parent_run_id": str(run.id),
+                                    "child_agent_id": str(runtime_tool.child_agent_id),
+                                    "child_agent_version_id": str(
+                                        runtime_tool.child_agent_version_id
+                                    ),
+                                    "alias": call.name,
+                                },
+                            )
                             try:
                                 child_result = await AgentRuntime(
                                     self.session, self.registry
-                                ).run(child_request)
+                                ).run(child_request, execution_context=child_context)
                             except RuntimeExecutionError as error:
-                                if error.run_id is not None:
-                                    failed_child = await self.session.get(
-                                        Run, error.run_id
-                                    )
-                                    if failed_child is not None:
-                                        failed_child.session_id = None
-                                await self.session.delete(child_session)
+                                child_error = RuntimeExecutionError(
+                                    "CHILD_AGENT_FAILED"
+                                    if error.code != "RUN_LIMIT_EXCEEDED"
+                                    else error.code,
+                                    error.message,
+                                    status_code=error.status_code,
+                                    run_id=error.run_id,
+                                    trace_id=error.trace_id,
+                                    details=error.details,
+                                )
                                 result = {
                                     "ok": False,
                                     "error": {
-                                        "code": "CHILD_AGENT_FAILED",
-                                        "message": error.message,
+                                        "code": child_error.code,
+                                        "message": child_error.message,
                                     },
                                 }
                                 succeeded = False
-                                child_result = None
-                            if child_result is not None:
-                                child_run = await self.session.get(
-                                    Run, child_result.run_id
+                                span.status = SpanStatus.FAILED
+                                child_error_payload = result.get("error")
+                                span.error_json = (
+                                    {
+                                        str(key): value
+                                        for key, value in child_error_payload.items()
+                                    }
+                                    if isinstance(child_error_payload, dict)
+                                    else {
+                                        "code": child_error.code,
+                                        "message": child_error.message,
+                                    }
                                 )
-                            if child_run is not None:
-                                child_run.session_id = None
-                                child_run.parent_run_id = run.id
-                                child_run.root_run_id = run.root_run_id
-                                child_run.agent_depth = run.agent_depth + 1
-                                child_run.workflow_run_id = run.workflow_run_id
-                                child_run.trace_id = trace.id
-                                child_spans = list(
-                                    (
-                                        await self.session.scalars(
-                                            select(Span).where(
-                                                Span.run_id == child_run.id
-                                            )
-                                        )
-                                    ).all()
-                                )
-                                for child_span in child_spans:
-                                    child_span.trace_id = trace.id
-                                    child_span.workflow_run_id = run.workflow_run_id
-                                    if child_span.span_type == SpanType.RUN:
-                                        child_span.parent_span_id = span.id
-                                await self.session.delete(child_session)
-                                run.metadata_json = {
-                                    **run.metadata_json,
-                                    "child_run_count": child_count + 1,
-                                    "child_total_tokens": int(
-                                        run.metadata_json.get("child_total_tokens", 0)
-                                    )
-                                    + int(child_result.usage.total_tokens or 0),
+                                span.completed_at = datetime.now(UTC)
+                                span.attributes = {
+                                    **span.attributes,
+                                    "status": "failed",
+                                    "child_run_id": str(error.run_id)
+                                    if error.run_id
+                                    else None,
+                                    "duration_ms": max(
+                                        0,
+                                        round(
+                                            (
+                                                datetime.now(UTC) - started
+                                            ).total_seconds()
+                                            * 1000
+                                        ),
+                                    ),
                                 }
-                                span.span_type = SpanType.CHILD_AGENT
-                                result = {
-                                    "ok": True,
-                                    "output": {
-                                        "text": child_result.output.text,
-                                        "run_id": str(child_result.run_id),
+                                await self._workflow_child_event(
+                                    run,
+                                    WorkflowEventType.CHILD_AGENT_FAILED,
+                                    {
+                                        "parent_run_id": str(run.id),
+                                        "child_run_id": str(error.run_id)
+                                        if error.run_id
+                                        else None,
+                                        "child_agent_id": str(
+                                            runtime_tool.child_agent_id
+                                        ),
+                                        "child_agent_version_id": str(
+                                            runtime_tool.child_agent_version_id
+                                        ),
+                                        "alias": call.name,
+                                        "error_code": child_error.code,
+                                        "usage": execution_context.snapshot(),
                                     },
-                                }
-                                succeeded = True
+                                )
+                                await self.session.commit()
+                                # A child failure is a root failure.  Persist the
+                                # child span first, then let the outer lifecycle
+                                # close the parent/root run consistently.
+                                raise child_error from error
+                            finally:
+                                await self.session.delete(child_session)
+                            span.span_type = SpanType.CHILD_AGENT
+                            await self._workflow_child_event(
+                                run,
+                                WorkflowEventType.CHILD_AGENT_COMPLETED,
+                                {
+                                    "parent_run_id": str(run.id),
+                                    "child_run_id": str(child_result.run_id),
+                                    "child_agent_id": str(runtime_tool.child_agent_id),
+                                    "child_agent_version_id": str(
+                                        runtime_tool.child_agent_version_id
+                                    ),
+                                    "alias": call.name,
+                                    "usage": execution_context.snapshot(),
+                                },
+                            )
+                            result = {
+                                "ok": True,
+                                "output": {
+                                    "text": child_result.output.text,
+                                    "run_id": str(child_result.run_id),
+                                },
+                            }
+                            child_run_id = child_result.run_id
+                            span.attributes = {
+                                **span.attributes,
+                                "child_run_id": str(child_result.run_id),
+                            }
+                            succeeded = True
                 elif (
-                    version.workspace_id != request.workspace_id
+                    version is None
                     or catalog_tool is None
+                    or version.workspace_id != request.workspace_id
                     or catalog_tool.workspace_id != request.workspace_id
                     or (
                         runtime_tool.tool_id is not None
@@ -1447,6 +1612,8 @@ class AgentRuntime:
                     }
                     succeeded = False
                 else:
+                    assert version is not None
+                    assert catalog_tool is not None
                     execution = await self.tool_pipeline.execute(
                         version,
                         call.arguments,
@@ -1502,7 +1669,7 @@ class AgentRuntime:
                     if execution.ok:
                         result["output"] = redactor.redact(execution.output)
                     else:
-                        error_payload: dict[str, object] = {
+                        tool_error_payload: dict[str, object] = {
                             "code": execution.error_code or "TOOL_FAILED",
                             "message": execution.error_message or "The tool failed.",
                         }
@@ -1513,8 +1680,8 @@ class AgentRuntime:
                                 if key in execution.metadata
                             }
                             if retry_hint:
-                                error_payload["retry"] = retry_hint
-                        result["error"] = error_payload
+                                tool_error_payload["retry"] = retry_hint
+                        result["error"] = tool_error_payload
                 duration_ms = max(
                     0, int((datetime.now(UTC) - started).total_seconds() * 1000)
                 )
@@ -1556,6 +1723,8 @@ class AgentRuntime:
                         else None
                     ),
                 )
+            except RuntimeExecutionError:
+                raise
             except Exception:
                 logger.exception(
                     "tool_call_failed",
@@ -1624,6 +1793,7 @@ class AgentRuntime:
                     succeeded=succeeded,
                     duration_ms=duration_ms,
                     span_id=span.id,
+                    child_run_id=child_run_id,
                 )
             )
         await self.session.commit()
@@ -1893,7 +2063,9 @@ class AgentRuntime:
             )
 
     async def _start_run(
-        self, request: AgentRunRequest
+        self,
+        request: AgentRunRequest,
+        execution_context: ExecutionContext | None = None,
     ) -> tuple[Run, Trace, Span, Message]:
         conversation = await self.session.scalar(
             select(Session)
@@ -1933,13 +2105,27 @@ class AgentRuntime:
         now = datetime.now(UTC)
         run_id = uuid4()
         safe_input = {"type": "text", "text": "[GUARDRAIL_PENDING]"}
-        trace = Trace(
-            id=uuid4(),
-            workspace_id=request.workspace_id,
-            root_run_id=None,
-            status=TraceStatus.RUNNING,
-            started_at=now,
+        trace = (
+            await self.session.get(Trace, execution_context.trace_id)
+            if execution_context is not None
+            else None
         )
+        if trace is None:
+            trace = Trace(
+                id=execution_context.trace_id if execution_context else uuid4(),
+                workspace_id=request.workspace_id,
+                root_run_id=None,
+                status=TraceStatus.RUNNING,
+                started_at=now,
+            )
+            trace_created = True
+        else:
+            trace_created = False
+        if execution_context is not None and execution_context.root_run_id is None:
+            execution_context.root_run_id = run_id
+        root_run_id = (
+            execution_context.root_run_id if execution_context is not None else run_id
+        ) or run_id
         run = Run(
             id=run_id,
             workspace_id=request.workspace_id,
@@ -1947,10 +2133,21 @@ class AgentRuntime:
             agent_version_id=request.agent_version.id,
             session_id=conversation.id,
             trace_id=trace.id,
-            root_run_id=run_id,
+            parent_run_id=execution_context.parent_run_id
+            if execution_context is not None
+            else None,
+            root_run_id=root_run_id,
+            workflow_run_id=execution_context.workflow_run_id
+            if execution_context is not None
+            else None,
+            agent_depth=execution_context.agent_depth if execution_context else 0,
             status=RunStatus.QUEUED,
             input=safe_input,
-            execution_budget=request.execution_budget.model_dump(),
+            execution_budget=(
+                execution_context.budget
+                if execution_context is not None
+                else request.execution_budget.model_dump()
+            ),
             metadata_json={
                 "input_type": request.input.type,
                 "input_bytes": len(request.input.text.encode("utf-8")),
@@ -1962,6 +2159,12 @@ class AgentRuntime:
             id=uuid4(),
             trace_id=trace.id,
             run_id=run.id,
+            workflow_run_id=execution_context.workflow_run_id
+            if execution_context is not None
+            else None,
+            parent_span_id=execution_context.parent_span_id
+            if execution_context is not None
+            else None,
             span_type=SpanType.RUN,
             name="agent.run",
             status=SpanStatus.RUNNING,
@@ -1993,12 +2196,16 @@ class AgentRuntime:
         # Flush the circular trace/run dependency in a safe order: the trace
         # is created first, then the root run, then the trace points back to
         # that run before dependent spans/messages are inserted.
-        self.session.add(trace)
+        if trace_created:
+            self.session.add(trace)
         try:
             await self.session.flush()
             self.session.add(run)
             await self.session.flush()
-            trace.root_run_id = run.id
+            if trace.root_run_id is None and (
+                execution_context is None or execution_context.workflow_run_id is None
+            ):
+                trace.root_run_id = run.id
             await self.session.flush()
             self.session.add_all([root_span, user_message])
             await self.session.commit()
@@ -2006,11 +2213,18 @@ class AgentRuntime:
             await self.session.commit()
         except IntegrityError as error:
             await self.session.rollback()
+            logger.exception(
+                "runtime_run_persistence_failed",
+                run_id=str(run_id),
+                trace_id=str(trace.id),
+            )
             raise RuntimeExecutionError(
-                "SESSION_RUN_IN_PROGRESS",
-                "This session already has a run in progress.",
-                status_code=409,
+                "RUN_PERSISTENCE_FAILED",
+                "The agent run could not be persisted.",
+                status_code=500,
             ) from error
+        if execution_context is not None:
+            execution_context.root_run_id = root_run_id
         return run, trace, root_span, user_message
 
     async def _complete_run(
@@ -2057,7 +2271,11 @@ class AgentRuntime:
                 citation.model_dump(mode="json") for citation in request.citations
             ],
         }
-        run.usage = usage.model_dump(exclude_none=True)
+        run.usage = (
+            self._execution_context.snapshot()
+            if self._execution_context is not None
+            else usage.model_dump(exclude_none=True)
+        )
         settings = get_settings()
         estimated_cost = None
         if request.agent_version.model_provider == "azure_openai":
@@ -2102,8 +2320,12 @@ class AgentRuntime:
         root_span.usage = usage.model_dump(exclude_none=True)
         root_span.output = run.output
         root_span.completed_at = now
-        trace.status = TraceStatus.COMPLETED
-        trace.completed_at = now
+        if self._execution_context is None or (
+            self._execution_context.parent_run_id is None
+            and self._execution_context.workflow_run_id is None
+        ):
+            trace.status = TraceStatus.COMPLETED
+            trace.completed_at = now
         conversation = await self.session.get(Session, request.session.id)
         if conversation is not None:
             conversation.last_activity_at = now
@@ -2185,6 +2407,15 @@ class AgentRuntime:
             run.status = RunStatus.FAILED
             run.error_code = error.code
             run.error_message = error.message
+            run.metadata_json = {
+                **run.metadata_json,
+                "error_details": error.details,
+            }
+            run.usage = (
+                self._execution_context.snapshot()
+                if self._execution_context is not None
+                else run.usage
+            )
             run.completed_at = now
         active_spans = list(
             (

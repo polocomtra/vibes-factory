@@ -1,5 +1,19 @@
 # VibesFactory — API Specification
 
+## Phase 12/13 runtime additions
+
+`GET /v1/runs/{run_id}/children?limit=50&cursor=...` returns direct child runs
+only, ordered newest first, using the standard `{ data, pagination }` shape.
+The endpoint enforces workspace membership and returns the normal `RunResponse`
+contract, including `parent_run_id`, `root_run_id`, `trace_id`, pinned
+`agent_version_id`, status, safe usage, and normalized errors. Credentials and
+provider payloads are never included.
+
+Workflow agent nodes and supervisor child-agent calls share the root execution
+budget and trace. Published child versions are immutable pins. Budget,
+deadline, cancellation, and child failures fail the root execution; budget
+errors include safe `budget`, `used`, and `limit` details.
+
 ## Phase 9 Knowledge API addendum
 
 KB CRUD, multipart idempotent upload/status/reprocess/delete, debug search,
@@ -687,6 +701,7 @@ Response `201`:
   "description": "Researches technical topics.",
   "status": "ACTIVE",
   "latest_version_number": 0,
+  "is_supervisor": false,
   "created_at": "..."
 }
 ```
@@ -714,6 +729,10 @@ Example:
 ?status=ACTIVE&search=research
 ```
 
+Each agent response includes `is_supervisor`. It is `true` when the latest
+published `AgentVersion` has one or more pinned child-agent bindings; agents
+without those bindings are utility/single agents.
+
 ---
 
 # 24. Get Agent
@@ -731,6 +750,7 @@ Response:
   "description": "...",
   "status": "ACTIVE",
   "latest_version_number": 3,
+  "is_supervisor": true,
   "created_at": "...",
   "updated_at": "..."
 }

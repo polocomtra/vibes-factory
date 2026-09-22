@@ -36,3 +36,20 @@ invent approval/resume or parallel scheduling.
   retention/compaction is intentionally deferred to the reliability phase.
 - React Flow is a presentation/editor layer only. The backend validator and
   published normalized graph remain the source of truth.
+
+## Implementation record (2026-09-22)
+
+The runtime carries one mutable `ExecutionContext` through the workflow,
+agent-node, and supervisor child-run tree. It owns the absolute deadline,
+lineage IDs, and cumulative node, step, model, tool, child, agent, and token
+counters. Limits are checked before external calls and a limit, deadline,
+cancellation, or child failure fails the root execution with a normalized
+error. Child `Run` and `Span` rows are created with parent/root/trace/workflow
+and parent-span relationships before runtime execution; no post-hoc
+re-parenting is used.
+
+Workflow-only traces remain visible in the trace collection even when no root
+agent run exists. Child-agent lifecycle events contain only safe lineage,
+version, status, duration, error-code, and usage metadata. Direct children are
+available through the workspace-scoped `GET /v1/runs/{run_id}/children`
+collection endpoint.

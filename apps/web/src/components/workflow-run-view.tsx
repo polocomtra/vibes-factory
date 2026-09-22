@@ -19,6 +19,8 @@ import { apiFetch, readApiError } from "../lib/api";
 import {
   fetchWorkflowNodeRuns,
   fetchWorkflowRun,
+  fetchRunChildren,
+  type ChildRun,
   type WorkflowEvent,
   type WorkflowNodeRun,
   type WorkflowRun,
@@ -143,7 +145,9 @@ export function WorkflowRunView({ runId }: { runId: string }) {
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [nodeRuns, setNodeRuns] = useState<WorkflowNodeRun[]>([]);
+  const [childRuns, setChildRuns] = useState<ChildRun[]>([]);
   const [selectedNodeRunId, setSelectedNodeRunId] = useState<string | null>(null);
+  const [selectedChildRunId, setSelectedChildRunId] = useState<string | null>(null);
   const [connection, setConnection] = useState<"Connected" | "Reconnecting" | "Polling">("Reconnecting");
   const [error, setError] = useState<string | null>(null);
   const terminal = run ? ["COMPLETED", "FAILED", "CANCELLED"].includes(run.status) : false;
@@ -159,6 +163,9 @@ export function WorkflowRunView({ runId }: { runId: string }) {
         if (cancelled) return;
         setRun(nextRun);
         setNodeRuns(nextNodeRuns);
+        const agentRunIds = nextNodeRuns.flatMap((item) => item.agent_run_id ? [item.agent_run_id] : []);
+        const nested = (await Promise.all(agentRunIds.map((agentRunId) => fetchRunChildren(agentRunId)))).flat();
+        setChildRuns(nested);
       } catch (reason: unknown) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Unable to load run.");
       }
@@ -230,6 +237,7 @@ export function WorkflowRunView({ runId }: { runId: string }) {
     [nodeRuns],
   );
   const selectedNodeRun = selectedNodeRunId ? nodeRunsById.get(selectedNodeRunId) ?? null : null;
+  const selectedChildRun = selectedChildRunId ? childRuns.find((item) => item.id === selectedChildRunId) ?? null : null;
   const elapsed = useMemo(
     () => run?.started_at
       ? Math.max(0, Math.round(((run.completed_at ? new Date(run.completed_at).getTime() : Date.now()) - new Date(run.started_at).getTime()) / 1000))
@@ -324,6 +332,11 @@ export function WorkflowRunView({ runId }: { runId: string }) {
             </dl>
             {run.error ? <div className="workflow-error-box"><StopCircle size={15} /><div><strong>{run.error.code}</strong><p>{run.error.message}</p></div></div> : null}
             <TracePayloadSection title="Workflow input" value={run.input} compact />
+            <section className="workflow-child-runs" aria-labelledby="workflow-child-runs-heading">
+              <div className="workflow-inspector-section-heading"><div><span className="panel-label">Multi-agent</span><h3 id="workflow-child-runs-heading">Child runs</h3></div><span className="status-badge muted">{childRuns.length}</span></div>
+              {childRuns.length === 0 ? <p className="workflow-inspector-hint">No direct child runs have been emitted yet.</p> : <div className="workflow-child-run-list">{childRuns.map((child) => <button type="button" className={`workflow-child-run${selectedChildRunId === child.id ? " selected" : ""}`} key={child.id} onClick={() => setSelectedChildRunId(child.id)}><span className={`run-status-dot ${child.status.toLowerCase()}`} /><span><strong>{child.status}</strong><small>Depth {child.agent_depth} · parent {child.parent_run_id?.slice(0, 8) ?? "—"} · root {child.root_run_id.slice(0, 8)}…</small></span><code>{child.id.slice(0, 8)}…</code></button>)}</div>}
+              {selectedChildRun ? <div className="workflow-child-run-detail"><div><span>Child run</span><code>{selectedChildRun.id}</code></div><div><span>Trace</span><code>{selectedChildRun.trace_id}</code></div><div><span>Agent version</span><code>{selectedChildRun.agent_version_id}</code></div><TraceUsageSection usage={selectedChildRun.usage} />{selectedChildRun.error ? <div className="workflow-error-box"><CircleAlert size={15} /><div><strong>{selectedChildRun.error.code}</strong><p>{selectedChildRun.error.message}</p></div></div> : null}</div> : null}
+            </section>
           </section>
 
           {selectedNodeRun ? (

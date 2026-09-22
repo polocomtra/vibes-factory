@@ -173,7 +173,7 @@ export default function WorkflowDetailPage() {
                                     {renaming ? (
                                         <form className="workflow-rename-form" onSubmit={(event) => { event.preventDefault(); void saveRename(); }}>
                                             <label className="sr-only" htmlFor="workflow-name">Workflow name</label>
-                                            <input id="workflow-name" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} autoFocus disabled={renameBusy} maxLength={255} />
+                                            <input id="workflow-name" value={nameDraft} onChange={(event) => setNameDraft(event.target.value)} disabled={renameBusy} maxLength={255} />
                                             <button className="icon-button" type="submit" disabled={renameBusy} aria-label="Save workflow name"><Check size={16} aria-hidden="true" /></button>
                                             <button className="icon-button" type="button" onClick={cancelRename} disabled={renameBusy} aria-label="Cancel rename"><X size={16} aria-hidden="true" /></button>
                                         </form>

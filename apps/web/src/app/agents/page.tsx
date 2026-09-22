@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Filter, LoaderCircle, Plus, Search, Sparkles } from "lucide-react";
+import { Bot, Filter, LoaderCircle, Plus, Search, Sparkles, UsersRound } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -129,7 +129,13 @@ export default function AgentsPage() {
                   onClick={() => router.push(`/agents/${agent.id}`)}
                 >
                   <div className="agent-card-top">
-                    <span className="agent-avatar"><Bot size={17} aria-hidden="true" /></span>
+                    <span className={agent.is_supervisor ? "agent-avatar supervisor" : "agent-avatar"}>
+                      {agent.is_supervisor ? <UsersRound size={17} aria-hidden="true" /> : <Bot size={17} aria-hidden="true" />}
+                    </span>
+                    <span className={`agent-kind-badge ${agent.is_supervisor ? "supervisor" : "utility"}`}>
+                      {agent.is_supervisor ? <UsersRound size={12} aria-hidden="true" /> : <Bot size={12} aria-hidden="true" />}
+                      {agent.is_supervisor ? "Supervisor" : "Utility"}
+                    </span>
                     <AgentStatus status={agent.status} />
                   </div>
                   <h2>{agent.name}</h2>

@@ -40,6 +40,21 @@ function durationLabel(value: number | null) {
     return `${(value / 1000).toFixed(1)} s`;
 }
 
+function shortId(value: string | null, length: number) {
+    return value ? `${value.slice(0, length)}…` : "—";
+}
+
+function traceSubject(trace: TraceSessionItem) {
+    return trace.agent_name || "Workflow execution";
+}
+
+function traceRunLabel(trace: TraceSessionItem) {
+    if (trace.run_id) return `Run ${shortId(trace.run_id, 10)}`;
+    if (trace.workflow_run_id)
+        return `Workflow run ${shortId(trace.workflow_run_id, 10)}`;
+    return `Trace ${shortId(trace.id, 10)}`;
+}
+
 function statusTone(status: TraceListItem["status"]) {
     return status === "COMPLETED"
         ? "success"
@@ -103,11 +118,11 @@ function TraceGridCard({
             </div>
             <div className="trace-card-heading">
                 <div>
-                    <h2>{trace.agent_name}</h2>
+                    <h2>{traceSubject(trace)}</h2>
                     <p>
                         {trace.trace_count}{" "}
                         {trace.trace_count === 1 ? "run" : "runs"} ·{" "}
-                        <code>{trace.run_id.slice(0, 10)}…</code>
+                        <code>{traceRunLabel(trace)}</code>
                     </p>
                 </div>
                 <span className="trace-duration">
@@ -122,7 +137,11 @@ function TraceGridCard({
                 </span>
                 <span>
                     <small>Version ID</small>
-                    <b>{trace.agent_version_id.slice(0, 8)}…</b>
+                    <b>
+                        {trace.agent_version_id
+                            ? shortId(trace.agent_version_id, 8)
+                            : "Workflow trace"}
+                    </b>
                 </span>
             </div>
             <footer>
@@ -171,11 +190,11 @@ function TraceListRow({
                     <Bot size={15} aria-hidden="true" />
                 </span>
                 <span>
-                    <strong>{trace.agent_name}</strong>
+                    <strong>{traceSubject(trace)}</strong>
                     <small>
                         {trace.trace_count}{" "}
                         {trace.trace_count === 1 ? "run" : "runs"} ·{" "}
-                        <code>{trace.run_id.slice(0, 10)}…</code>
+                        <code>{traceRunLabel(trace)}</code>
                     </small>
                 </span>
             </div>
@@ -357,7 +376,7 @@ export default function TracesPage() {
     }
 
     function openTrace(trace: TraceSessionItem) {
-        if (trace.session_id)
+        if (trace.session_id && trace.agent_id)
             router.push(
                 `/agents/${trace.agent_id}/playground?session_id=${trace.session_id}`,
             );

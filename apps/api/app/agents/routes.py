@@ -136,6 +136,24 @@ def _version_response(version: AgentVersion) -> AgentVersionResponse:
     )
 
 
+def _agent_response(agent: Agent, *, is_supervisor: bool = False) -> AgentResponse:
+    return AgentResponse.model_validate(agent).model_copy(
+        update={"is_supervisor": is_supervisor}
+    )
+
+
+async def _agent_is_supervisor(session: AsyncSession, agent: Agent) -> bool:
+    if agent.latest_version_number == 0:
+        return False
+    child_bindings = await session.scalar(
+        select(AgentVersion.workflow_child_bindings).where(
+            AgentVersion.agent_id == agent.id,
+            AgentVersion.version_number == agent.latest_version_number,
+        )
+    )
+    return bool(child_bindings)
+
+
 @router.get("/models", response_model=dict[str, list[ModelResponse]])
 async def get_models() -> dict[str, list[ModelResponse]]:
     return {
@@ -180,7 +198,7 @@ async def create_agent_route(
                 "details": {},
             },
         ) from error
-    return AgentResponse.model_validate(agent)
+    return _agent_response(agent)
 
 
 @router.get("/workspaces/{workspace_id}/agents", response_model=AgentCollection)
@@ -222,8 +240,26 @@ async def list_agents(
     agents = list(rows.all())
     has_more = len(agents) > limit
     agents = agents[:limit]
+    latest_numbers = {agent.id: agent.latest_version_number for agent in agents}
+    supervisor_ids: set[UUID] = set()
+    if latest_numbers:
+        version_rows = await session.execute(
+            select(
+                AgentVersion.agent_id,
+                AgentVersion.version_number,
+                AgentVersion.workflow_child_bindings,
+            ).where(AgentVersion.agent_id.in_(latest_numbers))
+        )
+        supervisor_ids = {
+            agent_id
+            for agent_id, version_number, child_bindings in version_rows.all()
+            if version_number == latest_numbers.get(agent_id) and bool(child_bindings)
+        }
     return AgentCollection(
-        data=[AgentResponse.model_validate(agent) for agent in agents],
+        data=[
+            _agent_response(agent, is_supervisor=agent.id in supervisor_ids)
+            for agent in agents
+        ],
         pagination=Pagination(
             next_cursor=(
                 _encode_cursor(f"{agents[-1].created_at.isoformat()}|{agents[-1].id}")
@@ -236,8 +272,13 @@ async def list_agents(
 
 
 @router.get("/agents/{agent_id}", response_model=AgentResponse)
-async def get_agent(agent: Agent = Depends(require_agent_access)) -> AgentResponse:
-    return AgentResponse.model_validate(agent)
+async def get_agent(
+    agent: Agent = Depends(require_agent_access),
+    session: AsyncSession = Depends(get_session),
+) -> AgentResponse:
+    return _agent_response(
+        agent, is_supervisor=await _agent_is_supervisor(session, agent)
+    )
 
 
 @router.patch("/agents/{agent_id}", response_model=AgentResponse)
@@ -251,7 +292,9 @@ async def patch_agent(
         updated = await update_agent(session, agent, user.id, payload)
     except AgentServiceError as error:
         raise _service_error(error) from error
-    return AgentResponse.model_validate(updated)
+    return _agent_response(
+        updated, is_supervisor=await _agent_is_supervisor(session, updated)
+    )
 
 
 @router.delete("/agents/{agent_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -451,7 +494,7 @@ async def add_child_agent_binding(
     await session.commit()
     return ChildAgentBindingResponse(
         child_agent_id=row.child_agent_id,
-        child_agent_version_id=row.child_agent_version_id,
+        child_agent_version_id=version.id,
         alias=row.alias,
         description=row.description_override,
     )

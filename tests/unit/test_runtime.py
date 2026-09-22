@@ -10,7 +10,11 @@ from apps.api.app.model_providers.contracts import (
     ModelUsage,
 )
 from apps.api.app.models import Span, SpanStatus, SpanType
-from apps.api.app.runtime.budget import ExecutionBudgetTracker, estimate_model_cost
+from apps.api.app.runtime.budget import (
+    ExecutionBudgetTracker,
+    ExecutionContext,
+    estimate_model_cost,
+)
 from apps.api.app.runtime.context import ContextBuilder
 from apps.api.app.runtime.contracts import (
     AgentRunRequest,
@@ -165,6 +169,43 @@ def test_budget_tracker_accumulates_model_rounds_and_tool_calls() -> None:
     assert tracker.model_calls == 1
     assert tracker.tool_calls == 2
     assert tracker.usage().total_tokens == 6
+
+
+def test_shared_execution_context_accumulates_tree_counters_and_reports_limits() -> None:
+    context = ExecutionContext(
+        budget={
+            "max_steps": 3,
+            "max_model_calls": 2,
+            "max_tool_calls": 2,
+            "max_child_runs": 1,
+            "max_agent_runs": 2,
+            "max_agent_depth": 1,
+            "max_total_tokens": 100,
+            "timeout_seconds": 30,
+        },
+        trace_id=uuid4(),
+    )
+    child = context.fork(
+        parent_run_id=uuid4(), parent_span_id=uuid4(), agent_depth=1
+    )
+
+    context.increment("agent_runs", limit_name="max_agent_runs")
+    child.increment("child_runs", limit_name="max_child_runs")
+    child.increment("model_calls", limit_name="max_model_calls")
+
+    assert context.snapshot()["agent_runs"] == 1
+    assert context.snapshot()["child_runs"] == 1
+    assert child.snapshot() == context.snapshot()
+
+    with pytest.raises(RuntimeExecutionError) as error:
+        child.increment("child_runs", limit_name="max_child_runs")
+
+    assert error.value.code == "RUN_LIMIT_EXCEEDED"
+    assert error.value.details == {
+        "budget": "max_child_runs",
+        "used": 2,
+        "limit": 1,
+    }
 
 
 def test_estimate_model_cost_applies_cached_input_rate() -> None:

@@ -36,11 +36,13 @@ import {
 import remarkGfm from "remark-gfm";
 
 import { AppShell } from "../../../../components/app-shell";
+import { PrimarySelect } from "../../../../components/primary-select";
 import {
     createRunStream,
     createSession,
     fetchMessages,
     fetchRun,
+    fetchRunChildren,
     fetchSessions,
     fetchRunTrace,
     fetchSessionTraces,
@@ -48,6 +50,7 @@ import {
     fetchTraceSpans,
     type Message,
     type Citation,
+    type ChildRun,
     type Run,
     type Session,
     type Span,
@@ -57,6 +60,7 @@ import {
 } from "../../../../lib/runtime";
 import {
     fetchAgent,
+    fetchVersion,
     fetchVersions,
     type Agent,
     type AgentVersionSummary,
@@ -196,6 +200,102 @@ function groupConversation(messages: Message[]): ConversationItem[] {
     if (pendingTools.length > 0)
         items.push({ kind: "tools", tools: pendingTools });
     return items;
+}
+
+type MessageReloadPreservation = {
+    optimisticMessage: Message;
+    runId?: string | null;
+};
+
+type ChildAgentActivity = {
+    id: string;
+    alias: string;
+    childAgentId: string | null;
+    childAgentVersionId: string | null;
+    childRunId: string | null;
+    status: "RUNNING" | "COMPLETED" | "FAILED";
+    durationMs: number | null;
+    errorCode?: string | null;
+};
+
+function childActivityId(
+    childAgentId: string | null | undefined,
+    alias: string,
+) {
+    return `${childAgentId ?? "unknown"}:${alias}`;
+}
+
+function persistedChildActivity(
+    child: ChildRun,
+    childSpans: Span[],
+    existing: ChildAgentActivity | undefined,
+    index: number,
+): ChildAgentActivity {
+    const span =
+        childSpans.find((candidate) => {
+            const attributeRunId = candidate.attributes.child_run_id;
+            const runId = candidate.output?.run_id;
+            return (
+                (typeof attributeRunId === "string" &&
+                    attributeRunId === child.id) ||
+                (typeof runId === "string" && runId === child.id)
+            );
+        }) ??
+        (existing?.alias
+            ? childSpans.find((candidate) => candidate.name === existing.alias)
+            : undefined);
+    const durationMs =
+        child.started_at && child.completed_at
+            ? Math.max(
+                  0,
+                  Math.round(
+                      new Date(child.completed_at).getTime() -
+                          new Date(child.started_at).getTime(),
+                  ),
+              )
+            : existing?.durationMs ?? span?.duration_ms ?? null;
+    return {
+        id: child.id,
+        alias: existing?.alias || span?.name || `Child agent ${index + 1}`,
+        childAgentId: child.agent_id,
+        childAgentVersionId: child.agent_version_id,
+        childRunId: child.id,
+        status:
+            child.status === "COMPLETED"
+                ? "COMPLETED"
+                : child.status === "FAILED"
+                  ? "FAILED"
+                  : "RUNNING",
+        durationMs,
+        errorCode: child.error?.code ?? null,
+    };
+}
+
+function mergeReloadedMessages(
+    history: Message[],
+    current: Message[],
+    preservation?: MessageReloadPreservation,
+): Message[] {
+    if (!preservation) return history;
+
+    const persistedPrompt = preservation.runId
+        ? history.some(
+              (message) =>
+                  message.role === "USER" &&
+                  message.run_id === preservation.runId,
+          )
+        : false;
+    if (persistedPrompt) return history;
+
+    const optimistic =
+        current.find((message) => message.id === preservation.optimisticMessage.id) ??
+        preservation.optimisticMessage;
+    const merged = [...history, optimistic];
+    return merged.sort((left, right) => {
+        if (left.sequence_no !== right.sequence_no)
+            return left.sequence_no - right.sequence_no;
+        return left.created_at.localeCompare(right.created_at);
+    });
 }
 
 function toolResultLabel(tool: ToolCallRecord) {
@@ -953,6 +1053,8 @@ export default function PlaygroundPage() {
     const [agent, setAgent] = useState<Agent | null>(null);
     const [versions, setVersions] = useState<AgentVersionSummary[]>([]);
     const [selectedVersionId, setSelectedVersionId] = useState("");
+    const [selectedVersionSupportsDelegation, setSelectedVersionSupportsDelegation] =
+        useState(false);
     const [sessions, setSessions] = useState<Session[]>([]);
     const [sessionId, setSessionId] = useState<string | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -967,11 +1069,15 @@ export default function PlaygroundPage() {
     const [streamingText, setStreamingText] = useState("");
     const [streamRunId, setStreamRunId] = useState<string | null>(null);
     const [toolActivity, setToolActivity] = useState<string | null>(null);
+    const [childActivities, setChildActivities] = useState<ChildAgentActivity[]>(
+        [],
+    );
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const messageListRef = useRef<HTMLDivElement>(null);
     const abortControllerRef = useRef<AbortController | null>(null);
+    const pollingRecoveredRunRef = useRef<string | null>(null);
     const pendingDeltaRef = useRef("");
     const deltaFrameRef = useRef<number | null>(null);
 
@@ -1004,9 +1110,14 @@ export default function PlaygroundPage() {
     );
 
     const reloadMessages = useCallback(
-        async (id: string): Promise<Message[]> => {
+        async (
+            id: string,
+            preservation?: MessageReloadPreservation,
+        ): Promise<Message[]> => {
             const history = await fetchMessages(id);
-            setMessages(history);
+            setMessages((current) =>
+                mergeReloadedMessages(history, current, preservation),
+            );
             return history;
         },
         [],
@@ -1031,6 +1142,18 @@ export default function PlaygroundPage() {
                     : run.status === "FAILED"
                       ? "FAILED"
                       : "RUNNING",
+            );
+            const [children, spans] = await Promise.all([
+                fetchRunChildren(run.id),
+                fetchTraceSpans(run.trace_id),
+            ]);
+            const childSpans = spans.filter(
+                (span) => span.type === "CHILD_AGENT" && span.run_id === run.id,
+            );
+            setChildActivities(
+                children.map((child, index) =>
+                    persistedChildActivity(child, childSpans, undefined, index),
+                ),
             );
         } catch {
             // Keep the conversation usable if an old run is no longer available.
@@ -1065,6 +1188,85 @@ export default function PlaygroundPage() {
             behavior: reduceMotion ? "auto" : "smooth",
         });
     }, [messages.length, busy, streamingText]);
+
+    useEffect(() => {
+        if (!busy || !streamRunId) return;
+        let cancelled = false;
+
+        const syncPersistedRun = async () => {
+            try {
+                const [run, children] = await Promise.all([
+                    fetchRun(streamRunId),
+                    fetchRunChildren(streamRunId),
+                ]);
+                if (cancelled) return;
+
+                const terminalRun =
+                    run.status === "COMPLETED" || run.status === "FAILED";
+                if (terminalRun) {
+                    setLastRun(run);
+                    setToolActivity(null);
+                    pollingRecoveredRunRef.current = run.id;
+                    if (run.status === "COMPLETED") {
+                        setStatus("COMPLETED");
+                        setStreamingText("");
+                    } else {
+                        setStatus("FAILED");
+                        setError(
+                            run.error?.message ??
+                                "The run failed. Try again.",
+                        );
+                    }
+                }
+
+                if (children.length > 0) {
+                    setChildActivities((current) => {
+                        const merged = [...current];
+                        children.forEach((child, index) => {
+                            const existingIndex = merged.findIndex(
+                                (activity) =>
+                                    activity.childRunId === child.id ||
+                                    (activity.childRunId === null &&
+                                        activity.childAgentId === child.agent_id),
+                            );
+                            const existing =
+                                existingIndex >= 0
+                                    ? merged[existingIndex]
+                                    : undefined;
+                            const activity = persistedChildActivity(
+                                child,
+                                [],
+                                existing,
+                                index,
+                            );
+                            if (existingIndex >= 0) {
+                                merged[existingIndex] = activity;
+                            } else {
+                                merged.push(activity);
+                            }
+                        });
+                        return merged;
+                    });
+                }
+                if (terminalRun) {
+                    setBusy(false);
+                    abortControllerRef.current?.abort();
+                }
+            } catch {
+                // SSE remains the primary live channel. Polling is only a
+                // best-effort recovery path when the stream is delayed.
+            }
+        };
+
+        void syncPersistedRun();
+        const interval = window.setInterval(() => {
+            void syncPersistedRun();
+        }, 1200);
+        return () => {
+            cancelled = true;
+            window.clearInterval(interval);
+        };
+    }, [busy, streamRunId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1117,10 +1319,41 @@ export default function PlaygroundPage() {
             null,
         [versions, selectedVersionId],
     );
+
+    useEffect(() => {
+        if (!selectedVersionId) {
+            setSelectedVersionSupportsDelegation(false);
+            return;
+        }
+
+        let cancelled = false;
+        setSelectedVersionSupportsDelegation(false);
+        void fetchVersion(agentId, selectedVersionId)
+            .then((version) => {
+                if (!cancelled) {
+                    setSelectedVersionSupportsDelegation(
+                        (version.child_agent_bindings?.length ?? 0) > 0,
+                    );
+                }
+            })
+            .catch(() => {
+                if (!cancelled) setSelectedVersionSupportsDelegation(false);
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [agentId, selectedVersionId]);
+
     const conversationItems = useMemo(
         () => groupConversation(messages),
         [messages],
     );
+    const hasTerminalRunWithoutDelegation =
+        !busy &&
+        lastRun !== null &&
+        (lastRun.status === "COMPLETED" || lastRun.status === "FAILED") &&
+        childActivities.length === 0;
 
     async function newSession() {
         setError(null);
@@ -1134,6 +1367,7 @@ export default function PlaygroundPage() {
             setStatus("READY");
             setStreamingText("");
             setStreamRunId(null);
+            setChildActivities([]);
             router.replace(
                 `/agents/${agentId}/playground?session_id=${created.id}`,
             );
@@ -1148,7 +1382,14 @@ export default function PlaygroundPage() {
 
     async function sendMessage() {
         const text = composer.trim();
-        if (!text || !sessionId || !selectedVersionId || busy) return;
+        if (
+            !text ||
+            !sessionId ||
+            !selectedVersionId ||
+            busy ||
+            status === "RUNNING"
+        )
+            return;
         const optimisticMessage: Message = {
             id: `optimistic-${crypto.randomUUID()}`,
             session_id: sessionId,
@@ -1168,11 +1409,12 @@ export default function PlaygroundPage() {
         setStreamingText("");
         setStreamRunId(null);
         setToolActivity(null);
+        setChildActivities([]);
         pendingDeltaRef.current = "";
         const controller = new AbortController();
         abortControllerRef.current = controller;
+        let activeRunId: string | null = null;
         try {
-            let activeRunId: string | null = null;
             let terminal: "COMPLETED" | "FAILED" | null = null;
             let failureMessage: string | null = null;
             for await (const event of createRunStream(
@@ -1210,6 +1452,67 @@ export default function PlaygroundPage() {
                     );
                 } else if (event.event === "message.delta") {
                     queueDelta(event.data.delta);
+                } else if (event.event === "child_agent.started") {
+                    const alias = event.data.tool?.trim() || "child agent";
+                    const id = childActivityId(
+                        event.data.child_agent_id,
+                        alias,
+                    );
+                    setChildActivities((current) => [
+                        ...current.filter((activity) => activity.id !== id),
+                        {
+                            id,
+                            alias,
+                            childAgentId: event.data.child_agent_id ?? null,
+                            childAgentVersionId:
+                                event.data.child_agent_version_id ?? null,
+                            childRunId: null,
+                            status: "RUNNING",
+                            durationMs: null,
+                        },
+                    ]);
+                    setToolActivity(`Delegating to ${alias}…`);
+                } else if (
+                    event.event === "child_agent.completed" ||
+                    event.event === "child_agent.failed"
+                ) {
+                    const alias = event.data.tool?.trim() || "child agent";
+                    const id = childActivityId(
+                        event.data.child_agent_id,
+                        alias,
+                    );
+                    setChildActivities((current) => {
+                        const existing = current.find(
+                            (activity) => activity.id === id,
+                        );
+                        return [
+                            ...current.filter((activity) => activity.id !== id),
+                            {
+                                id,
+                                alias,
+                                childAgentId: event.data.child_agent_id ?? null,
+                                childAgentVersionId:
+                                    event.data.child_agent_version_id ??
+                                    existing?.childAgentVersionId ??
+                                    null,
+                                childRunId:
+                                    event.data.child_run_id ??
+                                    existing?.childRunId ??
+                                    null,
+                                status:
+                                    event.event === "child_agent.completed"
+                                        ? "COMPLETED"
+                                        : "FAILED",
+                                durationMs: event.data.duration_ms ?? null,
+                                errorCode: event.data.error_code,
+                            },
+                        ];
+                    });
+                    setToolActivity(
+                        event.event === "child_agent.completed"
+                            ? `${alias} completed`
+                            : `${alias} failed`,
+                    );
                 } else if (event.event === "tool.started") {
                     const toolName = event.data.tool?.trim() || "tool";
                     setToolActivity(`Calling ${toolName}…`);
@@ -1220,11 +1523,13 @@ export default function PlaygroundPage() {
                     setToolActivity(null);
                 } else if (event.event === "run.completed") {
                     terminal = "COMPLETED";
+                    break;
                 } else if (event.event === "run.failed") {
                     terminal = "FAILED";
                     failureMessage = event.data.error.code.startsWith("GUARDRAIL") || event.data.error.code.startsWith("TOOL_") && event.data.error.code.includes("GUARDRAIL")
                         ? `${event.data.error.message} Review the agent's Guardrails tab to adjust the next published version.`
                         : event.data.error.message;
+                    break;
                 }
             }
             flushDelta();
@@ -1240,8 +1545,32 @@ export default function PlaygroundPage() {
                           : terminal;
                 setStatus(resolvedStatus ?? "RUNNING");
                 failureMessage = failureMessage ?? run.error?.message ?? null;
+                const [children, spans] = await Promise.all([
+                    fetchRunChildren(run.id),
+                    fetchTraceSpans(run.trace_id),
+                ]);
+                const childSpans = spans.filter(
+                    (span) => span.type === "CHILD_AGENT" && span.run_id === run.id,
+                );
+                setChildActivities((current) =>
+                    children.map((child, index) =>
+                        persistedChildActivity(
+                            child,
+                            childSpans,
+                            current.find(
+                                (activity) =>
+                                    activity.childRunId === child.id ||
+                                    activity.childAgentId === child.agent_id,
+                            ),
+                            index,
+                        ),
+                    ),
+                );
             }
-            await reloadMessages(sessionId);
+            await reloadMessages(sessionId, {
+                optimisticMessage,
+                runId: activeRunId,
+            });
             await refreshSessionTraces(sessionId);
             // Keep any partial assistant text visible when the provider fails after
             // emitting deltas. A failed run should explain what happened without
@@ -1251,9 +1580,19 @@ export default function PlaygroundPage() {
             if (resolvedStatus === "FAILED")
                 setError(failureMessage ?? "The run failed. Try again.");
         } catch (reason: unknown) {
+            if (
+                activeRunId &&
+                pollingRecoveredRunRef.current === activeRunId
+            ) {
+                pollingRecoveredRunRef.current = null;
+                return;
+            }
             setStatus("FAILED");
             try {
-                await reloadMessages(sessionId);
+                await reloadMessages(sessionId, {
+                    optimisticMessage,
+                    runId: activeRunId,
+                });
                 await refreshSessionTraces(sessionId);
             } catch {
                 // Keep the optimistic query visible if the history refresh also fails.
@@ -1269,8 +1608,20 @@ export default function PlaygroundPage() {
                     } as Run);
                 }
             }
+            if (
+                reason instanceof RuntimeApiError &&
+                reason.code === "SESSION_RUN_IN_PROGRESS"
+            ) {
+                setMessages((current) =>
+                    current.filter((message) => message.id !== optimisticMessage.id),
+                );
+                setStatus("RUNNING");
+            }
             setError(
-                reason instanceof Error
+                reason instanceof RuntimeApiError &&
+                    reason.code === "SESSION_RUN_IN_PROGRESS"
+                    ? "This session is still running. Wait for it to finish or start a new session."
+                    : reason instanceof Error
                     ? reason.message
                     : "The run failed. Try again.",
             );
@@ -1345,27 +1696,18 @@ export default function PlaygroundPage() {
                     <div className="header-controls playground-controls">
                         <label className="playground-version-select">
                             <span>Agent version</span>
-                            <select
-                                aria-label="Agent version"
+                            <PrimarySelect
                                 value={selectedVersionId}
-                                onChange={(event) =>
-                                    setSelectedVersionId(event.target.value)
-                                }
+                                options={versions.map((version) => ({
+                                    value: version.id,
+                                    label: `v${version.version_number}`,
+                                    secondary: version.change_note || version.id.slice(0, 8),
+                                }))}
+                                placeholder="Select published version"
+                                ariaLabel="Agent version"
+                                onChange={setSelectedVersionId}
                                 disabled={busy || versions.length === 0}
-                            >
-                                <option value="" disabled>
-                                    Select published version
-                                </option>
-                                {versions.map((version) => (
-                                    <option value={version.id} key={version.id}>
-                                        v{version.version_number}
-                                        {version.change_note
-                                            ? ` · ${version.change_note}`
-                                            : ""}
-                                    </option>
-                                ))}
-                            </select>
-                            <ChevronDown size={15} aria-hidden="true" />
+                            />
                         </label>
                         <button
                             className="button secondary-button"
@@ -1593,13 +1935,17 @@ export default function PlaygroundPage() {
                                         }}
                                         placeholder="Ask your agent something…"
                                         rows={3}
-                                        disabled={busy}
+                                        disabled={busy || status === "RUNNING"}
                                     />
                                     <button
                                         className="button primary-button send-button"
                                         type="button"
                                         onClick={() => void sendMessage()}
-                                        disabled={busy || !composer.trim()}
+                                        disabled={
+                                            busy ||
+                                            status === "RUNNING" ||
+                                            !composer.trim()
+                                        }
                                         aria-label={
                                             busy
                                                 ? "Sending message"
@@ -1662,6 +2008,12 @@ export default function PlaygroundPage() {
                                         </dd>
                                     </div>
                                     <div>
+                                        <dt>Child runs</dt>
+                                        <dd>
+                                            {lastRun?.usage?.child_runs ?? "—"}
+                                        </dd>
+                                    </div>
+                                    <div>
                                         <dt>Estimated cost</dt>
                                         <dd>
                                             {lastRun?.estimated_cost ?? "—"}
@@ -1688,6 +2040,112 @@ export default function PlaygroundPage() {
                                         {sessionTraces.length}
                                     </span>
                                 </div>
+                                {selectedVersionSupportsDelegation ? (
+                                    <section
+                                        className="child-agent-activity"
+                                        aria-label="Child-agent activity"
+                                        aria-live="polite"
+                                    >
+                                        <div className="child-agent-activity-heading">
+                                            <div>
+                                                <span className="panel-kicker">
+                                                    Delegation
+                                                </span>
+                                                <h3>Child-agent activity</h3>
+                                            </div>
+                                            {childActivities.some(
+                                                (activity) =>
+                                                    activity.status === "RUNNING",
+                                            ) ? (
+                                                <span className="status-badge info">
+                                                    <span aria-hidden="true" />
+                                                    Running
+                                                </span>
+                                            ) : hasTerminalRunWithoutDelegation ? (
+                                                <span className="status-badge muted">
+                                                    <span aria-hidden="true" />
+                                                    Not invoked
+                                                </span>
+                                            ) : busy ? (
+                                                <span className="status-badge info">
+                                                    <span aria-hidden="true" />
+                                                    Evaluating
+                                                </span>
+                                            ) : null}
+                                        </div>
+                                        {childActivities.length > 0 ? (
+                                            <div className="child-agent-activity-list">
+                                                {childActivities.map((activity) => (
+                                                    <article
+                                                        className={`child-agent-activity-item ${activity.status.toLowerCase()}`}
+                                                        key={activity.id}
+                                                    >
+                                                        <div className="child-agent-activity-icon">
+                                                            {activity.status ===
+                                                            "RUNNING" ? (
+                                                                <LoaderCircle
+                                                                    className="spin"
+                                                                    size={14}
+                                                                    aria-hidden="true"
+                                                                />
+                                                            ) : activity.status ===
+                                                              "COMPLETED" ? (
+                                                                <Check
+                                                                    size={14}
+                                                                    aria-hidden="true"
+                                                                />
+                                                            ) : (
+                                                                <CircleAlert
+                                                                    size={14}
+                                                                    aria-hidden="true"
+                                                                />
+                                                            )}
+                                                        </div>
+                                                        <div className="child-agent-activity-copy">
+                                                            <strong>{activity.alias}</strong>
+                                                            <span>
+                                                                {activity.status ===
+                                                                "RUNNING"
+                                                                    ? "Executing child agent…"
+                                                                    : activity.status ===
+                                                                        "COMPLETED"
+                                                                      ? "Child response received"
+                                                                      : `Failed${activity.errorCode ? ` · ${activity.errorCode}` : ""}`}
+                                                            </span>
+                                                            {activity.childRunId ? (
+                                                                <code>
+                                                                    run {activity.childRunId.slice(0, 8)}…
+                                                                </code>
+                                                            ) : null}
+                                                        </div>
+                                                        {activity.durationMs !== null ? (
+                                                            <time>
+                                                                {activity.durationMs} ms
+                                                            </time>
+                                                        ) : null}
+                                                    </article>
+                                                ))}
+                                            </div>
+                                        ) : busy ? (
+                                            <div className="child-agent-activity-waiting">
+                                                <LoaderCircle
+                                                    className="spin"
+                                                    size={14}
+                                                    aria-hidden="true"
+                                                />
+                                                Supervisor is evaluating the request; no child agent has been called yet…
+                                            </div>
+                                        ) : (
+                                            <div className="child-agent-activity-waiting no-delegation">
+                                                <CircleAlert
+                                                    size={14}
+                                                    aria-hidden="true"
+                                                />
+                                                No child agent was invoked in this run. Try a concrete task such as “Ask researcher for three factual considerations and analyst for the main tradeoffs.”
+                                            </div>
+                                        )}
+                                    </section>
+                                ) : null}
                                 {tracesLoading ? (
                                     <div
                                         className="session-trace-loading"
@@ -1711,18 +2169,16 @@ export default function PlaygroundPage() {
                                                         ? " current"
                                                         : "")
                                                 }
-                                                key={trace.run_id}
+                                                key={trace.run_id ?? trace.id}
                                             >
                                                 <div className="session-trace-item-heading">
                                                     <StatusBadge
                                                         status={trace.status}
                                                     />
                                                     <code>
-                                                        {trace.run_id.slice(
-                                                            0,
-                                                            12,
-                                                        )}
-                                                        …
+                                                        {trace.run_id
+                                                            ? `${trace.run_id.slice(0, 12)}…`
+                                                            : "Trace-only"}
                                                     </code>
                                                 </div>
                                                 <div className="session-trace-item-meta">
@@ -1744,21 +2200,27 @@ export default function PlaygroundPage() {
                                                         {trace.input_text}
                                                     </p>
                                                 ) : null}
-                                                <button
-                                                    className="button secondary-button full-button"
-                                                    type="button"
-                                                    onClick={() =>
-                                                        setTraceRunId(
-                                                            trace.run_id,
-                                                        )
-                                                    }
-                                                >
-                                                    <GitBranch
-                                                        size={15}
-                                                        aria-hidden="true"
-                                                    />
-                                                    Inspect trace & spans
-                                                </button>
+                                                {trace.run_id ? (
+                                                    <button
+                                                        className="button secondary-button full-button"
+                                                        type="button"
+                                                        onClick={() =>
+                                                            setTraceRunId(
+                                                                trace.run_id,
+                                                            )
+                                                        }
+                                                    >
+                                                        <GitBranch
+                                                            size={15}
+                                                            aria-hidden="true"
+                                                        />
+                                                        Inspect trace & spans
+                                                    </button>
+                                                ) : (
+                                                    <span className="trace-no-session">
+                                                        No root run
+                                                    </span>
+                                                )}
                                             </article>
                                         ))}
                                     </div>

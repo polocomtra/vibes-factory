@@ -1,5 +1,15 @@
 # VibesFactory — Database Schema Specification
 
+## Phase 12/13 persistence record
+
+No new tables are required for the unified workflow/multi-agent execution
+context. `workflow_runs.usage` stores durable cumulative counters and
+`workflow_runs.execution_budget` stores root limits. Agent lineage uses
+`runs.parent_run_id`, `runs.root_run_id`, `runs.agent_depth`, and
+`runs.workflow_run_id`; traces use `traces.workflow_run_id`; span hierarchy
+uses `spans.parent_span_id` and `spans.workflow_run_id`. These relationships
+remain valid across worker restart and SSE replay.
+
 ## Phase 9 executable schema addendum
 
 Migration `0011_phase9_knowledge_rag` is the source of truth for pinned KB

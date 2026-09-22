@@ -196,6 +196,7 @@ class AgentResponse(BaseModel):
     description: str | None
     status: AgentStatus
     latest_version_number: int
+    is_supervisor: bool = False
     created_at: datetime
     updated_at: datetime
 

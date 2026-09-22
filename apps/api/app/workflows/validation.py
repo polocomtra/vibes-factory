@@ -448,9 +448,12 @@ async def validate_resources(
                     "The tool version was not found in this workspace.",
                     node_key=node.key,
                 )
-            )
+        )
         if node.type == WorkflowNodeType.TOOL:
-            tool_version = tool_versions.get(_uuid(node.config.get("tool_version_id")))
+            tool_version_id = _uuid(node.config.get("tool_version_id"))
+            tool_version = (
+                tool_versions.get(tool_version_id) if tool_version_id else None
+            )
             if (
                 tool_version is not None
                 and tool_version.executor_type == ToolType.AGENT
@@ -458,7 +461,8 @@ async def validate_resources(
                 issues.append(
                     _issue(
                         "INTERNAL_TOOL_FORBIDDEN",
-                        "Agent-as-tool bindings must be configured on an AgentVersion, not a workflow TOOL node.",
+                        "Agent-as-tool bindings must be configured on an AgentVersion, "
+                        "not a workflow TOOL node.",
                         node_key=node.key,
                     )
                 )

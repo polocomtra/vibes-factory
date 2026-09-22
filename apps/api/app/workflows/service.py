@@ -1,6 +1,6 @@
 """Application services for workflow identity, drafts and immutable versions."""
 
-from typing import Any
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy import select
@@ -11,6 +11,7 @@ from ..models import (
     WorkflowDraft,
     WorkflowEdge,
     WorkflowNode,
+    WorkflowNodeType,
     WorkflowStatus,
     WorkflowVersion,
 )
@@ -18,6 +19,8 @@ from .schemas import (
     WorkflowCreateRequest,
     WorkflowDefinition,
     WorkflowDraftUpdateRequest,
+    WorkflowEdgeDefinition,
+    WorkflowNodeDefinition,
     WorkflowUpdateRequest,
 )
 from .validation import validate_definition
@@ -41,22 +44,20 @@ class WorkflowServiceError(Exception):
 def default_definition() -> WorkflowDefinition:
     return WorkflowDefinition(
         nodes=[
-            {
-                "key": "start",
-                "type": "START",
-                "name": "Start",
-                "config": {},
-                "position": {"x": 80, "y": 160},
-            },
-            {
-                "key": "end",
-                "type": "END",
-                "name": "End",
-                "config": {},
-                "position": {"x": 480, "y": 160},
-            },
+            WorkflowNodeDefinition(
+                key="start",
+                type=WorkflowNodeType.START,
+                name="Start",
+                position={"x": 80, "y": 160},
+            ),
+            WorkflowNodeDefinition(
+                key="end",
+                type=WorkflowNodeType.END,
+                name="End",
+                position={"x": 480, "y": 160},
+            ),
         ],
-        edges=[{"source": "start", "target": "end"}],
+        edges=[WorkflowEdgeDefinition(source="start", target="end")],
     )
 
 
@@ -257,7 +258,7 @@ def workflow_definition_from_version(
 ) -> WorkflowDefinition:
     node_by_id = {node.id: node for node in nodes}
     return WorkflowDefinition(
-        schema_version=int(version.configuration.get("schema_version", 1)),
+        schema_version=cast(Literal[1], 1),
         configuration={
             key: value
             for key, value in version.configuration.items()
@@ -265,22 +266,22 @@ def workflow_definition_from_version(
         },
         viewport=version.configuration.get("viewport"),
         nodes=[
-            {
-                "key": node.node_key,
-                "type": node.node_type,
-                "name": node.name,
-                "config": node.configuration,
-                "position": node.position,
-            }
+            WorkflowNodeDefinition(
+                key=node.node_key,
+                type=node.node_type,
+                name=node.name,
+                config=node.configuration,
+                position=node.position,
+            )
             for node in nodes
         ],
         edges=[
-            {
-                "source": node_by_id[edge.source_node_id].node_key,
-                "target": node_by_id[edge.target_node_id].node_key,
-                "source_handle": edge.source_handle,
-                "priority": edge.priority,
-            }
+            WorkflowEdgeDefinition(
+                source=node_by_id[edge.source_node_id].node_key,
+                target=node_by_id[edge.target_node_id].node_key,
+                source_handle=edge.source_handle,
+                priority=edge.priority,
+            )
             for edge in edges
         ],
     )

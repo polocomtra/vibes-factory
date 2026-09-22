@@ -11,6 +11,7 @@ import asyncio
 import copy
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -30,6 +31,7 @@ from ..models import (
     Job,
     JobStatus,
     Run,
+    RunStatus,
     Session,
     Span,
     SpanStatus,
@@ -51,6 +53,7 @@ from ..models import (
 )
 from ..runs.routes import _build_runtime_request
 from ..runs.schemas import RunCreateRequest
+from ..runtime.budget import ExecutionContext
 from ..runtime.contracts import TextInput
 from ..runtime.errors import RuntimeExecutionError
 from ..runtime.service import AgentRuntime
@@ -73,11 +76,19 @@ DEFAULT_BUDGET: dict[str, int] = {
 
 
 class WorkflowExecutionError(RuntimeError):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        details: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.details = details or {}
 
 
 def _pointer_get(document: Any, path: str) -> Any:
@@ -220,6 +231,7 @@ class WorkflowEngine:
         self.session = session
         self.worker_id = worker_id
         self.redactor = SecretRedactor()
+        self.execution_context: ExecutionContext | None = None
 
     @staticmethod
     def _node_event_data(node: WorkflowNode, **data: Any) -> dict[str, Any]:
@@ -278,17 +290,22 @@ class WorkflowEngine:
         code: str,
         message: str,
         node_run: WorkflowNodeRun | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         now = datetime.now(UTC)
         if node_run is not None:
             node_run.status = WorkflowNodeStatus.FAILED
-            node_run.error = {"code": code, "message": message}
+            node_run.error = {"code": code, "message": message, **(details or {})}
             node_run.completed_at = now
             if node_run.span_id:
                 node_span = await self.session.get(Span, node_run.span_id)
                 if node_span is not None:
                     node_span.status = SpanStatus.FAILED
-                    node_span.error = {"code": code, "message": message}
+                    node_span.error_json = {
+                        "code": code,
+                        "message": message,
+                        **(details or {}),
+                    }
                     node_span.completed_at = now
             failed_node = await self.session.get(
                 WorkflowNode, node_run.workflow_node_id
@@ -308,10 +325,46 @@ class WorkflowEngine:
                         else str(node_run.workflow_node_id)
                     ),
                     "code": code,
-                    "message": message,
+                    **(details or {}),
                 },
                 node_run.id,
             )
+        active_agent_runs = list(
+            (
+                await self.session.scalars(
+                    select(Run).where(
+                        Run.workflow_run_id == run.id,
+                        Run.status.in_(
+                            [
+                                RunStatus.QUEUED,
+                                RunStatus.RUNNING,
+                                RunStatus.WAITING_TOOL,
+                                RunStatus.WAITING_APPROVAL,
+                            ]
+                        ),
+                    )
+                )
+            ).all()
+        )
+        for active_run in active_agent_runs:
+            active_run.status = RunStatus.FAILED
+            active_run.error_code = code
+            active_run.error_message = message
+            active_run.completed_at = now
+        active_spans = list(
+            (
+                await self.session.scalars(
+                    select(Span).where(
+                        Span.workflow_run_id == run.id,
+                        Span.status == SpanStatus.RUNNING,
+                    )
+                )
+            ).all()
+        )
+        for active_span in active_spans:
+            active_span.status = SpanStatus.FAILED
+            active_span.error_json = {"code": code, "message": message}
+            active_span.completed_at = now
         run.status = WorkflowRunStatus.FAILED
         run.error_code = code
         run.error_message = message
@@ -330,34 +383,25 @@ class WorkflowEngine:
             workflow_span.status = SpanStatus.FAILED
             workflow_span.completed_at = now
         await self._event(
-            run, WorkflowEventType.WORKFLOW_FAILED, {"code": code, "message": message}
+            run,
+            WorkflowEventType.WORKFLOW_FAILED,
+            {"code": code, **(details or {})},
         )
         await self.session.commit()
 
     async def _check_budget(self, run: WorkflowRun) -> None:
-        budget = {**DEFAULT_BUDGET, **run.execution_budget}
-        usage = run.usage or {}
-        if int(usage.get("node_executions", 0)) >= budget["max_node_executions"]:
+        context = self.execution_context
+        if context is None:
             raise WorkflowExecutionError(
-                "WORKFLOW_BUDGET_EXCEEDED",
-                "The workflow node execution budget was exceeded.",
+                "WORKFLOW_EXECUTION_CONTEXT_MISSING",
+                "The workflow execution context was not initialized.",
             )
-        if int(usage.get("total_steps", 0)) >= budget["max_total_steps"]:
+        try:
+            context.remaining_seconds()
+        except RuntimeExecutionError as error:
             raise WorkflowExecutionError(
-                "WORKFLOW_BUDGET_EXCEEDED", "The workflow step budget was exceeded."
-            )
-        if (
-            run.started_at
-            and (datetime.now(UTC) - run.started_at).total_seconds()
-            >= budget["timeout_seconds"]
-        ):
-            raise WorkflowExecutionError(
-                "WORKFLOW_TIMEOUT", "The workflow exceeded its execution deadline."
-            )
-        if run.cancel_requested_at:
-            raise WorkflowExecutionError(
-                "WORKFLOW_CANCELLED", "The workflow was cancelled."
-            )
+                error.code, error.message, details=error.details
+            ) from error
 
     async def _execute_agent(
         self,
@@ -365,10 +409,16 @@ class WorkflowEngine:
         node: WorkflowNode,
         value: Any,
         parent_span_id: UUID | None = None,
+        execution_context: ExecutionContext | None = None,
     ) -> tuple[dict[str, Any], UUID | None]:
         if not isinstance(value, str):
             raise WorkflowExecutionError(
                 "AGENT_INPUT_NOT_TEXT", "AGENT input expressions must resolve to text."
+            )
+        if parent_span_id is None:
+            raise WorkflowExecutionError(
+                "WORKFLOW_SPAN_MISSING",
+                "The workflow agent node span was not initialized.",
             )
         version_id = UUID(str(node.configuration["agent_version_id"]))
         version = await self.session.get(AgentVersion, version_id)
@@ -407,30 +457,37 @@ class WorkflowEngine:
             user,
             self.session,
         )
-        result = await AgentRuntime(
-            self.session, ModelProviderRegistry.from_settings(get_settings())
-        ).run(request)
-        persisted_run = await self.session.get(Run, result.run_id)
-        if persisted_run is not None:
-            runtime_trace = await self.session.get(Trace, persisted_run.trace_id)
-            if runtime_trace is not None:
-                runtime_trace.workflow_run_id = run.id
-            persisted_run.session_id = None
-            persisted_run.workflow_run_id = run.id
-            persisted_run.agent_depth = 0
-            persisted_run.trace_id = run.trace_id
-            agent_spans = list(
+        try:
+            result = await AgentRuntime(
+                self.session, ModelProviderRegistry.from_settings(get_settings())
+            ).run(
+                request,
+                execution_context=(
+                    execution_context.fork(
+                        parent_run_id=None,
+                        parent_span_id=parent_span_id,
+                        agent_depth=0,
+                    )
+                    if execution_context is not None
+                    else None
+                ),
+            )
+        except Exception:
+            leaked_runs = list(
                 (
                     await self.session.scalars(
-                        select(Span).where(Span.run_id == persisted_run.id)
+                        select(Run).where(Run.session_id == hidden_session.id)
                     )
                 ).all()
             )
-            for agent_span in agent_spans:
-                agent_span.trace_id = run.trace_id
-                agent_span.workflow_run_id = run.id
-                if agent_span.span_type == SpanType.RUN:
-                    agent_span.parent_span_id = parent_span_id
+            for leaked_run in leaked_runs:
+                leaked_run.session_id = None
+            await self.session.delete(hidden_session)
+            await self.session.flush()
+            raise
+        persisted_run = await self.session.get(Run, result.run_id)
+        if persisted_run is not None:
+            persisted_run.session_id = None
             await self.session.delete(hidden_session)
             await self.session.flush()
         return {
@@ -442,6 +499,8 @@ class WorkflowEngine:
     async def _execute_tool(
         self, run: WorkflowRun, node: WorkflowNode, arguments: dict[str, Any]
     ) -> dict[str, Any]:
+        if self.execution_context is not None:
+            self.execution_context.increment("tool_calls", limit_name="max_tool_calls")
         version_id = UUID(str(node.configuration["tool_version_id"]))
         version = await self.session.get(ToolVersion, version_id)
         if version is None or version.workspace_id != run.workspace_id:
@@ -543,11 +602,39 @@ class WorkflowEngine:
                 return
             run.current_node_id = start.id
             await self.session.commit()
+        budget = {**DEFAULT_BUDGET, **run.execution_budget}
+        elapsed = (
+            max(0.0, (datetime.now(UTC) - run.started_at).total_seconds())
+            if run.started_at
+            else 0.0
+        )
+        normalized_budget = {
+            **budget,
+            "max_steps": int(budget.get("max_total_steps", 100)),
+            "max_model_calls": int(
+                budget.get("max_model_calls", budget.get("max_agent_runs", 10) * 10)
+            ),
+            "max_tool_calls": int(budget.get("max_tool_calls", 20)),
+            "max_child_runs": int(budget.get("max_child_runs", 10)),
+            "max_agent_runs": int(budget.get("max_agent_runs", 10)),
+            "max_agent_depth": int(budget.get("max_agent_depth", 3)),
+            "max_total_tokens": int(budget.get("max_total_tokens", 200_000)),
+            "timeout_seconds": int(budget.get("timeout_seconds", 900)),
+        }
+        self.execution_context = ExecutionContext(
+            budget=normalized_budget,
+            trace_id=run.trace_id,
+            workflow_run_id=run.id,
+            deadline=monotonic()
+            + max(0.0, normalized_budget["timeout_seconds"] - elapsed),
+            counters=run.usage or {},
+            cancel_check=lambda: run.cancel_requested_at is not None,
+        )
         while True:
             try:
                 await self._check_budget(run)
             except WorkflowExecutionError as error:
-                if error.code == "WORKFLOW_CANCELLED":
+                if error.code in {"WORKFLOW_CANCELLED", "RUN_CANCELLED"}:
                     run.status = WorkflowRunStatus.CANCELLED
                     run.completed_at = datetime.now(UTC)
                     trace = await self.session.get(Trace, run.trace_id)
@@ -568,7 +655,9 @@ class WorkflowEngine:
                     )
                     await self.session.commit()
                 else:
-                    await self._fail(run, error.code, error.message)
+                    await self._fail(
+                        run, error.code, error.message, details=error.details
+                    )
                 return
             node = by_id.get(run.current_node_id) if run.current_node_id else None
             if node is None:
@@ -652,6 +741,14 @@ class WorkflowEngine:
                 node_span.input = node_run.input
                 # Persist the claimed node and its redacted input before any
                 # provider, HTTP, or MCP work begins.
+                if self.execution_context is not None:
+                    self.execution_context.increment(
+                        "node_executions", limit_name="max_node_executions"
+                    )
+                    self.execution_context.increment(
+                        "total_steps", limit_name="max_total_steps"
+                    )
+                    run.usage = self.execution_context.snapshot()
                 await self.session.commit()
                 if node.node_type == WorkflowNodeType.START:
                     output: dict[str, Any] = {"input": run.input}
@@ -692,7 +789,11 @@ class WorkflowEngine:
                     output = final if isinstance(final, dict) else {"value": final}
                 elif node.node_type == WorkflowNodeType.AGENT:
                     output, node_run.agent_run_id = await self._execute_agent(
-                        run, node, input_value, node_run.span_id
+                        run,
+                        node,
+                        input_value,
+                        node_run.span_id,
+                        self.execution_context,
                     )
                 elif node.node_type == WorkflowNodeType.TOOL:
                     args: dict[str, Any] = {}
@@ -715,7 +816,13 @@ class WorkflowEngine:
             except (WorkflowExecutionError, RuntimeExecutionError) as error:
                 code = getattr(error, "code", "WORKFLOW_NODE_FAILED")
                 message = getattr(error, "message", str(error))
-                await self._fail(run, code, message, node_run)
+                await self._fail(
+                    run,
+                    code,
+                    message,
+                    node_run,
+                    getattr(error, "details", None),
+                )
                 return
             if run.cancel_requested_at:
                 node_run.status = WorkflowNodeStatus.CANCELLED
@@ -772,11 +879,8 @@ class WorkflowEngine:
                 ),
             }
             run.node_outputs = {**run.node_outputs, node.node_key: output}
-            run.usage = {
-                **run.usage,
-                "node_executions": int(run.usage.get("node_executions", 0)) + 1,
-                "total_steps": int(run.usage.get("total_steps", 0)) + 1,
-            }
+            if self.execution_context is not None:
+                run.usage = self.execution_context.snapshot()
             if node.node_type == WorkflowNodeType.TRANSFORM:
                 run.variables = output["variables"]
             if node.node_type == WorkflowNodeType.END:
@@ -856,7 +960,7 @@ async def _renew_workflow_lease(job_id: UUID, worker_id: str) -> None:
                     )
                 )
                 await session.commit()
-                if result.rowcount != 1:
+                if int(getattr(result, "rowcount", 1)) != 1:
                     return
         except asyncio.CancelledError:
             raise

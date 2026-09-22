@@ -56,6 +56,21 @@ alembic upgrade head
 pytest
 ```
 
+For the Phase 12/13 durable workflow checks, run the local PostgreSQL and
+worker stack before the Python quality gate:
+
+```bash
+docker compose up -d --build postgres migrate api worker
+PYTHONPATH=. pytest -q
+ruff check apps/api tests
+mypy apps/api/app
+```
+
+The worker persists every workflow node boundary and replays
+`workflow_run_events` through authenticated SSE. A worker restart while a node
+is active is intentionally fail-closed as `WORKFLOW_RESUME_UNSAFE`; restart
+after a committed boundary resumes from the persisted cursor.
+
 ### Supabase Auth configuration
 
 Phase 1 uses Supabase Auth for identity while the local Docker PostgreSQL remains the system of record for VibesFactory users and workspaces.

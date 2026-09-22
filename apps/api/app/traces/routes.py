@@ -70,24 +70,34 @@ def _encode_trace_cursor(item: Trace) -> str:
 
 
 def _trace_list_response(
-    trace: Trace, run: Run, agent: Agent, workflow_run: WorkflowRun | None
+    trace: Trace,
+    run: Run | None,
+    agent: Agent | None,
+    workflow_run: WorkflowRun | None,
 ) -> TraceListItemResponse:
     return TraceListItemResponse(
         id=trace.id,
-        agent_id=agent.id,
-        agent_name=agent.name,
-        agent_version_id=run.agent_version_id,
-        run_id=run.id,
-        session_id=run.session_id,
+        agent_id=agent.id if agent else None,
+        agent_name=agent.name if agent else None,
+        agent_version_id=run.agent_version_id if run else None,
+        run_id=run.id if run else None,
+        session_id=run.session_id if run else None,
         workflow_id=workflow_run.workflow_id if workflow_run else None,
         workflow_run_id=workflow_run.id if workflow_run else trace.workflow_run_id,
         status=trace.status,
         started_at=trace.started_at,
         completed_at=trace.completed_at,
         duration_ms=_duration(trace.started_at, trace.completed_at),
-        input_text=str(run.input.get("text", "")) or None,
-        output_text=(str(run.output.get("text", "")) if run.output else None) or None,
-        error_code=run.error_code,
+        input_text=str(run.input.get("text", "")) if run else None,
+        output_text=(str(run.output.get("text", "")) if run and run.output else None)
+        or None,
+        error_code=(
+            run.error_code
+            if run
+            else workflow_run.error_code
+            if workflow_run
+            else None
+        ),
     )
 
 
@@ -132,14 +142,14 @@ async def list_traces(
 
     statement = (
         select(Trace, Run, Agent, WorkflowRun)
-        .join(
+        .outerjoin(
             Run,
             and_(
                 Run.id == Trace.root_run_id,
                 Run.workspace_id == Trace.workspace_id,
             ),
         )
-        .join(
+        .outerjoin(
             Agent,
             and_(
                 Agent.id == Run.agent_id,

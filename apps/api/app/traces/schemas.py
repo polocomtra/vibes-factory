@@ -18,10 +18,10 @@ class TraceSummaryResponse(BaseModel):
 
 class TraceListItemResponse(BaseModel):
     id: UUID
-    agent_id: UUID
-    agent_name: str
-    agent_version_id: UUID
-    run_id: UUID
+    agent_id: UUID | None
+    agent_name: str | None
+    agent_version_id: UUID | None
+    run_id: UUID | None
     session_id: UUID | None
     workflow_id: UUID | None
     workflow_run_id: UUID | None

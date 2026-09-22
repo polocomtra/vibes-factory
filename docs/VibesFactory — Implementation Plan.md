@@ -2923,6 +2923,15 @@ fails with `WORKFLOW_RESUME_UNSAFE`.
 
 The implementation is delivered in four independently runnable checkpoints:
 
+## Implementation record (2026-09-22)
+
+Phase 12/13 runtime completion uses a shared execution context for workflow
+nodes, agent nodes, and supervisor child runs. It persists cumulative usage,
+creates child lineage before execution, exposes direct child inspection, emits
+safe child lifecycle events, and fails the root on budget/deadline/cancel or
+child failure. Supervisor bindings are available in the Agent Detail console;
+Phase 14 approval nodes remain deferred.
+
 1. Migration, immutable version contracts, safe expression AST, and API
    validation.
 2. Agent-as-tool bindings, pinned child versions, shared depth/step/token
