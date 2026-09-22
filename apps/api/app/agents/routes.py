@@ -12,7 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.dependencies import get_current_user
 from ..db import get_session
-from ..models import Agent, AgentDraft, AgentStatus, AgentVersion, User
+from ..models import (
+    Agent,
+    AgentDraft,
+    AgentDraftChildAgent,
+    AgentStatus,
+    AgentVersion,
+    User,
+)
 from ..workspaces.authorization import require_workspace_membership
 from .authorization import require_agent_access
 from .catalog import list_models
@@ -26,6 +33,8 @@ from .schemas import (
     AgentVersionCollection,
     AgentVersionResponse,
     AgentVersionSummary,
+    ChildAgentBindingRequest,
+    ChildAgentBindingResponse,
     DraftValidationResponse,
     MemoryConfiguration,
     ModelConfiguration,
@@ -123,6 +132,7 @@ def _version_response(version: AgentVersion) -> AgentVersionResponse:
         memory_config=MemoryConfiguration.model_validate(version.memory_config),
         guardrails_enabled=version.guardrails_enabled,
         snapshot=version.snapshot,
+        child_agent_bindings=version.workflow_child_bindings,
     )
 
 
@@ -345,6 +355,135 @@ async def publish_agent_version(
     except AgentServiceError as error:
         raise _service_error(error) from error
     return AgentVersionSummary.model_validate(version)
+
+
+@router.get(
+    "/agents/{agent_id}/draft/child-agents",
+    response_model=list[ChildAgentBindingResponse],
+)
+async def list_child_agent_bindings(
+    agent: Agent = Depends(require_agent_access),
+    session: AsyncSession = Depends(get_session),
+) -> list[ChildAgentBindingResponse]:
+    rows = (
+        await session.scalars(
+            select(AgentDraftChildAgent)
+            .where(AgentDraftChildAgent.agent_id == agent.id)
+            .order_by(AgentDraftChildAgent.alias)
+        )
+    ).all()
+    return [
+        ChildAgentBindingResponse(
+            child_agent_id=row.child_agent_id,
+            child_agent_version_id=row.child_agent_version_id,
+            alias=row.alias,
+            description=row.description_override,
+        )
+        for row in rows
+        if row.child_agent_version_id is not None
+    ]
+
+
+@router.post(
+    "/agents/{agent_id}/draft/child-agents",
+    response_model=ChildAgentBindingResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def add_child_agent_binding(
+    payload: ChildAgentBindingRequest,
+    agent: Agent = Depends(require_agent_access),
+    session: AsyncSession = Depends(get_session),
+) -> ChildAgentBindingResponse:
+    if payload.child_agent_id == agent.id:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "CHILD_AGENT_SELF_REFERENCE",
+                "message": "An agent cannot bind itself as a child.",
+                "details": {},
+            },
+        )
+    child = await session.scalar(
+        select(Agent).where(
+            Agent.id == payload.child_agent_id, Agent.workspace_id == agent.workspace_id
+        )
+    )
+    version = await session.scalar(
+        select(AgentVersion).where(
+            AgentVersion.id == payload.child_agent_version_id,
+            AgentVersion.agent_id == payload.child_agent_id,
+            AgentVersion.workspace_id == agent.workspace_id,
+        )
+    )
+    if child is None or version is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "RESOURCE_NOT_FOUND",
+                "message": "The child agent version was not found.",
+                "details": {},
+            },
+        )
+    duplicate = await session.scalar(
+        select(AgentDraftChildAgent).where(
+            AgentDraftChildAgent.agent_id == agent.id,
+            (AgentDraftChildAgent.alias == payload.alias)
+            | (AgentDraftChildAgent.child_agent_id == payload.child_agent_id),
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CHILD_AGENT_BINDING_CONFLICT",
+                "message": "The alias or child agent is already bound.",
+                "details": {},
+            },
+        )
+    row = AgentDraftChildAgent(
+        agent_id=agent.id,
+        child_agent_id=child.id,
+        child_agent_version_id=version.id,
+        alias=payload.alias,
+        description_override=payload.description,
+    )
+    session.add(row)
+    await session.commit()
+    return ChildAgentBindingResponse(
+        child_agent_id=row.child_agent_id,
+        child_agent_version_id=row.child_agent_version_id,
+        alias=row.alias,
+        description=row.description_override,
+    )
+
+
+@router.delete(
+    "/agents/{agent_id}/draft/child-agents/{child_agent_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_child_agent_binding(
+    child_agent_id: UUID,
+    agent: Agent = Depends(require_agent_access),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    row = await session.scalar(
+        select(AgentDraftChildAgent).where(
+            AgentDraftChildAgent.agent_id == agent.id,
+            AgentDraftChildAgent.child_agent_id == child_agent_id,
+        )
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "RESOURCE_NOT_FOUND",
+                "message": "The child agent binding was not found.",
+                "details": {},
+            },
+        )
+    await session.delete(row)
+    await session.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/agents/{agent_id}/versions", response_model=AgentVersionCollection)

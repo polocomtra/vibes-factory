@@ -1,165 +1,212 @@
 services:
-  api:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    environment:
-      VF_APP_NAME: VibesFactory API
-      VF_ENVIRONMENT: local
-      VF_LOG_LEVEL: INFO
-      VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@postgres:5432/vibesfactory
-      VF_DATABASE_POOL_SIZE: 5
-      VF_DATABASE_MAX_OVERFLOW: 10
-      VF_CORS_ORIGINS: http://localhost:3000
-      VF_OTEL_SERVICE_NAME: vibesfactory-api
-      VF_OTEL_CONSOLE_EXPORTER: "false"
-      VF_SUPABASE_URL: ${VF_SUPABASE_URL}
-      VF_SUPABASE_PUBLISHABLE_KEY: ${VF_SUPABASE_PUBLISHABLE_KEY}
-      VF_SUPABASE_JWT_JWKS_URL: ${VF_SUPABASE_JWT_JWKS_URL}
-      VF_AZURE_OPENAI_API_KEY: ${VF_AZURE_OPENAI_API_KEY}
-      VF_AZURE_OPENAI_BASE_URL: ${VF_AZURE_OPENAI_BASE_URL}
-      VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.6-luna}
-      VF_GEMINI_API_KEY: ${VF_GEMINI_API_KEY}
-      VF_EXA_API_KEY: ${VF_EXA_API_KEY}
-      VF_ENCRYPTION_MASTER_KEY: ${VF_ENCRYPTION_MASTER_KEY}
-      VF_ENABLE_MCP: ${VF_ENABLE_MCP:-true}
-      VF_MCP_ALLOW_HTTP: ${VF_MCP_ALLOW_HTTP:-true}
-      VF_MCP_ALLOWED_PRIVATE_HOSTS: ${VF_MCP_ALLOWED_PRIVATE_HOSTS:-}
-      VF_MCP_CONNECT_TIMEOUT_SECONDS: ${VF_MCP_CONNECT_TIMEOUT_SECONDS:-10}
-      VF_MCP_OPERATION_TIMEOUT_SECONDS: ${VF_MCP_OPERATION_TIMEOUT_SECONDS:-30}
-      VF_MCP_MAX_DISCOVERED_TOOLS: ${VF_MCP_MAX_DISCOVERED_TOOLS:-200}
-      VF_MCP_MAX_OUTPUT_BYTES: ${VF_MCP_MAX_OUTPUT_BYTES:-256000}
-      VF_EMBEDDING_SERVICE_URL: http://embedding:8100
-      VF_EMBEDDING_MODEL: ${VF_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
-      VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
-      VF_EMBEDDING_ORT_PROVIDER: ${VF_EMBEDDING_ORT_PROVIDER:-CPUExecutionProvider}
-      VF_EMBEDDING_TIMEOUT_SECONDS: ${VF_EMBEDDING_TIMEOUT_SECONDS:-90}
-      VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
-      VF_BLOB_STORAGE_BUCKET: ${VF_BLOB_STORAGE_BUCKET:-}
-      VF_MAX_DOCUMENT_BYTES: ${VF_MAX_DOCUMENT_BYTES:-20971520}
-    ports:
-      - "8000:8000"
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      embedding:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    volumes:
-      - blob_data:/var/lib/vibesfactory/blobs
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')"]
-      interval: 10s
-      timeout: 5s
-      start_period: 15s
-      retries: 12
-    command: uvicorn apps.api.app.main:app --host 0.0.0.0 --port 8000
+    api:
+        build:
+            context: .
+            dockerfile: apps/api/Dockerfile
+            target: runtime
+        env_file: .env.compose
+        environment:
+            VF_APP_NAME: VibesFactory API
+            VF_ENVIRONMENT: local
+            VF_LOG_LEVEL: INFO
+            VF_CORS_ORIGINS: http://localhost:3000
+            VF_OTEL_SERVICE_NAME: vibesfactory-api
+            VF_OTEL_CONSOLE_EXPORTER: "false"
+            VF_ENABLE_MCP: ${VF_ENABLE_MCP:-true}
+            VF_MCP_ALLOW_HTTP: ${VF_MCP_ALLOW_HTTP:-true}
+            VF_MCP_ALLOWED_PRIVATE_HOSTS: ${VF_MCP_ALLOWED_PRIVATE_HOSTS:-}
+            VF_MCP_CONNECT_TIMEOUT_SECONDS: ${VF_MCP_CONNECT_TIMEOUT_SECONDS:-10}
+            VF_MCP_OPERATION_TIMEOUT_SECONDS: ${VF_MCP_OPERATION_TIMEOUT_SECONDS:-30}
+            VF_MCP_MAX_DISCOVERED_TOOLS: ${VF_MCP_MAX_DISCOVERED_TOOLS:-200}
+            VF_MCP_MAX_OUTPUT_BYTES: ${VF_MCP_MAX_OUTPUT_BYTES:-256000}
+            VF_EMBEDDING_MODEL: ${VF_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+            VF_BLOB_STORAGE_BUCKET: ${VF_BLOB_STORAGE_BUCKET:-}
+            VF_MAX_DOCUMENT_BYTES: ${VF_MAX_DOCUMENT_BYTES:-20971520}
+            VF_WORKFLOW_DEFAULT_TIMEOUT_SECONDS: ${VF_WORKFLOW_DEFAULT_TIMEOUT_SECONDS:-900}
+            VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.6-luna}
+        ports:
+            - "8000:8000"
+        restart: unless-stopped
+        depends_on:
+            postgres:
+                condition: service_healthy
+            embedding:
+                condition: service_healthy
+            migrate:
+                condition: service_completed_successfully
+        volumes:
+            - blob_data:/var/lib/vibesfactory/blobs
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 2G
+                reservations:
+                    cpus: "1"
+                    memory: 1G
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import urllib.request; urllib.request.urlopen('http://localhost:8000/ready')",
+                ]
+            interval: 10s
+            timeout: 5s
+            start_period: 15s
+            retries: 12
+        command: uvicorn apps.api.app.main:app --host 0.0.0.0 --port 8000
 
-  migrate:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    environment:
-      VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@postgres:5432/vibesfactory
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-    command: alembic upgrade head
+    migrate:
+        build:
+            context: .
+            dockerfile: apps/api/Dockerfile
+            target: runtime
+        env_file: .env.compose
+        depends_on:
+            postgres:
+                condition: service_healthy
+        restart: "no"
+        deploy:
+            resources:
+                limits:
+                    cpus: "1"
+                    memory: 512M
+                reservations:
+                    memory: 256M
+        command: alembic upgrade head
 
-  worker:
-    build:
-      context: .
-      dockerfile: apps/api/Dockerfile
-    environment:
-      VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@postgres:5432/vibesfactory
-      VF_AZURE_OPENAI_API_KEY: ${VF_AZURE_OPENAI_API_KEY}
-      VF_AZURE_OPENAI_BASE_URL: ${VF_AZURE_OPENAI_BASE_URL}
-      VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.6-luna}
-      VF_GEMINI_API_KEY: ${VF_GEMINI_API_KEY}
-      VF_MODEL_PROVIDER_TIMEOUT_SECONDS: ${VF_MODEL_PROVIDER_TIMEOUT_SECONDS:-60}
-      VF_EMBEDDING_SERVICE_URL: http://embedding:8100
-      VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
-      VF_EMBEDDING_TIMEOUT_SECONDS: ${VF_EMBEDDING_TIMEOUT_SECONDS:-90}
-      VF_EMBEDDING_BATCH_SIZE: ${VF_EMBEDDING_BATCH_SIZE:-8}
-      VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
-      VF_BLOB_STORAGE_BUCKET: ${VF_BLOB_STORAGE_BUCKET:-}
-    depends_on:
-      postgres:
-        condition: service_healthy
-      embedding:
-        condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
-    volumes:
-      - blob_data:/var/lib/vibesfactory/blobs
-    restart: unless-stopped
-    command: python -m apps.api.worker
+    worker:
+        build:
+            context: .
+            dockerfile: apps/api/Dockerfile
+            target: runtime
+        env_file: .env.compose
+        environment:
+            VF_EMBEDDING_BATCH_SIZE: ${VF_EMBEDDING_BATCH_SIZE:-8}
+            VF_MODEL_PROVIDER_TIMEOUT_SECONDS: ${VF_MODEL_PROVIDER_TIMEOUT_SECONDS:-60}
+            VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.6-luna}
+        depends_on:
+            postgres:
+                condition: service_healthy
+            embedding:
+                condition: service_healthy
+            migrate:
+                condition: service_completed_successfully
+        volumes:
+            - blob_data:/var/lib/vibesfactory/blobs
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 1.5G
+                reservations:
+                    cpus: "1"
+                    memory: 1G
+        command: python -m apps.api.worker
 
-  embedding:
-    build:
-      context: .
-      dockerfile: apps/embedding/Dockerfile
-      args:
-        VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
-    environment:
-      VF_EMBEDDING_MODEL: ${VF_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
-      VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
-      VF_EMBEDDING_ORT_PROVIDER: ${VF_EMBEDDING_ORT_PROVIDER:-CPUExecutionProvider}
-    expose:
-      - "8100"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/ready')"]
-      interval: 10s
-      timeout: 10s
-      start_period: 120s
-      retries: 12
+    embedding:
+        build:
+            context: .
+            dockerfile: apps/embedding/Dockerfile
+            args:
+                VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
+        environment:
+            VF_EMBEDDING_MODEL: ${VF_EMBEDDING_MODEL:-intfloat/multilingual-e5-small}
+            VF_EMBEDDING_REVISION: ${VF_EMBEDDING_REVISION:-614241f622f53c4eeff9890bdc4f31cfecc418b3}
+            VF_EMBEDDING_ORT_PROVIDER: ${VF_EMBEDDING_ORT_PROVIDER:-CPUExecutionProvider}
+        expose:
+            - "8100"
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    cpus: "1.5"
+                    memory: 1G
+                reservations:
+                    cpus: "1"
+                    memory: 512M
+        healthcheck:
+            test:
+                [
+                    "CMD",
+                    "python",
+                    "-c",
+                    "import urllib.request; urllib.request.urlopen('http://localhost:8100/ready')",
+                ]
+            interval: 10s
+            timeout: 10s
+            start_period: 120s
+            retries: 12
 
-  web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: http://localhost:8000
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
-        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:8000
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
-      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
-    ports:
-      - "3000:3000"
-    depends_on:
-      api:
-        condition: service_healthy
-    restart: unless-stopped
+    web:
+        build:
+            context: .
+            dockerfile: apps/web/Dockerfile
+            args:
+                NEXT_PUBLIC_API_URL: http://localhost:8000
+                NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
+                NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
+        environment:
+            NEXT_PUBLIC_API_URL: http://localhost:8000
+            NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
+            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
+        ports:
+            - "3000:3000"
+        depends_on:
+            api:
+                condition: service_healthy
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    cpus: "1"
+                    memory: 512M
+                reservations:
+                    cpus: "0.5"
+                    memory: 256M
 
-  postgres:
-    image: pgvector/pgvector:pg16
-    environment:
-      POSTGRES_DB: vibesfactory
-      POSTGRES_USER: vibesfactory
-      POSTGRES_PASSWORD: vibesfactory
-    ports:
-      - "15432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U vibesfactory -d vibesfactory"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    postgres:
+        image: pgvector/pgvector:pg16
+        environment:
+            POSTGRES_DB: vibesfactory
+            POSTGRES_USER: vibesfactory
+            POSTGRES_PASSWORD: vibesfactory
+        ports:
+            - "15432:5432"
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+        restart: unless-stopped
+        deploy:
+            resources:
+                limits:
+                    cpus: "2"
+                    memory: 1G
+                reservations:
+                    cpus: "1"
+                    memory: 512M
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U vibesfactory -d vibesfactory"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
 
-  redis:
-    image: redis:7-alpine
-    profiles: ["infra"]
-    ports:
-      - "6379:6379"
+    redis:
+        image: redis:7-alpine
+        profiles: ["infra"]
+        ports:
+            - "6379:6379"
+        deploy:
+            resources:
+                limits:
+                    cpus: "1"
+                    memory: 256M
+                reservations:
+                    cpus: "0.5"
+                    memory: 128M
 
 volumes:
-  postgres_data:
-  blob_data:
+    postgres_data:
+    blob_data:

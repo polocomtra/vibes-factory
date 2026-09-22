@@ -39,6 +39,7 @@ from ..model_providers.contracts import (
 from ..model_providers.errors import ProviderError
 from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
+    Agent,
     GuardrailHook,
     Job,
     JobStatus,
@@ -57,6 +58,7 @@ from ..models import (
     ToolVersion,
     Trace,
     TraceStatus,
+    User,
 )
 from ..tools.contracts import ToolExecutionContext, ToolResult
 from ..tools.pipeline import SecretRedactor, ToolExecutionPipeline
@@ -842,7 +844,11 @@ class AgentRuntime:
                         None,
                     )
                     yield RuntimeStreamEvent(
-                        event="tool.started",
+                        event=(
+                            "child_agent.started"
+                            if runtime_tool and runtime_tool.kind == "child_agent"
+                            else "tool.started"
+                        ),
                         data={
                             "run_id": str(run.id),
                             "tool_id": (
@@ -853,6 +859,20 @@ class AgentRuntime:
                             "tool_version_id": (
                                 str(runtime_tool.tool_version_id)
                                 if runtime_tool
+                                else None
+                            ),
+                            "child_agent_id": (
+                                str(runtime_tool.child_agent_id)
+                                if runtime_tool
+                                and runtime_tool.kind == "child_agent"
+                                and runtime_tool.child_agent_id
+                                else None
+                            ),
+                            "child_agent_version_id": (
+                                str(runtime_tool.child_agent_version_id)
+                                if runtime_tool
+                                and runtime_tool.kind == "child_agent"
+                                and runtime_tool.child_agent_version_id
                                 else None
                             ),
                             "tool": call.name,
@@ -869,14 +889,39 @@ class AgentRuntime:
                     timeout_seconds=tracker.remaining_seconds(),
                 )
                 for record in records:
+                    record_tool = next(
+                        (
+                            item
+                            for item in request.agent_version.tools
+                            if item.name == record.name
+                        ),
+                        None,
+                    )
                     yield RuntimeStreamEvent(
-                        event="tool.completed" if record.succeeded else "tool.failed",
+                        event=(
+                            (
+                                "child_agent.completed"
+                                if record.succeeded
+                                else "child_agent.failed"
+                            )
+                            if record_tool and record_tool.kind == "child_agent"
+                            else (
+                                "tool.completed" if record.succeeded else "tool.failed"
+                            )
+                        ),
                         data={
                             "run_id": str(run.id),
                             "tool_id": str(record.tool_id) if record.tool_id else None,
                             "tool_version_id": (
                                 str(record.tool_version_id)
                                 if record.tool_version_id
+                                else None
+                            ),
+                            "child_agent_id": (
+                                str(record_tool.child_agent_id)
+                                if record_tool
+                                and record_tool.kind == "child_agent"
+                                and record_tool.child_agent_id
                                 else None
                             ),
                             "tool": record.name,
@@ -1229,7 +1274,9 @@ class AgentRuntime:
                         },
                     }
                     succeeded = False
-                elif version is None or runtime_tool is None:
+                elif (version is None or runtime_tool is None) and not (
+                    runtime_tool is not None and runtime_tool.kind == "child_agent"
+                ):
                     result = {
                         "ok": False,
                         "error": {
@@ -1241,6 +1288,147 @@ class AgentRuntime:
                         },
                     }
                     succeeded = False
+                elif runtime_tool is not None and runtime_tool.kind == "child_agent":
+                    child_count = int(run.metadata_json.get("child_run_count", 0))
+                    child_tokens = int(run.metadata_json.get("child_total_tokens", 0))
+                    if child_tokens >= request.execution_budget.max_total_tokens:
+                        result = {
+                            "ok": False,
+                            "error": {
+                                "code": "TOTAL_TOKEN_BUDGET_EXCEEDED",
+                                "message": "The shared child-agent token budget was exceeded.",
+                            },
+                        }
+                        succeeded = False
+                    elif child_count >= request.execution_budget.max_child_runs:
+                        result = {
+                            "ok": False,
+                            "error": {
+                                "code": "CHILD_RUN_BUDGET_EXCEEDED",
+                                "message": "The child-agent run budget was exceeded.",
+                            },
+                        }
+                        succeeded = False
+                    elif run.agent_depth >= request.execution_budget.max_agent_depth:
+                        result = {
+                            "ok": False,
+                            "error": {
+                                "code": "AGENT_DEPTH_EXCEEDED",
+                                "message": "The child-agent depth budget was exceeded.",
+                            },
+                        }
+                        succeeded = False
+                    else:
+                        child_agent = await self.session.get(
+                            Agent, runtime_tool.child_agent_id
+                        )
+                        user = await self.session.get(User, request.session.user_id)
+                        if (
+                            child_agent is None
+                            or user is None
+                            or child_agent.workspace_id != request.workspace_id
+                        ):
+                            result = {
+                                "ok": False,
+                                "error": {
+                                    "code": "CHILD_AGENT_NOT_FOUND",
+                                    "message": "The child agent is not available.",
+                                },
+                            }
+                            succeeded = False
+                        else:
+                            from ..runs.routes import _build_runtime_request
+                            from ..runs.schemas import RunCreateRequest
+
+                            child_session = Session(
+                                workspace_id=request.workspace_id,
+                                agent_id=child_agent.id,
+                                user_id=user.id,
+                                title=f"Child agent for {run.id}",
+                                metadata_json={
+                                    "origin": "child_agent",
+                                    "parent_run_id": str(run.id),
+                                    "hidden": True,
+                                },
+                            )
+                            self.session.add(child_session)
+                            await self.session.flush()
+                            child_request = await _build_runtime_request(
+                                RunCreateRequest(
+                                    input=TextInput(
+                                        text=str(call.arguments.get("task", " ")) or " "
+                                    ),
+                                    session_id=child_session.id,
+                                    agent_version_id=runtime_tool.child_agent_version_id,
+                                ),
+                                child_agent,
+                                user,
+                                self.session,
+                            )
+                            try:
+                                child_result = await AgentRuntime(
+                                    self.session, self.registry
+                                ).run(child_request)
+                            except RuntimeExecutionError as error:
+                                if error.run_id is not None:
+                                    failed_child = await self.session.get(
+                                        Run, error.run_id
+                                    )
+                                    if failed_child is not None:
+                                        failed_child.session_id = None
+                                await self.session.delete(child_session)
+                                result = {
+                                    "ok": False,
+                                    "error": {
+                                        "code": "CHILD_AGENT_FAILED",
+                                        "message": error.message,
+                                    },
+                                }
+                                succeeded = False
+                                child_result = None
+                            if child_result is not None:
+                                child_run = await self.session.get(
+                                    Run, child_result.run_id
+                                )
+                            if child_run is not None:
+                                child_run.session_id = None
+                                child_run.parent_run_id = run.id
+                                child_run.root_run_id = run.root_run_id
+                                child_run.agent_depth = run.agent_depth + 1
+                                child_run.workflow_run_id = run.workflow_run_id
+                                child_run.trace_id = trace.id
+                                child_spans = list(
+                                    (
+                                        await self.session.scalars(
+                                            select(Span).where(
+                                                Span.run_id == child_run.id
+                                            )
+                                        )
+                                    ).all()
+                                )
+                                for child_span in child_spans:
+                                    child_span.trace_id = trace.id
+                                    child_span.workflow_run_id = run.workflow_run_id
+                                    if child_span.span_type == SpanType.RUN:
+                                        child_span.parent_span_id = span.id
+                                await self.session.delete(child_session)
+                                run.metadata_json = {
+                                    **run.metadata_json,
+                                    "child_run_count": child_count + 1,
+                                    "child_total_tokens": int(
+                                        run.metadata_json.get("child_total_tokens", 0)
+                                    )
+                                    + int(child_result.usage.total_tokens or 0),
+                                }
+                                span.span_type = SpanType.CHILD_AGENT
+                                result = {
+                                    "ok": True,
+                                    "output": {
+                                        "text": child_result.output.text,
+                                        "run_id": str(child_result.run_id),
+                                    },
+                                }
+                                succeeded = True
                 elif (
                     version.workspace_id != request.workspace_id
                     or catalog_tool is None

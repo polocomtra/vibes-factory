@@ -88,10 +88,10 @@ function TracePreview({ trace }: { trace: TraceSessionItem }) {
 
 function TraceGridCard({
     trace,
-    onOpenSession,
+    onOpenTrace,
 }: {
     trace: TraceSessionItem;
-    onOpenSession: (trace: TraceSessionItem) => void;
+    onOpenTrace: (trace: TraceSessionItem) => void;
 }) {
     return (
         <article className="trace-card">
@@ -129,15 +129,25 @@ function TraceGridCard({
                 <code>
                     {trace.session_id
                         ? `Session ${trace.session_id}`
-                        : `Trace ${trace.id}`}
+                        : trace.workflow_run_id
+                          ? `Workflow run ${trace.workflow_run_id}`
+                          : `Trace ${trace.id}`}
                 </code>
                 {trace.session_id ? (
                     <button
                         className="text-button"
                         type="button"
-                        onClick={() => onOpenSession(trace)}
+                        onClick={() => onOpenTrace(trace)}
                     >
                         Open session <span aria-hidden="true">→</span>
+                    </button>
+                ) : trace.workflow_id ? (
+                    <button
+                        className="text-button trace-workflow-open-button"
+                        type="button"
+                        onClick={() => onOpenTrace(trace)}
+                    >
+                        Open to Workflow Run History <span aria-hidden="true">→</span>
                     </button>
                 ) : (
                     <span className="trace-no-session">No session</span>
@@ -149,10 +159,10 @@ function TraceGridCard({
 
 function TraceListRow({
     trace,
-    onOpenSession,
+    onOpenTrace,
 }: {
     trace: TraceSessionItem;
-    onOpenSession: (trace: TraceSessionItem) => void;
+    onOpenTrace: (trace: TraceSessionItem) => void;
 }) {
     return (
         <article className="trace-list-row">
@@ -187,9 +197,17 @@ function TraceListRow({
                 <button
                     className="button secondary-button trace-open-button"
                     type="button"
-                    onClick={() => onOpenSession(trace)}
+                    onClick={() => onOpenTrace(trace)}
                 >
                     Open session
+                </button>
+            ) : trace.workflow_id ? (
+                <button
+                    className="button secondary-button trace-open-button trace-workflow-open-button"
+                    type="button"
+                    onClick={() => onOpenTrace(trace)}
+                >
+                    Open to Workflow Run History
                 </button>
             ) : (
                 <span className="trace-no-session">No session</span>
@@ -338,11 +356,13 @@ export default function TracesPage() {
         setTimeRange("all");
     }
 
-    function openSession(trace: TraceSessionItem) {
+    function openTrace(trace: TraceSessionItem) {
         if (trace.session_id)
             router.push(
                 `/agents/${trace.agent_id}/playground?session_id=${trace.session_id}`,
             );
+        else if (trace.workflow_id)
+            router.push(`/workflows/${trace.workflow_id}/runs`);
     }
 
     return (
@@ -461,7 +481,7 @@ export default function TracesPage() {
                     <span>
                         {loading
                             ? "Loading traces…"
-                            : `${summary.total} visible sessions`}
+                            : `${summary.total} visible traces`}
                     </span>
                     <span>
                         {summary.completed} latest completed · {summary.failed}{" "}
@@ -503,7 +523,7 @@ export default function TracesPage() {
                                     <TraceGridCard
                                         key={trace.session_id ?? trace.id}
                                         trace={trace}
-                                        onOpenSession={openSession}
+                                        onOpenTrace={openTrace}
                                     />
                                 ))}
                             </section>
@@ -516,7 +536,7 @@ export default function TracesPage() {
                                     <TraceListRow
                                         key={trace.session_id ?? trace.id}
                                         trace={trace}
-                                        onOpenSession={openSession}
+                                        onOpenTrace={openTrace}
                                     />
                                 ))}
                             </section>

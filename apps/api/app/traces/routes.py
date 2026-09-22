@@ -5,12 +5,21 @@ from datetime import datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import and_, desc, or_, select
+from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..auth.dependencies import get_current_user
 from ..db import get_session
-from ..models import Agent, Run, Span, Trace, TraceStatus, User, WorkspaceMember
+from ..models import (
+    Agent,
+    Run,
+    Span,
+    Trace,
+    TraceStatus,
+    User,
+    WorkflowRun,
+    WorkspaceMember,
+)
 from ..workspaces.authorization import require_workspace_access
 from .schemas import (
     RootSpanResponse,
@@ -60,7 +69,9 @@ def _encode_trace_cursor(item: Trace) -> str:
     return base64.urlsafe_b64encode(value.encode()).decode().rstrip("=")
 
 
-def _trace_list_response(trace: Trace, run: Run, agent: Agent) -> TraceListItemResponse:
+def _trace_list_response(
+    trace: Trace, run: Run, agent: Agent, workflow_run: WorkflowRun | None
+) -> TraceListItemResponse:
     return TraceListItemResponse(
         id=trace.id,
         agent_id=agent.id,
@@ -68,6 +79,8 @@ def _trace_list_response(trace: Trace, run: Run, agent: Agent) -> TraceListItemR
         agent_version_id=run.agent_version_id,
         run_id=run.id,
         session_id=run.session_id,
+        workflow_id=workflow_run.workflow_id if workflow_run else None,
+        workflow_run_id=workflow_run.id if workflow_run else trace.workflow_run_id,
         status=trace.status,
         started_at=trace.started_at,
         completed_at=trace.completed_at,
@@ -118,7 +131,7 @@ async def list_traces(
     """List traces visible in every workspace where the user is a member."""
 
     statement = (
-        select(Trace, Run, Agent)
+        select(Trace, Run, Agent, WorkflowRun)
         .join(
             Run,
             and_(
@@ -131,6 +144,14 @@ async def list_traces(
             and_(
                 Agent.id == Run.agent_id,
                 Agent.workspace_id == Trace.workspace_id,
+            ),
+        )
+        .outerjoin(
+            WorkflowRun,
+            and_(
+                WorkflowRun.id
+                == func.coalesce(Trace.workflow_run_id, Run.workflow_run_id),
+                WorkflowRun.workspace_id == Trace.workspace_id,
             ),
         )
         .join(WorkspaceMember, WorkspaceMember.workspace_id == Trace.workspace_id)
@@ -168,7 +189,10 @@ async def list_traces(
     has_more = len(rows) > limit
     rows = rows[:limit]
     return TraceCollectionResponse(
-        data=[_trace_list_response(trace, run, agent) for trace, run, agent in rows],
+        data=[
+            _trace_list_response(trace, run, agent, workflow_run)
+            for trace, run, agent, workflow_run in rows
+        ],
         pagination={
             "next_cursor": _encode_trace_cursor(rows[-1][0]) if has_more else None,
             "has_more": has_more,

@@ -90,7 +90,7 @@ async def _owned_session(
     item = await session.scalar(
         select(Session).where(Session.id == session_id, Session.user_id == user.id)
     )
-    if item is None:
+    if item is None or item.metadata_json.get("hidden") is True:
         raise _not_found()
     await require_workspace_access(session, user.id, item.workspace_id)
     return item
@@ -145,7 +145,9 @@ async def list_sessions(
     rows = await session.scalars(
         statement.order_by(desc(Session.created_at), desc(Session.id)).limit(limit + 1)
     )
-    items = list(rows.all())
+    items = [
+        item for item in rows.all() if item.metadata_json.get("hidden") is not True
+    ]
     has_more = len(items) > limit
     items = items[:limit]
     return SessionCollection(

@@ -49,7 +49,10 @@ class RuntimeTool(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tool_id: UUID | None = None
-    tool_version_id: UUID
+    tool_version_id: UUID | None = None
+    kind: Literal["tool", "child_agent"] = "tool"
+    child_agent_id: UUID | None = None
+    child_agent_version_id: UUID | None = None
     name: str
     description: str | None = None
     parameters: dict[str, object] = Field(default_factory=dict)
@@ -178,6 +181,9 @@ class RuntimeStreamEvent(BaseModel):
         "tool.started",
         "tool.completed",
         "tool.failed",
+        "child_agent.started",
+        "child_agent.completed",
+        "child_agent.failed",
         "retrieval.started",
         "retrieval.completed",
         "retrieval.failed",

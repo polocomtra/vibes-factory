@@ -14,7 +14,7 @@ import {
     ChevronDown,
     CircleHelp,
     Code2,
-    // Cloud,
+    GitBranch,
     // FlaskConical,
     // GitBranch,
     Globe2,
@@ -53,8 +53,8 @@ const navItems: NavItem[] = [
     // Temporarily hidden until the feature is implemented:
     // { label: "Dashboard", icon: LayoutDashboard },
     { label: "Agents", icon: Bot, group: "Build" },
-    { label: "Playground", icon: Code2 },
-    // { label: "Workflows", icon: GitBranch },
+    { label: "Playground", icon: Code2, group: "Build" },
+    { label: "Workflows", icon: GitBranch, group: "Build" },
     { label: "Knowledge", icon: Boxes, group: "Connect" },
     { label: "Memory", icon: BrainCircuit, group: "Connect" },
     { label: "Tools", icon: Zap, group: "Connect" },
@@ -383,6 +383,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             return "Playground";
         if (path === "/traces" || path.includes("/traces")) return "Traces";
         if (path.startsWith("/agents")) return "Agents";
+        if (path === "/workflows" || path.startsWith("/workflows/")) return "Workflows";
         if (path === "/tools" || path.startsWith("/tools/")) return "Tools";
         if (path === "/knowledge" || path.startsWith("/knowledge/")) return "Knowledge";
         if (path === "/memory" || path.startsWith("/memory/")) return "Memory";
@@ -447,6 +448,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         setMobileOpen(false);
         if (label === "Dashboard") router.push("/");
         if (label === "Agents") router.push("/agents");
+        if (label === "Workflows") router.push("/workflows");
         if (label === "Tools") router.push("/tools");
         if (label === "Knowledge") router.push("/knowledge");
         if (label === "Memory") router.push("/memory");
@@ -464,6 +466,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }, [activeItem]);
 
     const runtimeLayout = pathname.includes("/playground");
+    const workflowLayout = pathname.startsWith("/workflows/") || pathname.startsWith("/workflow-runs/");
     const shellClass = [
         "app-shell",
         sidebarCollapsed ? "sidebar-collapsed" : "",
@@ -625,7 +628,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     className={
                         runtimeLayout
                             ? "content-frame runtime-content-frame"
-                            : "content-frame"
+                            : workflowLayout
+                                ? "content-frame workflow-content-frame"
+                                : "content-frame"
                     }
                 >
                     <div className="sr-only">{activeDescription}</div>

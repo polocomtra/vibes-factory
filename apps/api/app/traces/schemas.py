@@ -23,6 +23,8 @@ class TraceListItemResponse(BaseModel):
     agent_version_id: UUID
     run_id: UUID
     session_id: UUID | None
+    workflow_id: UUID | None
+    workflow_run_id: UUID | None
     status: TraceStatus
     started_at: datetime
     completed_at: datetime | None

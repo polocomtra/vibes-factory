@@ -55,17 +55,65 @@ class RunStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class WorkflowStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+
+class WorkflowRunStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class WorkflowNodeStatus(StrEnum):
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class WorkflowNodeType(StrEnum):
+    START = "START"
+    END = "END"
+    AGENT = "AGENT"
+    TOOL = "TOOL"
+    CONDITION = "CONDITION"
+    TRANSFORM = "TRANSFORM"
+
+
+class WorkflowEventType(StrEnum):
+    WORKFLOW_QUEUED = "workflow.queued"
+    WORKFLOW_STARTED = "workflow.started"
+    WORKFLOW_NODE_STARTED = "workflow.node_started"
+    WORKFLOW_NODE_COMPLETED = "workflow.node_completed"
+    WORKFLOW_NODE_FAILED = "workflow.node_failed"
+    CHILD_AGENT_STARTED = "child_agent.started"
+    CHILD_AGENT_COMPLETED = "child_agent.completed"
+    CHILD_AGENT_FAILED = "child_agent.failed"
+    WORKFLOW_COMPLETED = "workflow.completed"
+    WORKFLOW_FAILED = "workflow.failed"
+    WORKFLOW_CANCELLED = "workflow.cancelled"
+
+
 class TraceStatus(StrEnum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class SpanType(StrEnum):
     RUN = "RUN"
+    WORKFLOW = "WORKFLOW"
+    WORKFLOW_NODE = "WORKFLOW_NODE"
     CONTEXT_BUILD = "CONTEXT_BUILD"
     MODEL = "MODEL"
     TOOL = "TOOL"
+    CHILD_AGENT = "CHILD_AGENT"
     RETRIEVAL = "RETRIEVAL"
     MEMORY_RETRIEVAL = "MEMORY_RETRIEVAL"
     GUARDRAIL = "GUARDRAIL"
@@ -95,6 +143,7 @@ class JobType(StrEnum):
     DOCUMENT_INGESTION = "DOCUMENT_INGESTION"
     DOCUMENT_CLEANUP = "DOCUMENT_CLEANUP"
     MEMORY_EXTRACTION = "MEMORY_EXTRACTION"
+    WORKFLOW_EXECUTION = "WORKFLOW_EXECUTION"
 
 
 class JobStatus(StrEnum):
@@ -109,12 +158,14 @@ class SpanStatus(StrEnum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class ToolType(StrEnum):
     FUNCTION = "FUNCTION"
     HTTP = "HTTP"
     MCP = "MCP"
+    AGENT = "AGENT"
 
 
 class ToolStatus(StrEnum):
@@ -327,6 +378,9 @@ class AgentVersion(Base):
         default=False, server_default="false", nullable=False
     )
     snapshot: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    workflow_child_bindings: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, default=list, server_default="[]", nullable=False
+    )
     change_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
@@ -619,6 +673,61 @@ class AgentVersionTool(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentDraftChildAgent(Base):
+    __tablename__ = "agent_draft_child_agents"
+
+    agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    child_agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    description_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    child_agent_version_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class AgentVersionChildAgent(Base):
+    __tablename__ = "agent_version_child_agents"
+
+    agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    child_agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    child_agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    alias: Mapped[str] = mapped_column(String(128), nullable=False)
+    description_override: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_agent_version_child_agents_version", "agent_version_id"),
+        Index("ix_agent_version_child_agents_child", "child_agent_id"),
     )
 
 
@@ -1260,6 +1369,349 @@ class Message(Base):
     )
 
 
+class Workflow(Base):
+    __tablename__ = "workflows"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    latest_version_number: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    status: Mapped[WorkflowStatus] = mapped_column(
+        Enum(WorkflowStatus, native_enum=False, length=32),
+        default=WorkflowStatus.ACTIVE,
+        nullable=False,
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "slug", name="uq_workflows_workspace_slug"),
+        Index("ix_workflows_workspace_status", "workspace_id", "status"),
+    )
+
+
+class WorkflowDraft(Base):
+    __tablename__ = "workflow_drafts"
+
+    workflow_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    definition: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    revision: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    updated_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class WorkflowVersion(Base):
+    __tablename__ = "workflow_versions"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_id", "version_number", name="uq_workflow_versions_number"
+        ),
+        Index("ix_workflow_versions_workspace_workflow", "workspace_id", "workflow_id"),
+    )
+
+
+class WorkflowNode(Base):
+    __tablename__ = "workflow_nodes"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workflow_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    node_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    node_type: Mapped[WorkflowNodeType] = mapped_column(
+        Enum(WorkflowNodeType, native_enum=False, length=32), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    position: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_version_id", "node_key", name="uq_workflow_nodes_key"
+        ),
+        Index("ix_workflow_nodes_version", "workflow_version_id"),
+    )
+
+
+class WorkflowEdge(Base):
+    __tablename__ = "workflow_edges"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workflow_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_node_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_node_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_nodes.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_handle: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    condition: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    priority: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_workflow_edges_source", "source_node_id"),
+        Index("ix_workflow_edges_target", "target_node_id"),
+    )
+
+
+class WorkflowRun(Base):
+    __tablename__ = "workflow_runs"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    workflow_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    trace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("traces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[WorkflowRunStatus] = mapped_column(
+        Enum(WorkflowRunStatus, native_enum=False, length=32),
+        default=WorkflowRunStatus.QUEUED,
+        nullable=False,
+    )
+    current_node_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_nodes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    input: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    variables: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    node_outputs: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    usage: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    execution_budget: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    waiting_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    next_event_sequence: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_workflow_runs_workspace_created", "workspace_id", "created_at"),
+        Index("ix_workflow_runs_status_created", "status", "created_at"),
+        Index("ix_workflow_runs_current_node", "current_node_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "workflow_id",
+            "idempotency_key_hash",
+            name="uq_workflow_runs_idempotency",
+        ),
+    )
+
+
+class WorkflowNodeRun(Base):
+    __tablename__ = "workflow_node_runs"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workflow_run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_node_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_nodes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    attempt: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    status: Mapped[WorkflowNodeStatus] = mapped_column(
+        Enum(WorkflowNodeStatus, native_enum=False, length=32), nullable=False
+    )
+    input: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    agent_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    span_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("spans.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_run_id",
+            "workflow_node_id",
+            "attempt",
+            name="uq_workflow_node_runs_attempt",
+        ),
+        Index("ix_workflow_node_runs_run_started", "workflow_run_id", "started_at"),
+    )
+
+
+class WorkflowRunEvent(Base):
+    __tablename__ = "workflow_run_events"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workflow_run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[WorkflowEventType] = mapped_column(
+        Enum(WorkflowEventType, native_enum=False, length=64), nullable=False
+    )
+    node_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_node_runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    data: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "workflow_run_id", "sequence", name="uq_workflow_run_events_sequence"
+        ),
+        Index("ix_workflow_run_events_run_sequence", "workflow_run_id", "sequence"),
+    )
+
+
 class Trace(Base):
     __tablename__ = "traces"
 
@@ -1272,6 +1724,9 @@ class Trace(Base):
         nullable=False,
     )
     root_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=True
     )
     status: Mapped[TraceStatus] = mapped_column(
@@ -1290,6 +1745,7 @@ class Trace(Base):
     __table_args__ = (
         Index("ix_traces_workspace_id", "workspace_id"),
         Index("ix_traces_root_run_id", "root_run_id"),
+        Index("ix_traces_workflow_run_id", "workflow_run_id"),
     )
 
 
@@ -1335,6 +1791,12 @@ class Run(Base):
     root_run_id: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), nullable=False
     )
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
+    )
+    agent_depth: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     status: Mapped[RunStatus] = mapped_column(
         Enum(RunStatus, native_enum=False, length=32), nullable=False
     )
@@ -1370,6 +1832,7 @@ class Run(Base):
         Index("ix_runs_trace_id", "trace_id"),
         Index("ix_runs_parent_run_id", "parent_run_id"),
         Index("ix_runs_root_run_id", "root_run_id"),
+        Index("ix_runs_workflow_run_id", "workflow_run_id"),
         Index("ix_runs_status_created", "status", "created_at"),
     )
 
@@ -1394,6 +1857,9 @@ class Span(Base):
         PostgreSQLUUID(as_uuid=True),
         ForeignKey("runs.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=True
     )
     span_type: Mapped[SpanType] = mapped_column(
         Enum(SpanType, native_enum=False, length=64), nullable=False
@@ -1424,6 +1890,7 @@ class Span(Base):
         Index("ix_spans_trace_started", "trace_id", "started_at"),
         Index("ix_spans_parent_span_id", "parent_span_id"),
         Index("ix_spans_run_started", "run_id", "started_at"),
+        Index("ix_spans_workflow_started", "workflow_run_id", "started_at"),
     )
 
 

@@ -2909,7 +2909,28 @@ Never expose sensitive matched values unnecessarily.
 
 ## Goal
 
-Implement deterministic orchestration separately from agent runtime.
+Implement deterministic orchestration separately from agent runtime, with durable
+PostgreSQL execution, replayable event observation, and the multi-agent
+supervisor capability previously listed under Phase 13. Phase 13 is absorbed
+into this expanded milestone so the editor, runtime budgets, trace hierarchy,
+and child-agent version pinning ship as one coherent contract.
+
+The v1 execution contract is intentionally sequential and fail-closed:
+`PARALLEL`, `APPROVAL`, error edges, and side-effect/high-risk workflow tools
+remain deferred. A worker may be restarted at any boundary; completed node
+runs are never replayed, while an orphaned active agent or side-effect node
+fails with `WORKFLOW_RESUME_UNSAFE`.
+
+The implementation is delivered in four independently runnable checkpoints:
+
+1. Migration, immutable version contracts, safe expression AST, and API
+   validation.
+2. Agent-as-tool bindings, pinned child versions, shared depth/step/token
+   budgets, and child run/span correlation.
+3. Leased `WORKFLOW_EXECUTION` jobs, persisted node state, idempotent run
+   creation, cancellation, deadline, and durable event sequencing.
+4. React Flow/Dagre editor, workspace navigation, SSE replay with polling
+   fallback, and live run timeline.
 
 ---
 
@@ -3065,13 +3086,36 @@ END
 
 can execute with persisted state and traceable node runs.
 
+Additional Phase 12 acceptance criteria:
+
+- Every run pins one immutable `WorkflowVersion`; every AGENT node pins one
+  immutable `AgentVersion`. Draft writes use `expected_revision` and return a
+  conflict rather than overwriting another editor tab.
+- `WorkflowRunEvent.sequence` is strictly increasing and is replayable from
+  `Last-Event-ID`; events contain safe metadata only. The run/node detail API
+  is the authenticated source for input, output, error, usage, and trace data.
+- The worker uses short database transactions around each node and never holds
+  a transaction while calling a model, HTTP tool, or MCP server. Queue lease
+  recovery, cancellation, absolute timeout, and all budget counters are
+  persisted and observable.
+- Supervisor tools are normalized model tools with pinned child versions. Child
+  runs have their own Run identity, parent/root links, depth enforcement, and
+  normalized failures; depth, children, model calls, tool calls, steps, tokens,
+  and timeout budgets cannot be bypassed.
+- The console uses the existing Obsidian/Frost tokens, Inter/JetBrains Mono,
+  and Lucide system. The editor is controlled React Flow state, auto-layout is
+  explicit Dagre action, and the run observer remains useful after reload.
+
 ---
 
-# 80. Phase 13 — Multi-Agent
+# 80. Phase 13 — Multi-Agent (absorbed by expanded Phase 12)
 
 ## Goal
 
-Make agent composition a first-class capability.
+The original Phase 13 goal is delivered by the supervisor slice in Phase 12.
+This section remains as a compatibility reference for the child-agent domain;
+future work is limited to richer supervisor policies, parallel scheduling,
+approval/resume, and deployment strategies.
 
 ---
 

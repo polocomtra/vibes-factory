@@ -2605,3 +2605,15 @@ tests
 ```
 
 in the same change.
+
+## Phase 12 additions
+
+Migration `0014_phase12_workflows` adds `workflows`, mutable
+`workflow_drafts`, immutable `workflow_versions` with normalized
+`workflow_nodes`/`workflow_edges`, durable `workflow_runs`,
+`workflow_node_runs`, and append-only `workflow_run_events`. Runs pin a
+version and carry variables, node outputs, budget, idempotency hash, cursor,
+cancellation, and terminal evidence. Child-agent draft/version binding tables
+pin exact `AgentVersion` identities. Existing `runs`, `traces`, and `spans`
+carry workflow correlation fields and `agent_depth`; workflow/child span types
+are explicitly enumerated.

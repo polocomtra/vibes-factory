@@ -2337,6 +2337,7 @@ Includes:
 
 ```text
 status
+current_node_name
 input
 output
 variables
@@ -2358,14 +2359,31 @@ Response:
     {
       "id": "uuid",
       "node_key": "research",
+      "node_name": "Research topic",
       "status": "COMPLETED",
       "agent_run_id": "uuid",
+      "usage": {
+        "input_tokens": 120,
+        "output_tokens": 240,
+        "total_tokens": 360
+      },
+      "duration_ms": 1820,
       "started_at": "...",
       "completed_at": "..."
     }
   ]
 }
 ```
+
+---
+
+# 92A. Workflow Run History
+
+## GET `/v1/workflows/{workflow_id}/runs?limit=50`
+
+Returns recent runs for the workflow, ordered newest first. Each summary
+includes the terminal status, current node display name, usage and timestamps.
+The endpoint is workspace-scoped and only returns runs visible to the caller.
 
 ---
 
@@ -4765,3 +4783,30 @@ Output
 ```
 
 That simplicity is a key product abstraction of VibesFactory.
+
+## Phase 12 durable workflow contract
+
+Workflow control-plane endpoints are workspace-scoped and publish immutable
+normalized versions:
+
+```text
+POST /v1/workspaces/{workspace_id}/workflows
+GET  /v1/workspaces/{workspace_id}/workflows
+GET  /v1/workflows/{workflow_id}/draft
+PUT  /v1/workflows/{workflow_id}/draft             (expected_revision)
+POST /v1/workflows/{workflow_id}/draft:validate
+GET  /v1/workflows/{workflow_id}/versions
+POST /v1/workflows/{workflow_id}/versions
+GET  /v1/workflow-versions/{version_id}
+```
+
+Execution is asynchronous and returns `202 Accepted`. `Idempotency-Key` is
+hashed per workspace/workflow. Runs, node runs, and safe event metadata are
+available from the run endpoints, including fetch-based SSE replay with
+`Last-Event-ID`. Event envelopes never contain payloads or credentials;
+authenticated detail endpoints provide those values on demand. Child-agent
+bindings are draft-only until publish at
+`/v1/agents/{agent_id}/draft/child-agents`.
+
+`AGENT`, `TOOL`, `CONDITION`, and `TRANSFORM` expressions use a tagged AST.
+Arbitrary expression strings and `eval()` are not part of the contract.

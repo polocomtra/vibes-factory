@@ -181,6 +181,29 @@ async def _build_runtime_request(
                     parameters=tool_version.input_schema,
                 )
                 for binding, tool_version, catalog_tool in published_tools
+            )
+            + tuple(
+                RuntimeTool(
+                    name=str(binding.get("alias", "child_agent")),
+                    description=str(
+                        binding.get("description", "Delegates work to a child agent.")
+                    ),
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            "task": {"type": "string", "maxLength": 100_000}
+                        },
+                        "required": ["task"],
+                        "additionalProperties": False,
+                    },
+                    kind="child_agent",
+                    child_agent_id=UUID(str(binding["agent_id"])),
+                    child_agent_version_id=UUID(str(binding["agent_version_id"])),
+                )
+                for binding in version.workflow_child_bindings
+                if isinstance(binding, dict)
+                and binding.get("alias")
+                and binding.get("agent_version_id")
             ),
             knowledge_bases=tuple(
                 RuntimeKnowledgeBinding(

@@ -2990,3 +2990,19 @@ API.md
 Together these files form the VibesFactory implementation source of truth.
 
 If implementation requires a major architectural change, the relevant documents and ADR must be updated together.
+
+## Durable workflow execution (Phase 12)
+
+The workflow control plane is a bounded domain over immutable graph versions.
+An asynchronous PostgreSQL leased worker owns the execution cursor while
+`WorkflowRunEvent` is the append-only observation source. A node has a short
+transaction to claim/persist state, an external execution interval, and a
+short transaction to commit its result. The worker never holds a transaction
+across provider, HTTP, or MCP calls.
+
+One workflow run owns a workflow trace and workflow/node spans. Agent nodes
+reuse `AgentRuntime`; supervisor child agents are pinned in the published
+`AgentVersion` snapshot and create child Run records with parent/root links.
+Budget counters and deadline are root-owned, so descendants cannot bypass
+depth, children, steps, model/tool calls, token, or timeout limits. `PARALLEL`
+and `APPROVAL` are intentionally not interpreted by v1.

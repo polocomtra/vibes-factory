@@ -12,11 +12,13 @@ from ..guardrails.engine import default_baseline
 from ..models import (
     Agent,
     AgentDraft,
+    AgentDraftChildAgent,
     AgentDraftGuardrail,
     AgentDraftKnowledgeBase,
     AgentDraftTool,
     AgentStatus,
     AgentVersion,
+    AgentVersionChildAgent,
     AgentVersionGuardrail,
     AgentVersionKnowledgeBase,
     AgentVersionTool,
@@ -386,6 +388,84 @@ async def publish_version(
             }
         )
 
+    child_rows = (
+        await session.execute(
+            select(AgentDraftChildAgent, AgentVersion, Agent)
+            .join(
+                AgentVersion,
+                AgentVersion.id == AgentDraftChildAgent.child_agent_version_id,
+            )
+            .join(Agent, Agent.id == AgentDraftChildAgent.child_agent_id)
+            .where(AgentDraftChildAgent.agent_id == locked_agent.id)
+        )
+    ).all()
+    child_snapshots: list[dict[str, object]] = []
+    aliases = {str(item["name"]) for item in tool_snapshots}
+    for binding, child_version, child_agent in child_rows:
+        if child_agent.id == locked_agent.id:
+            raise AgentServiceError(
+                "CHILD_AGENT_SELF_REFERENCE",
+                "An agent cannot bind itself as a child.",
+                422,
+            )
+        if (
+            child_agent.workspace_id != locked_agent.workspace_id
+            or child_version.workspace_id != locked_agent.workspace_id
+            or child_version.agent_id != child_agent.id
+        ):
+            raise AgentServiceError(
+                "CHILD_AGENT_WORKSPACE_MISMATCH",
+                "A child agent binding does not belong to the agent workspace.",
+                422,
+            )
+        if binding.alias in aliases:
+            raise AgentServiceError(
+                "CHILD_AGENT_ALIAS_CONFLICT",
+                "Child-agent aliases must be unique across tools and child agents.",
+                422,
+            )
+
+        async def depends_on(
+            version_id: UUID, target_id: UUID, visited: set[UUID]
+        ) -> bool:
+            if version_id in visited:
+                return False
+            visited.add(version_id)
+            version_row = await session.get(AgentVersion, version_id)
+            if version_row is None:
+                return False
+            for nested in version_row.workflow_child_bindings:
+                if not isinstance(nested, dict):
+                    continue
+                if str(nested.get("agent_id")) == str(target_id):
+                    return True
+                nested_version = nested.get("agent_version_id")
+                if nested_version:
+                    try:
+                        if await depends_on(
+                            UUID(str(nested_version)), target_id, visited
+                        ):
+                            return True
+                    except ValueError:
+                        continue
+            return False
+
+        if await depends_on(child_version.id, locked_agent.id, set()):
+            raise AgentServiceError(
+                "CHILD_AGENT_DEPENDENCY_CYCLE",
+                "Published child-agent bindings would create a dependency cycle.",
+                422,
+            )
+        aliases.add(binding.alias)
+        child_snapshots.append(
+            {
+                "agent_id": str(child_agent.id),
+                "agent_version_id": str(child_version.id),
+                "alias": binding.alias,
+                "description": binding.description_override or child_agent.description,
+            }
+        )
+
     knowledge_rows = (
         await session.execute(
             select(AgentDraftKnowledgeBase, KnowledgeBase)
@@ -485,6 +565,7 @@ async def publish_version(
         snapshot=build_snapshot(
             draft, tool_snapshots, knowledge_snapshots, guardrail_snapshots
         ),
+        workflow_child_bindings=child_snapshots,
         change_note=change_note,
         created_by=user_id,
     )
@@ -498,6 +579,16 @@ async def publish_version(
                 tool_version_id=binding.tool_version_id,
                 alias=binding.alias,
                 configuration=binding.configuration,
+            )
+        )
+    for binding, child_version, _ in child_rows:
+        session.add(
+            AgentVersionChildAgent(
+                agent_version_id=version.id,
+                child_agent_id=binding.child_agent_id,
+                child_agent_version_id=child_version.id,
+                alias=binding.alias,
+                description_override=binding.description_override,
             )
         )
     for binding, _ in knowledge_rows:

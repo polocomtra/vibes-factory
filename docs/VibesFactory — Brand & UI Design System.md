@@ -4049,3 +4049,14 @@ speed
 ```
 
 rather than simply adding decoration.
+## Phase 12 workflow surfaces
+
+Workflow editor and run observer reuse the console's Obsidian/Frost semantic
+tokens, Inter body text, JetBrains Mono payloads, and Lucide icon language.
+The graph is a controlled `@xyflow/react` canvas with explicit Dagre auto
+layout; it does not mutate backend state until a draft save. Run observation is
+a compact timeline with status text, duration, attempt, node/resource identity,
+and on-demand JSON detail. SSE connection state is always visible and falls
+back to polling without changing the run contract. Purple/blue active glow,
+green completion, amber conditions, cyan tools, and red failures are semantic
+status accents rather than hard-coded page colors.

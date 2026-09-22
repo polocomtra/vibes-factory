@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     blob_storage_bucket: str | None = None
     max_document_bytes: int = 20 * 1024 * 1024
     ingestion_poll_seconds: float = 1.0
+    workflow_poll_seconds: float = 1.0
+    workflow_lease_seconds: int = Field(default=120, ge=30, le=900)
+    workflow_heartbeat_seconds: int = Field(default=30, ge=5, le=300)
+    workflow_event_heartbeat_seconds: int = Field(default=15, ge=5, le=120)
+    workflow_default_timeout_seconds: int = Field(default=900, ge=1, le=3_600)
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
     azure_openai_deployment_name: str = "gpt-5.6-luna"

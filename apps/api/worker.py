@@ -34,6 +34,7 @@ from .app.models import (
     Run,
     RunStatus,
 )
+from .app.workflows.engine import process_workflow_execution
 
 LEASE_SECONDS = 120
 HEARTBEAT_SECONDS = 30
@@ -68,7 +69,9 @@ async def claim_job(worker_id: str) -> Job | None:
         job.status = JobStatus.RUNNING
         job.attempt_count += 1
         job.lease_owner = worker_id
-        job.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
+        job.lease_expires_at = now + timedelta(
+            seconds=get_settings().workflow_lease_seconds
+        )
         await session.commit()
         logger.info(
             "job_claimed",
@@ -98,7 +101,7 @@ async def renew_lease(job_id: object, worker_id: str) -> None:
                     )
                     .values(
                         lease_expires_at=datetime.now(UTC)
-                        + timedelta(seconds=LEASE_SECONDS)
+                        + timedelta(seconds=get_settings().workflow_lease_seconds)
                     )
                 )
                 await session.commit()
@@ -623,8 +626,8 @@ async def run_worker() -> None:
         "worker_started",
         worker_id=worker_id,
         poll_seconds=settings.ingestion_poll_seconds,
-        lease_seconds=LEASE_SECONDS,
-        heartbeat_seconds=HEARTBEAT_SECONDS,
+        lease_seconds=settings.workflow_lease_seconds,
+        heartbeat_seconds=settings.workflow_heartbeat_seconds,
     )
     last_idle_log = monotonic()
     try:
@@ -644,6 +647,8 @@ async def run_worker() -> None:
                     await process_cleanup(job, worker_id)
                 elif job.job_type == JobType.MEMORY_EXTRACTION:
                     await process_memory_extraction(job, worker_id)
+                elif job.job_type == JobType.WORKFLOW_EXECUTION:
+                    await process_workflow_execution(job, worker_id)
             except Exception:
                 logger.exception(
                     "job_processing_crashed",

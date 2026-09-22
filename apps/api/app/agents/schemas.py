@@ -237,6 +237,7 @@ class AgentVersionResponse(AgentVersionSummary):
     memory_config: MemoryConfiguration
     guardrails_enabled: bool = False
     snapshot: dict[str, object]
+    child_agent_bindings: list[dict[str, object]] = []
 
 
 class Pagination(BaseModel):
@@ -278,3 +279,21 @@ class PublishAgentVersionRequest(BaseModel):
             return None
         value = value.strip()
         return value or None
+
+
+class ChildAgentBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    child_agent_id: UUID
+    child_agent_version_id: UUID
+    alias: str = Field(
+        min_length=1, max_length=128, pattern=r"^[a-zA-Z][a-zA-Z0-9_-]*$"
+    )
+    description: str | None = Field(default=None, max_length=10_000)
+
+
+class ChildAgentBindingResponse(BaseModel):
+    child_agent_id: UUID
+    child_agent_version_id: UUID
+    alias: str
+    description: str | None
