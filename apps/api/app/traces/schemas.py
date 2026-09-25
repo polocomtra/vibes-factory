@@ -16,6 +16,17 @@ class TraceSummaryResponse(BaseModel):
     completed_at: datetime | None
 
 
+class TraceDetailResponse(TraceSummaryResponse):
+    agent_name: str | None
+    run_id: UUID | None
+    session_id: UUID | None
+    workflow_run_id: UUID | None
+    duration_ms: int | None
+    span_count: int
+    usage: dict[str, int | bool]
+    estimated_cost: str | None
+
+
 class TraceListItemResponse(BaseModel):
     id: UUID
     agent_id: UUID | None
@@ -66,3 +77,4 @@ class SpanDetailResponse(SpanSummaryResponse):
     input: dict[str, Any] | None
     output: dict[str, Any] | None
     error: dict[str, Any] | None
+    estimated_cost: str | None = None

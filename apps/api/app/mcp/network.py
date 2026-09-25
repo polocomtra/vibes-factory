@@ -1,11 +1,9 @@
 """MCP endpoint validation and SSRF defenses."""
 
-import asyncio
-import ipaddress
-import socket
 from urllib.parse import urlparse
 
 from ..config import get_settings
+from ..outbound_network import is_blocked_address, resolve_host_addresses
 
 _BLOCKED_HOSTNAMES = frozenset(
     {
@@ -28,19 +26,7 @@ class MCPNetworkPolicyError(ValueError):
             self.code = code
 
 
-def _blocked_ip(address: str) -> bool:
-    value = ipaddress.ip_address(address)
-    return bool(
-        value.is_private
-        or value.is_loopback
-        or value.is_link_local
-        or value.is_unspecified
-        or value.is_multicast
-        or value.is_reserved
-    )
-
-
-async def validate_endpoint(endpoint: str) -> None:
+async def validate_endpoint(endpoint: str) -> tuple[str, ...]:
     settings = get_settings()
     parsed = urlparse(endpoint.strip())
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:
@@ -68,22 +54,15 @@ async def validate_endpoint(endpoint: str) -> None:
                 "Local and metadata MCP destinations are blocked."
             )
     try:
-        addresses = await asyncio.to_thread(
-            socket.getaddrinfo,
-            hostname,
-            parsed.port or (443 if parsed.scheme == "https" else 80),
-            type=socket.SOCK_STREAM,
+        addresses = await resolve_host_addresses(
+            hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
         )
-    except OSError as exc:
+    except ValueError as exc:
         raise MCPNetworkPolicyError(
             "The MCP endpoint could not be resolved.", code="MCP_ENDPOINT_INVALID"
         ) from exc
-    if not addresses:
-        raise MCPNetworkPolicyError(
-            "The MCP endpoint could not be resolved.", code="MCP_ENDPOINT_INVALID"
-        )
     if not allow_private:
         for address in addresses:
-            resolved = address[4][0]
-            if not isinstance(resolved, str) or _blocked_ip(resolved):
+            if is_blocked_address(address):
                 raise MCPNetworkPolicyError("Private MCP destinations are blocked.")
+    return addresses

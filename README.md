@@ -17,8 +17,26 @@ Requirements: Docker, Python 3.11+, Node.js 22+ and npm.
 
 ```bash
 cp .env.example .env
+# Set POSTGRES_PASSWORD and VF_ENCRYPTION_MASTER_KEY in .env before starting.
 docker compose up --build
 ```
+
+Generate a PostgreSQL password with `openssl rand -hex 24`. Generate the
+credential-vault key with:
+
+```bash
+python3 -c 'import base64, secrets; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())'
+```
+
+The Compose stack reads `.env`, uses the `postgres` service address inside
+containers, and binds the PostgreSQL host port to loopback only. For a Compose
+deployment on a VM, set `VF_DATABASE_URL_COMPOSE`, `VF_ENVIRONMENT`, and
+`VF_CORS_ORIGINS` to the target environment values. For Cloud Run, set
+`VF_DATABASE_URL`, `VF_ENVIRONMENT`, and `VF_CORS_ORIGINS` on the API and worker
+services. Set `NEXT_PUBLIC_API_URL` to the public API origin at web image build
+time; Next.js embeds it in the browser bundle. Store production secrets in the
+cloud secret manager, and do not deploy the local PostgreSQL container as a
+publicly reachable database.
 
 If running API and worker directly on the host instead of Docker Compose, keep
 the embedding service running and wait for model readiness before starting the

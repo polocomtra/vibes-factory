@@ -4,16 +4,19 @@ services:
             context: .
             dockerfile: apps/api/Dockerfile
             target: runtime
-        env_file: .env.compose
+        env_file: .env
         environment:
             VF_APP_NAME: VibesFactory API
-            VF_ENVIRONMENT: local
+            VF_ENVIRONMENT: ${VF_ENVIRONMENT:-local}
             VF_LOG_LEVEL: INFO
-            VF_CORS_ORIGINS: http://localhost:3000
+            VF_CORS_ORIGINS: ${VF_CORS_ORIGINS:-http://localhost:3000}
+            VF_DATABASE_URL: ${VF_DATABASE_URL_COMPOSE:-postgresql+asyncpg://vibesfactory:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/vibesfactory}
+            VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
+            VF_EMBEDDING_SERVICE_URL: http://embedding:8100
             VF_OTEL_SERVICE_NAME: vibesfactory-api
             VF_OTEL_CONSOLE_EXPORTER: "false"
             VF_ENABLE_MCP: ${VF_ENABLE_MCP:-true}
-            VF_MCP_ALLOW_HTTP: ${VF_MCP_ALLOW_HTTP:-true}
+            VF_MCP_ALLOW_HTTP: ${VF_MCP_ALLOW_HTTP:-false}
             VF_MCP_ALLOWED_PRIVATE_HOSTS: ${VF_MCP_ALLOWED_PRIVATE_HOSTS:-}
             VF_MCP_CONNECT_TIMEOUT_SECONDS: ${VF_MCP_CONNECT_TIMEOUT_SECONDS:-10}
             VF_MCP_OPERATION_TIMEOUT_SECONDS: ${VF_MCP_OPERATION_TIMEOUT_SECONDS:-30}
@@ -63,7 +66,9 @@ services:
             context: .
             dockerfile: apps/api/Dockerfile
             target: runtime
-        env_file: .env.compose
+        env_file: .env
+        environment:
+            VF_DATABASE_URL: ${VF_DATABASE_URL_COMPOSE:-postgresql+asyncpg://vibesfactory:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/vibesfactory}
         depends_on:
             postgres:
                 condition: service_healthy
@@ -82,8 +87,11 @@ services:
             context: .
             dockerfile: apps/api/Dockerfile
             target: runtime
-        env_file: .env.compose
+        env_file: .env
         environment:
+            VF_DATABASE_URL: ${VF_DATABASE_URL_COMPOSE:-postgresql+asyncpg://vibesfactory:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/vibesfactory}
+            VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
+            VF_EMBEDDING_SERVICE_URL: http://embedding:8100
             VF_EMBEDDING_BATCH_SIZE: ${VF_EMBEDDING_BATCH_SIZE:-8}
             VF_MODEL_PROVIDER_TIMEOUT_SECONDS: ${VF_MODEL_PROVIDER_TIMEOUT_SECONDS:-60}
             VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-6-luna}
@@ -146,11 +154,11 @@ services:
             context: .
             dockerfile: apps/web/Dockerfile
             args:
-                NEXT_PUBLIC_API_URL: http://localhost:8000
+                NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
                 NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
                 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
         environment:
-            NEXT_PUBLIC_API_URL: http://localhost:8000
+            NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
             NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-${VF_SUPABASE_URL}}
             NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY:-${VF_SUPABASE_PUBLISHABLE_KEY}}
         ports:
@@ -173,9 +181,9 @@ services:
         environment:
             POSTGRES_DB: vibesfactory
             POSTGRES_USER: vibesfactory
-            POSTGRES_PASSWORD: vibesfactory
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
         ports:
-            - "15432:5432"
+            - "127.0.0.1:15432:5432"
         volumes:
             - postgres_data:/var/lib/postgresql/data
         restart: unless-stopped

@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     exa_api_key: SecretStr | None = None
     encryption_master_key: SecretStr | None = None
     enable_mcp: bool = True
-    mcp_allow_http: bool = True
+    mcp_allow_http: bool = False
     mcp_allowed_private_hosts: Annotated[list[str], NoDecode] = []
     mcp_connect_timeout_seconds: float = 10.0
     mcp_operation_timeout_seconds: float = 30.0

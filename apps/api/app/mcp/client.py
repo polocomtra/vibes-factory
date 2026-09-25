@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from hashlib import sha256
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import httpx2
 from mcp.client.streamable_http import streamable_http_client
@@ -13,6 +14,7 @@ from mcp import Client, MCPError
 
 from ..config import get_settings
 from ..credentials.service import ResolvedCredential
+from ..outbound_network import pin_transport_to_addresses
 from .contracts import (
     MCPConnectionSnapshot,
     MCPInvocationResult,
@@ -181,22 +183,29 @@ class OfficialMCPClientAdapter:
         custom_credentials: Mapping[str, ResolvedCredential] | None = None,
     ) -> tuple[httpx2.AsyncClient, Client]:
         try:
-            await validate_endpoint(snapshot.endpoint)
+            addresses = await validate_endpoint(snapshot.endpoint)
         except MCPNetworkPolicyError as exc:
             raise MCPClientError(exc.code, exc.message) from exc
+        hostname = urlparse(snapshot.endpoint).hostname or ""
         timeout = httpx2.Timeout(
             connect=get_settings().mcp_connect_timeout_seconds,
             read=timeout_seconds,
             write=timeout_seconds,
             pool=timeout_seconds,
         )
+        http_transport = httpx2.AsyncHTTPTransport(trust_env=False)
+        pin_transport_to_addresses(http_transport, hostname, addresses)
         http_client = httpx2.AsyncClient(
             headers=_headers(snapshot, credential, custom_credentials),
             timeout=timeout,
             follow_redirects=False,
+            trust_env=False,
+            transport=http_transport,
         )
-        transport = streamable_http_client(snapshot.endpoint, http_client=http_client)
-        client = Client(transport, read_timeout_seconds=timeout_seconds)
+        mcp_transport = streamable_http_client(
+            snapshot.endpoint, http_client=http_client
+        )
+        client = Client(mcp_transport, read_timeout_seconds=timeout_seconds)
         return http_client, client
 
     async def test(

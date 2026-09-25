@@ -1981,6 +1981,7 @@ export default function PlaygroundPage() {
                                 </label>
                                 <div className="composer-row">
                                     <textarea
+                                        className="composer-textarea"
                                         id="playground-composer"
                                         value={composer}
                                         onChange={(event) =>
@@ -2003,38 +2004,41 @@ export default function PlaygroundPage() {
                                             status === "WAITING_APPROVAL"
                                         }
                                     />
-                                    <button
-                                        className="button primary-button send-button"
-                                        type="button"
-                                        onClick={() => void sendMessage()}
-                                        disabled={
-                                            busy ||
-                                            status === "RUNNING" ||
-                                            !composer.trim()
-                                        }
-                                        aria-label={
-                                            busy
-                                                ? "Sending message"
-                                                : "Send message"
-                                        }
-                                    >
-                                        {busy ? (
-                                            <LoaderCircle
-                                                className="spin"
-                                                size={16}
-                                                aria-hidden="true"
-                                            />
-                                        ) : (
-                                            <Send
-                                                size={16}
-                                                aria-hidden="true"
-                                            />
-                                        )}
-                                    </button>
+                                    <div className="composer-footer">
+                                        <span className="field-helper">
+                                            Enter to send · Shift + Enter for a new line
+                                        </span>
+                                        <button
+                                            className="button primary-button send-button"
+                                            type="button"
+                                            onClick={() => void sendMessage()}
+                                            disabled={
+                                                busy ||
+                                                status === "RUNNING" ||
+                                                status === "WAITING_APPROVAL" ||
+                                                !composer.trim()
+                                            }
+                                            aria-label={
+                                                busy
+                                                    ? "Sending message"
+                                                    : "Send message"
+                                            }
+                                        >
+                                            {busy ? (
+                                                <LoaderCircle
+                                                    className="spin"
+                                                    size={16}
+                                                    aria-hidden="true"
+                                                />
+                                            ) : (
+                                                <Send
+                                                    size={16}
+                                                    aria-hidden="true"
+                                                />
+                                            )}
+                                        </button>
+                                    </div>
                                 </div>
-                                <span className="field-helper">
-                                    Enter to send · Shift + Enter for a new line
-                                </span>
                             </div>
                         </section>
                         <aside className="playground-side-column">

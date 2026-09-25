@@ -1,7 +1,9 @@
 """Authenticated trace and span inspection routes."""
 
 import base64
+import re
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -14,6 +16,7 @@ from ..models import (
     Agent,
     Run,
     Span,
+    SpanType,
     Trace,
     TraceStatus,
     User,
@@ -27,11 +30,48 @@ from .schemas import (
     SpanDetailResponse,
     SpanSummaryResponse,
     TraceCollectionResponse,
+    TraceDetailResponse,
     TraceListItemResponse,
     TraceSummaryResponse,
 )
 
 router = APIRouter(prefix="/v1", tags=["traces"])
+
+_SECRET_FIELD = re.compile(
+    r"(?:^|[_-])(?:api[_-]?key|authorization|cookie|credential|password|private[_-]?key|secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|bearer[_-]?token|token)(?:$|[_-])",
+    re.IGNORECASE,
+)
+_SECRET_TEXT_PATTERNS = (
+    re.compile(r"\b(Bearer|Basic)\s+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bAIza[A-Za-z0-9_-]{30,}\b"),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
+)
+
+
+def _redact_trace_value(value: object) -> Any:
+    """Hide secret-shaped fields and recognizable credential strings in trace data."""
+
+    if isinstance(value, dict):
+        redacted_fields: dict[str, Any] = {}
+        for key, child in value.items():
+            name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", str(key))
+            redacted_fields[str(key)] = (
+                "[REDACTED]"
+                if _SECRET_FIELD.search(name)
+                else _redact_trace_value(child)
+            )
+        return redacted_fields
+    if isinstance(value, (list, tuple)):
+        return [_redact_trace_value(child) for child in value]
+    if isinstance(value, str):
+        redacted_text = value
+        for pattern in _SECRET_TEXT_PATTERNS:
+            redacted_text = pattern.sub("[REDACTED]", redacted_text)
+        return redacted_text
+    return value
 
 
 def _not_found(message: str) -> HTTPException:
@@ -88,15 +128,17 @@ def _trace_list_response(
         started_at=trace.started_at,
         completed_at=trace.completed_at,
         duration_ms=_duration(trace.started_at, trace.completed_at),
-        input_text=str(run.input.get("text", "")) if run else None,
-        output_text=(str(run.output.get("text", "")) if run and run.output else None)
+        input_text=(
+            str(_redact_trace_value(run.input.get("text", ""))) if run else None
+        ),
+        output_text=(
+            str(_redact_trace_value(run.output.get("text", "")))
+            if run and run.output
+            else None
+        )
         or None,
         error_code=(
-            run.error_code
-            if run
-            else workflow_run.error_code
-            if workflow_run
-            else None
+            run.error_code if run else workflow_run.error_code if workflow_run else None
         ),
     )
 
@@ -112,7 +154,7 @@ def _span_response(span: Span) -> SpanSummaryResponse:
         started_at=span.started_at,
         completed_at=span.completed_at,
         duration_ms=_duration(span.started_at, span.completed_at),
-        attributes=span.attributes,
+        attributes=_redact_trace_value(span.attributes),
         usage=span.usage,
     )
 
@@ -240,6 +282,91 @@ async def get_run_trace(
     )
 
 
+@router.get("/traces/{trace_id}", response_model=TraceDetailResponse)
+async def get_trace(
+    trace_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> TraceDetailResponse:
+    """Return workspace-scoped trace metadata and aggregate execution usage."""
+
+    trace = await _trace_for_user(session, trace_id, user)
+    root_run = (
+        await session.scalar(
+            select(Run).where(
+                Run.id == trace.root_run_id,
+                Run.workspace_id == trace.workspace_id,
+            )
+        )
+        if trace.root_run_id
+        else None
+    )
+    agent = (
+        await session.scalar(
+            select(Agent).where(
+                Agent.id == root_run.agent_id,
+                Agent.workspace_id == trace.workspace_id,
+            )
+        )
+        if root_run
+        else None
+    )
+    spans = list(
+        (
+            await session.scalars(
+                select(Span)
+                .where(Span.trace_id == trace.id)
+                .order_by(Span.started_at.asc(), Span.id.asc())
+            )
+        ).all()
+    )
+    usage: dict[str, int | bool] = {}
+    for span in spans:
+        if span.span_type != "MODEL":
+            continue
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "cached_input_tokens",
+        ):
+            value = span.usage.get(key)
+            if isinstance(value, int):
+                usage[key] = int(usage.get(key, 0)) + value
+        if span.usage.get("input_tokens_estimated") is True:
+            usage["input_tokens_estimated"] = True
+
+    runs = list(
+        (
+            await session.scalars(
+                select(Run).where(
+                    Run.trace_id == trace.id,
+                    Run.workspace_id == trace.workspace_id,
+                )
+            )
+        ).all()
+    )
+    costs = [run.estimated_cost for run in runs if run.estimated_cost is not None]
+    estimated_cost = sum(costs) if costs and len(costs) == len(runs) else None
+
+    return TraceDetailResponse(
+        id=trace.id,
+        status=trace.status,
+        started_at=trace.started_at,
+        completed_at=trace.completed_at,
+        agent_name=agent.name if agent else None,
+        run_id=trace.root_run_id,
+        session_id=root_run.session_id if root_run else None,
+        workflow_run_id=(
+            trace.workflow_run_id or (root_run.workflow_run_id if root_run else None)
+        ),
+        duration_ms=_duration(trace.started_at, trace.completed_at),
+        span_count=len(spans),
+        usage=usage,
+        estimated_cost=str(estimated_cost) if estimated_cost is not None else None,
+    )
+
+
 @router.get("/traces/{trace_id}/spans", response_model=dict[str, object])
 async def list_trace_spans(
     trace_id: UUID,
@@ -271,11 +398,21 @@ async def get_span(
     if span is None:
         raise _not_found("The span was not found.")
     trace = await _trace_for_user(session, span.trace_id, user)
-    del trace
     summary = _span_response(span)
+    estimated_cost = None
+    if span.span_type == SpanType.RUN and span.run_id:
+        run = await session.scalar(
+            select(Run).where(
+                Run.id == span.run_id,
+                Run.workspace_id == trace.workspace_id,
+            )
+        )
+        if run and run.estimated_cost is not None:
+            estimated_cost = str(run.estimated_cost)
     return SpanDetailResponse(
         **summary.model_dump(),
-        input=span.input,
-        output=span.output,
-        error=span.error_json,
+        input=_redact_trace_value(span.input),
+        output=_redact_trace_value(span.output),
+        error=_redact_trace_value(span.error_json),
+        estimated_cost=estimated_cost,
     )

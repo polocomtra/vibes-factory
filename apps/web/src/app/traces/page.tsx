@@ -152,25 +152,13 @@ function TraceGridCard({
                           ? `Workflow run ${trace.workflow_run_id}`
                           : `Trace ${trace.id}`}
                 </code>
-                {trace.session_id ? (
-                    <button
-                        className="text-button"
-                        type="button"
-                        onClick={() => onOpenTrace(trace)}
-                    >
-                        Open session <span aria-hidden="true">→</span>
-                    </button>
-                ) : trace.workflow_id ? (
-                    <button
-                        className="text-button trace-workflow-open-button"
-                        type="button"
-                        onClick={() => onOpenTrace(trace)}
-                    >
-                        Open workflow<span aria-hidden="true">→</span>
-                    </button>
-                ) : (
-                    <span className="trace-no-session">No session</span>
-                )}
+                <button
+                    className="text-button"
+                    type="button"
+                    onClick={() => onOpenTrace(trace)}
+                >
+                    Open trace <span aria-hidden="true">→</span>
+                </button>
             </footer>
         </article>
     );
@@ -212,25 +200,13 @@ function TraceListRow({
                     : trace.id.slice(0, 12)}
                 …
             </code>
-            {trace.session_id ? (
-                <button
-                    className="button secondary-button trace-open-button"
-                    type="button"
-                    onClick={() => onOpenTrace(trace)}
-                >
-                    Open session
-                </button>
-            ) : trace.workflow_id ? (
-                <button
-                    className="button secondary-button trace-open-button trace-workflow-open-button"
-                    type="button"
-                    onClick={() => onOpenTrace(trace)}
-                >
-                    Open to Workflow Run History
-                </button>
-            ) : (
-                <span className="trace-no-session">No session</span>
-            )}
+            <button
+                className="button secondary-button trace-open-button"
+                type="button"
+                onClick={() => onOpenTrace(trace)}
+            >
+                Open trace
+            </button>
         </article>
     );
 }
@@ -376,12 +352,7 @@ export default function TracesPage() {
     }
 
     function openTrace(trace: TraceSessionItem) {
-        if (trace.session_id && trace.agent_id)
-            router.push(
-                `/agents/${trace.agent_id}/playground?session_id=${trace.session_id}`,
-            );
-        else if (trace.workflow_id)
-            router.push(`/workflows/${trace.workflow_id}/runs`);
+        router.push(`/traces/${trace.id}`);
     }
 
     return (

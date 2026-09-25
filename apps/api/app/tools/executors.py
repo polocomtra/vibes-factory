@@ -3,8 +3,7 @@
 import ast
 import asyncio
 import hashlib
-import ipaddress
-import socket
+import math
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from time import monotonic
@@ -15,12 +14,20 @@ import httpx
 import structlog
 from pydantic import SecretStr
 
+from ..outbound_network import (
+    is_blocked_address,
+    pin_transport_to_addresses,
+    resolve_host_addresses,
+)
 from .contracts import ToolExecutionContext, ToolResult
 
 if TYPE_CHECKING:
     from ..credentials.service import ResolvedCredential
 
 HTTP_RESPONSE_LIMIT = 100_000
+_CALCULATOR_MAX_AST_NODES = 100
+_CALCULATOR_MAX_INTEGER_BITS = 4_096
+_CALCULATOR_MAX_EXPONENT = 4_096
 _EXA_MAX_RESULTS = 10
 _EXA_MAX_HIGHLIGHTS = 5
 _EXA_MAX_HIGHLIGHT_CHARS = 2_000
@@ -282,19 +289,7 @@ def _resolve_template(
     return "".join(pieces)
 
 
-def _blocked_ip(address: str) -> bool:
-    ip = ipaddress.ip_address(address)
-    return bool(
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_unspecified
-        or ip.is_multicast
-        or ip.is_reserved
-    )
-
-
-async def _assert_public_destination(url: str) -> None:
+async def _assert_public_destination(url: str) -> tuple[str, ...]:
     parsed = urlparse(url)
     hostname = (parsed.hostname or "").lower().rstrip(".")
     if hostname in _BLOCKED_HOSTNAMES or hostname.endswith(".localhost"):
@@ -303,48 +298,80 @@ async def _assert_public_destination(url: str) -> None:
             code="HTTP_PRIVATE_DESTINATION",
         )
     try:
-        addresses = await asyncio.to_thread(
-            socket.getaddrinfo,
-            hostname,
-            parsed.port or (443 if parsed.scheme == "https" else 80),
-            type=socket.SOCK_STREAM,
+        addresses = await resolve_host_addresses(
+            hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
         )
-    except OSError as exc:
+    except ValueError as exc:
         raise HttpToolConfigError(
             "The HTTP destination could not be resolved.", code="HTTP_URL_INVALID"
         ) from exc
-    if not addresses:
-        raise HttpToolConfigError(
-            "The HTTP destination could not be resolved.", code="HTTP_URL_INVALID"
-        )
     for address in addresses:
-        resolved = address[4][0]
-        if not isinstance(resolved, str) or _blocked_ip(resolved):
+        if is_blocked_address(address):
             raise HttpToolConfigError(
                 "Private and local HTTP destinations are blocked.",
                 code="HTTP_PRIVATE_DESTINATION",
             )
+    return addresses
 
 
 def _safe_calculate(expression: str) -> float | int:
+    node_count = 0
+
     def walk(node: ast.AST) -> float | int:
+        nonlocal node_count
+        node_count += 1
+        if node_count > _CALCULATOR_MAX_AST_NODES:
+            raise ValueError("Expression is too complex")
+
         if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-            return node.value
+            value = node.value
+            if isinstance(value, bool):
+                raise ValueError("Boolean values are not supported")
+            if (
+                isinstance(value, int)
+                and value.bit_length() > _CALCULATOR_MAX_INTEGER_BITS
+            ):
+                raise ValueError("Integer value is too large")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise ValueError("Non-finite values are not supported")
+            return value
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
-            return -walk(node.operand)
-        if isinstance(node, ast.BinOp):
+            value = -walk(node.operand)
+        elif isinstance(node, ast.BinOp):
             left, right = walk(node.left), walk(node.right)
             if isinstance(node.op, ast.Add):
-                return left + right
-            if isinstance(node.op, ast.Sub):
-                return left - right
-            if isinstance(node.op, ast.Mult):
-                return left * right
-            if isinstance(node.op, ast.Div):
-                return left / right
-            if isinstance(node.op, ast.Pow):
-                return left**right
-        raise ValueError("Unsupported expression")
+                value = left + right
+            elif isinstance(node.op, ast.Sub):
+                value = left - right
+            elif isinstance(node.op, ast.Mult):
+                value = left * right
+            elif isinstance(node.op, ast.Div):
+                value = left / right
+            elif isinstance(node.op, ast.Pow):
+                if abs(right) > _CALCULATOR_MAX_EXPONENT:
+                    raise ValueError("Exponent is too large")
+                if (
+                    isinstance(left, int)
+                    and isinstance(right, int)
+                    and right > 0
+                    and abs(left) > 1
+                    and (abs(left).bit_length() - 1) * right + 1
+                    > _CALCULATOR_MAX_INTEGER_BITS
+                ):
+                    raise ValueError("Power result is too large")
+                value = left**right
+            else:
+                raise ValueError("Unsupported expression")
+        else:
+            raise ValueError("Unsupported expression")
+
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("Unsupported numeric result")
+        if isinstance(value, int) and value.bit_length() > _CALCULATOR_MAX_INTEGER_BITS:
+            raise ValueError("Integer result is too large")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("Non-finite results are not supported")
+        return value
 
     return walk(ast.parse(expression, mode="eval").body)
 
@@ -624,6 +651,7 @@ class HttpToolExecutor:
         self.retry_policy = retry_policy or {}
         self.idempotent = idempotent
         self.credential = credential
+        self._validated_destination: tuple[str, tuple[str, ...]] | None = None
 
     async def _request_once(
         self,
@@ -634,8 +662,17 @@ class HttpToolExecutor:
         body: Mapping[str, Any] | None,
         timeout_seconds: float,
     ) -> ToolResult:
+        validated_destination = self._validated_destination
+        if validated_destination is None:
+            raise RuntimeError("The HTTP destination was not validated.")
+        hostname, addresses = validated_destination
+        transport = httpx.AsyncHTTPTransport(trust_env=False)
+        pin_transport_to_addresses(transport, hostname, addresses)
         async with httpx.AsyncClient(
-            follow_redirects=False, timeout=timeout_seconds, trust_env=False
+            follow_redirects=False,
+            timeout=timeout_seconds,
+            trust_env=False,
+            transport=transport,
         ) as client:
             request_kwargs: dict[str, Any] = {"headers": headers, "params": params}
             if method not in {"GET", "HEAD"}:
@@ -669,7 +706,9 @@ class HttpToolExecutor:
             if not isinstance(path, str):
                 raise HttpToolConfigError("HTTP path mapping must resolve to text.")
             url = self.config["base_url"].rstrip("/") + "/" + path.lstrip("/")
-            await _assert_public_destination(url)
+            addresses = await _assert_public_destination(url)
+            hostname = urlparse(url).hostname or ""
+            self._validated_destination = (hostname, addresses)
             headers = _resolve_template(
                 self.config["headers"], arguments, self.credential
             )

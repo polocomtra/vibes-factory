@@ -20,6 +20,7 @@ from .schemas import (
     SessionCollection,
     SessionCreateRequest,
     SessionResponse,
+    SessionUpdateRequest,
 )
 
 router = APIRouter(prefix="/v1", tags=["sessions"])
@@ -168,6 +169,22 @@ async def get_session_route(
     session: AsyncSession = Depends(get_session),
 ) -> SessionResponse:
     return _session_response(await _owned_session(session, session_id, user))
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionResponse)
+async def update_session_route(
+    session_id: UUID,
+    payload: SessionUpdateRequest,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> SessionResponse:
+    item = await _owned_session(session, session_id, user)
+    item.title = (
+        payload.title.strip() if payload.title and payload.title.strip() else None
+    )
+    await session.commit()
+    await session.refresh(item)
+    return _session_response(item)
 
 
 @router.get("/sessions/{session_id}/messages", response_model=MessageCollection)

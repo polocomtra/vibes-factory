@@ -15,6 +15,12 @@ class SessionCreateRequest(BaseModel):
     title: str | None = Field(default=None, max_length=255)
 
 
+class SessionUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(max_length=255)
+
+
 class SessionResponse(BaseModel):
     id: UUID
     agent_id: UUID
