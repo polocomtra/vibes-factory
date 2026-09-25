@@ -62,9 +62,11 @@ class Settings(BaseSettings):
     workflow_heartbeat_seconds: int = Field(default=30, ge=5, le=300)
     workflow_event_heartbeat_seconds: int = Field(default=15, ge=5, le=120)
     workflow_default_timeout_seconds: int = Field(default=900, ge=1, le=3_600)
+    approval_default_ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
+    approval_sweep_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
-    azure_openai_deployment_name: str = "gpt-5.6-luna"
+    azure_openai_deployment_name: str = "gpt-6-luna"
     # These are estimates for the configured Azure deployment, not provider
     # billing data. Override them with the rates from the Azure pricing plan.
     azure_openai_input_price_per_million: Decimal | None = Decimal("1.25")

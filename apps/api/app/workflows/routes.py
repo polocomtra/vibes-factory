@@ -26,6 +26,8 @@ from ..auth.dependencies import get_current_user
 from ..config import get_settings
 from ..db import SessionFactory, get_session
 from ..models import (
+    ApprovalRequest,
+    ApprovalStatus,
     Job,
     JobStatus,
     JobType,
@@ -642,6 +644,10 @@ async def stream_workflow_events(
                     WorkflowRunStatus.FAILED,
                     WorkflowRunStatus.CANCELLED,
                 }
+                waiting = (
+                    current_run is not None
+                    and current_run.status == WorkflowRunStatus.WAITING_APPROVAL
+                )
             for row in rows:
                 cursor = row.sequence
                 yield _sse(
@@ -654,7 +660,7 @@ async def stream_workflow_events(
                         data=row.data,
                     )
                 )
-            if terminal and not rows:
+            if (terminal or waiting) and not rows:
                 return
             if not rows:
                 yield ": heartbeat\n\n"
@@ -686,5 +692,28 @@ async def cancel_workflow_run(
     }:
         return await _run_response(session, run)
     run.cancel_requested_at = datetime.now(UTC)
+    pending = list(
+        (
+            await session.scalars(
+                select(ApprovalRequest)
+                .where(
+                    ApprovalRequest.workflow_run_id == run.id,
+                    ApprovalRequest.status == ApprovalStatus.PENDING,
+                )
+                .with_for_update()
+            )
+        ).all()
+    )
+    now = datetime.now(UTC)
+    for request in pending:
+        request.status = ApprovalStatus.EXPIRED
+        request.resolved_at = now
+        request.metadata_json = {
+            **request.metadata_json,
+            "resolution_reason": "WORKFLOW_CANCELLED",
+        }
+        # A cancelled workflow must never be revived by a stale queue job.
+        request.continuation_status = "COMPLETED"
+        request.continuation_completed_at = now
     await session.commit()
     return await _run_response(session, run)

@@ -71,6 +71,7 @@ class WorkflowRunStatus(StrEnum):
 
 class WorkflowNodeStatus(StrEnum):
     RUNNING = "RUNNING"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -83,6 +84,7 @@ class WorkflowNodeType(StrEnum):
     TOOL = "TOOL"
     CONDITION = "CONDITION"
     TRANSFORM = "TRANSFORM"
+    APPROVAL = "APPROVAL"
 
 
 class WorkflowEventType(StrEnum):
@@ -91,6 +93,8 @@ class WorkflowEventType(StrEnum):
     WORKFLOW_NODE_STARTED = "workflow.node_started"
     WORKFLOW_NODE_COMPLETED = "workflow.node_completed"
     WORKFLOW_NODE_FAILED = "workflow.node_failed"
+    APPROVAL_REQUIRED = "approval.required"
+    APPROVAL_RESOLVED = "approval.resolved"
     CHILD_AGENT_STARTED = "child_agent.started"
     CHILD_AGENT_COMPLETED = "child_agent.completed"
     CHILD_AGENT_FAILED = "child_agent.failed"
@@ -117,6 +121,7 @@ class SpanType(StrEnum):
     RETRIEVAL = "RETRIEVAL"
     MEMORY_RETRIEVAL = "MEMORY_RETRIEVAL"
     GUARDRAIL = "GUARDRAIL"
+    APPROVAL = "APPROVAL"
 
 
 class MemoryType(StrEnum):
@@ -144,6 +149,7 @@ class JobType(StrEnum):
     DOCUMENT_CLEANUP = "DOCUMENT_CLEANUP"
     MEMORY_EXTRACTION = "MEMORY_EXTRACTION"
     WORKFLOW_EXECUTION = "WORKFLOW_EXECUTION"
+    APPROVAL_RESUME = "APPROVAL_RESUME"
 
 
 class JobStatus(StrEnum):
@@ -195,6 +201,18 @@ class GuardrailHook(StrEnum):
     MODEL_OUTPUT = "MODEL_OUTPUT"
     TOOL_INPUT = "TOOL_INPUT"
     TOOL_OUTPUT = "TOOL_OUTPUT"
+
+
+class ApprovalKind(StrEnum):
+    TOOL_CALL = "TOOL_CALL"
+    WORKFLOW_NODE = "WORKFLOW_NODE"
+
+
+class ApprovalStatus(StrEnum):
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
 
 
 class User(Base):
@@ -1834,6 +1852,100 @@ class Run(Base):
         Index("ix_runs_root_run_id", "root_run_id"),
         Index("ix_runs_workflow_run_id", "workflow_run_id"),
         Index("ix_runs_status_created", "status", "created_at"),
+    )
+
+
+class ApprovalRequest(Base):
+    __tablename__ = "approval_requests"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[ApprovalKind] = mapped_column(
+        Enum(ApprovalKind, native_enum=False, length=32), nullable=False
+    )
+    run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("runs.id", ondelete="RESTRICT")
+    )
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="RESTRICT"),
+    )
+    workflow_node_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_node_runs.id", ondelete="RESTRICT"),
+    )
+    tool_version_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("tool_versions.id", ondelete="RESTRICT"),
+    )
+    approval_span_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("spans.id", ondelete="SET NULL")
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[ApprovalStatus] = mapped_column(
+        Enum(ApprovalStatus, native_enum=False, length=32),
+        default=ApprovalStatus.PENDING,
+        nullable=False,
+    )
+    requested_action: Mapped[str] = mapped_column(String(255), nullable=False)
+    arguments: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    risk_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_by: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=True
+    )
+    continuation_status: Mapped[str] = mapped_column(
+        String(32), default="PENDING", server_default="PENDING", nullable=False
+    )
+    continuation_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    continuation_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    continuation_error: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB, nullable=True
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'TOOL_CALL' AND run_id IS NOT NULL AND "
+            "tool_version_id IS NOT NULL AND tool_call_id IS NOT NULL) "
+            "OR (kind = 'WORKFLOW_NODE' AND workflow_run_id IS NOT NULL "
+            "AND workflow_node_run_id IS NOT NULL)",
+            name="ck_approval_request_target",
+        ),
+        Index(
+            "ix_approval_requests_workspace_status_expiry",
+            "workspace_id",
+            "status",
+            "expires_at",
+        ),
+        Index("ix_approval_requests_run_status", "run_id", "status"),
+        Index("ix_approval_requests_workflow_status", "workflow_run_id", "status"),
+        UniqueConstraint(
+            "run_id", "tool_call_id", name="uq_approval_requests_run_tool_call"
+        ),
+        UniqueConstraint("workflow_node_run_id", name="uq_approval_requests_node_run"),
     )
 
 

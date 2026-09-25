@@ -108,6 +108,7 @@ def _run_response(run: Run) -> RunResponse:
         agent_id=run.agent_id,
         agent_version_id=run.agent_version_id,
         session_id=run.session_id,
+        workflow_run_id=run.workflow_run_id,
         parent_run_id=run.parent_run_id,
         root_run_id=run.root_run_id,
         agent_depth=run.agent_depth,
@@ -382,6 +383,10 @@ async def create_run(
             ModelProviderRegistry.from_settings(get_settings()),
         ).run(request)
     except RuntimeExecutionError as error:
+        if error.code == "GUARDRAIL_APPROVAL_REQUIRED" and error.run_id is not None:
+            waiting = await session.get(Run, error.run_id)
+            if waiting is not None:
+                return _run_response(waiting)
         raise HTTPException(
             status_code=error.status_code,
             detail={

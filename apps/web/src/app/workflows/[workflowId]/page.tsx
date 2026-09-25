@@ -13,7 +13,6 @@ import {
     type Agent,
     type AgentVersionSummary,
 } from "../../../lib/agents";
-import { apiFetch, readApiError } from "../../../lib/api";
 import { fetchTools, type Tool } from "../../../lib/tools";
 import {
     fetchWorkflow,
@@ -47,6 +46,7 @@ export default function WorkflowDetailPage() {
     const [draft, setDraft] = useState<WorkflowDraft | null>(null);
     const [latestVersionId, setLatestVersionId] = useState<string | null>(null);
     const [agents, setAgents] = useState<Agent[]>([]);
+    const [agentsLoading, setAgentsLoading] = useState(true);
     const [agentVersions, setAgentVersions] = useState<AgentVersionSummary[]>(
         [],
     );
@@ -97,43 +97,36 @@ export default function WorkflowDetailPage() {
     useEffect(() => {
         let cancelled = false;
         async function load() {
+            setAgentsLoading(true);
+            setAgents([]);
+            setAgentVersions([]);
+            setTools([]);
+            setError(null);
             try {
-                const [nextWorkflow, nextDraft, versions, workspaceResponse] =
-                    await Promise.all([
-                        fetchWorkflow(params.workflowId),
-                        fetchWorkflowDraft(params.workflowId),
-                        fetchWorkflowVersions(params.workflowId),
-                        apiFetch("/v1/workspaces"),
-                    ]);
+                const [nextWorkflow, nextDraft, versions] = await Promise.all([
+                    fetchWorkflow(params.workflowId),
+                    fetchWorkflowDraft(params.workflowId),
+                    fetchWorkflowVersions(params.workflowId),
+                ]);
                 if (!cancelled) {
                     setWorkflow(nextWorkflow);
                     setDraft(nextDraft);
                     setLatestVersionId(versions[0]?.id ?? null);
                 }
-                if (!workspaceResponse.ok) return;
-                const workspaceBody = (await workspaceResponse.json()) as {
-                    data: Array<{ id: string }>;
-                };
-                const savedWorkspaceId =
-                    window.localStorage.getItem("vf-workspace-id");
-                const workspaceId =
-                    workspaceBody.data.find(
-                        (workspace) => workspace.id === savedWorkspaceId,
-                    )?.id ?? workspaceBody.data[0]?.id;
-                if (!workspaceId) throw new Error("No workspace is available.");
                 const [nextAgents, nextTools] = await Promise.all([
-                    fetchAgents(workspaceId),
-                    fetchTools(workspaceId),
+                    fetchAgents(nextWorkflow.workspace_id),
+                    fetchTools(nextWorkflow.workspace_id),
                 ]);
+                if (cancelled) return;
+                setAgents(nextAgents);
+                setTools(nextTools);
                 const nextAgentVersions = (
                     await Promise.all(
                         nextAgents.map((agent) => fetchVersions(agent.id)),
                     )
                 ).flat();
                 if (cancelled) return;
-                setAgents(nextAgents);
                 setAgentVersions(nextAgentVersions);
-                setTools(nextTools);
             } catch (reason: unknown) {
                 if (!cancelled)
                     setError(
@@ -141,6 +134,8 @@ export default function WorkflowDetailPage() {
                             ? reason.message
                             : "Unable to load workflow.",
                     );
+            } finally {
+                if (!cancelled) setAgentsLoading(false);
             }
         }
         void load();
@@ -208,6 +203,7 @@ export default function WorkflowDetailPage() {
                             workflowId={workflow.id}
                             initialDraft={draft}
                             latestVersionId={latestVersionId}
+                            agentsLoading={agentsLoading}
                             agents={agents}
                             agentVersions={agentVersions}
                             tools={tools}

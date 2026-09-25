@@ -84,12 +84,12 @@ The publishable key is used by the browser. Never commit `.env`, `.env.local`, d
 
 ### Default Azure OpenAI model
 
-The agent creation form uses the backend catalog default `azure_openai / gpt-5.6-luna`. Configure the backend-only Azure credential in `.env`:
+The agent creation form uses the backend catalog default `azure_openai / gpt-6-luna`. Configure the backend-only Azure credential in `.env`:
 
 ```bash
 VF_AZURE_OPENAI_API_KEY=your_azure_openai_api_key
 VF_AZURE_OPENAI_BASE_URL=https://your-resource.services.ai.azure.com/openai/v1
-VF_AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5.6-luna
+VF_AZURE_OPENAI_DEPLOYMENT_NAME=gpt-6-luna
 ```
 
 The API key is never sent to the browser or stored in AgentDraft/AgentVersion. Agent creation stores only the provider and model configuration; model execution will consume the configured environment credential in the runtime milestone.

@@ -2627,3 +2627,14 @@ cancellation, and terminal evidence. Child-agent draft/version binding tables
 pin exact `AgentVersion` identities. Existing `runs`, `traces`, and `spans`
 carry workflow correlation fields and `agent_depth`; workflow/child span types
 are explicitly enumerated.
+
+## Phase 14 additions
+
+Migration `0015_phase14_approvals` adds the durable `approval_requests`
+record. It is workspace-scoped, pins the target run/workflow node and
+published tool version, stores redacted arguments and risk reason, and tracks
+pending/resolved/expired state plus idempotent continuation timestamps.
+Composite indexes support queue ordering, expiry sweeps and run/workflow
+lookups. Unique constraints prevent duplicate approvals for the same tool call
+or workflow node run. Approval resolution and the `APPROVAL_RESUME` job are
+committed together.

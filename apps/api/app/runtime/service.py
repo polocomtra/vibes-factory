@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..approvals.service import create_approval, mark_tool_run_waiting
 from ..config import get_settings
 from ..credentials.service import DatabaseCredentialResolver
 from ..guardrails.contracts import (
@@ -40,6 +41,9 @@ from ..model_providers.errors import ProviderError
 from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
     Agent,
+    ApprovalKind,
+    ApprovalRequest,
+    ApprovalStatus,
     GuardrailHook,
     Job,
     JobStatus,
@@ -256,6 +260,7 @@ class AgentRuntime:
         tool_name: str | None = None,
         tool_risk: ToolRiskLevel | None = None,
         tool_side_effect: bool = False,
+        approval_resolved: bool = False,
     ) -> GuardrailEvaluation:
         started = datetime.now(UTC)
         try:
@@ -288,8 +293,11 @@ class AgentRuntime:
             name=f"guardrail.{hook.value.lower()}",
             status=(
                 SpanStatus.FAILED
-                if evaluation.decision
-                in {GuardrailDecision.BLOCK, GuardrailDecision.REQUIRE_APPROVAL}
+                if evaluation.decision == GuardrailDecision.BLOCK
+                or (
+                    evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL
+                    and not approval_resolved
+                )
                 else SpanStatus.COMPLETED
             ),
             input={"hook": hook.value, "bytes": evaluation.input_bytes},
@@ -306,6 +314,7 @@ class AgentRuntime:
                 "rule_id": evaluation.rule_id,
                 "reason_code": evaluation.reason_code,
                 "match_count": evaluation.match_count,
+                "approval_resolved": approval_resolved,
                 "duration_ms": max(
                     0, int((datetime.now(UTC) - started).total_seconds() * 1000)
                 ),
@@ -319,8 +328,11 @@ class AgentRuntime:
                     ),
                     "message": "The guardrail blocked this operation.",
                 }
-                if evaluation.decision
-                in {GuardrailDecision.BLOCK, GuardrailDecision.REQUIRE_APPROVAL}
+                if evaluation.decision == GuardrailDecision.BLOCK
+                or (
+                    evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL
+                    and not approval_resolved
+                )
                 else None
             ),
             started_at=started,
@@ -328,7 +340,10 @@ class AgentRuntime:
         )
         self.session.add(span)
         await self.session.commit()
-        if evaluation.triggered:
+        if evaluation.triggered and not (
+            approval_resolved
+            and evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL
+        ):
             self._guardrail_events.append(
                 {
                     "run_id": str(run.id),
@@ -429,24 +444,25 @@ class AgentRuntime:
         retrieval_span: Span | None = None
         _memory_span: Span | None = None
         try:
-            request = await self._apply_input_guardrail(
-                request, run, root_span, user_message, trace
-            )
-            if request.agent_version.memory is not None:
-                request, _memory_span = await self._retrieve_memory(
-                    request, run, trace, root_span
+            if request.resume_run_id is None:
+                request = await self._apply_input_guardrail(
+                    request, run, root_span, user_message, trace
                 )
-            if should_retrieve_knowledge(request):
-                request, retrieval_span = await self._retrieve_knowledge(
-                    request, run, trace, root_span
-                )
-            elif request.agent_version.knowledge_bases:
-                logger.info(
-                    "knowledge_retrieval_skipped",
-                    run_id=str(run.id),
-                    trace_id=str(trace.id),
-                    reason="external_research_intent",
-                )
+                if request.agent_version.memory is not None:
+                    request, _memory_span = await self._retrieve_memory(
+                        request, run, trace, root_span
+                    )
+                if should_retrieve_knowledge(request):
+                    request, retrieval_span = await self._retrieve_knowledge(
+                        request, run, trace, root_span
+                    )
+                elif request.agent_version.knowledge_bases:
+                    logger.info(
+                        "knowledge_retrieval_skipped",
+                        run_id=str(run.id),
+                        trace_id=str(trace.id),
+                        reason="approval_resume",
+                    )
             context_span = Span(
                 id=uuid4(),
                 trace_id=trace.id,
@@ -510,6 +526,126 @@ class AgentRuntime:
                 request.agent_version.model_provider
             )
             response: ModelResponse | None = None
+            if request.resume_approval_id is not None:
+                approval = await self.session.get(
+                    ApprovalRequest, request.resume_approval_id
+                )
+                if (
+                    approval is None
+                    or approval.status != ApprovalStatus.APPROVED
+                    or approval.run_id != run.id
+                ):
+                    raise RuntimeExecutionError(
+                        "APPROVAL_STATE_INVALID",
+                        "The approval continuation is invalid.",
+                        status_code=409,
+                    )
+                pending_call: ModelToolCall | None = None
+                batch_calls: list[ModelToolCall] = []
+                for message in reversed(request.session.messages):
+                    if message.role == "ASSISTANT" and message.tool_calls:
+                        batch_calls = [
+                            ModelToolCall.model_validate(raw_call)
+                            for raw_call in message.tool_calls
+                        ]
+                        for candidate in batch_calls:
+                            if candidate.id == approval.tool_call_id:
+                                pending_call = candidate.model_copy(
+                                    update={"arguments": approval.arguments}
+                                )
+                                break
+                    if pending_call is not None:
+                        break
+                if pending_call is None:
+                    raise RuntimeExecutionError(
+                        "APPROVAL_TOOL_CALL_MISSING",
+                        "The approved tool call is no longer present in the run "
+                        "history.",
+                        status_code=409,
+                    )
+                resume_span = Span(
+                    id=uuid4(),
+                    trace_id=trace.id,
+                    parent_span_id=root_span.id,
+                    run_id=run.id,
+                    span_type=SpanType.MODEL,
+                    name="approval.resume",
+                    status=SpanStatus.COMPLETED,
+                    started_at=datetime.now(UTC),
+                    attributes={"approval_request_id": str(approval.id)},
+                )
+                self.session.add(resume_span)
+                await self.session.flush()
+                resume_records = await self._execute_tool_calls(
+                    request,
+                    run,
+                    trace,
+                    resume_span,
+                    (pending_call,),
+                    timeout_seconds=tracker.remaining_seconds(),
+                    approved_call_id=pending_call.id,
+                    persist_assistant=False,
+                )
+                approval.continuation_status = "RUNNING"
+                approval.continuation_started_at = datetime.now(UTC)
+                run.status = RunStatus.RUNNING
+                approval_span = (
+                    await self.session.get(Span, approval.approval_span_id)
+                    if approval.approval_span_id
+                    else None
+                )
+                if approval_span is not None:
+                    approval_span.status = SpanStatus.COMPLETED
+                    approval_span.completed_at = datetime.now(UTC)
+                # Continue the original model batch in order.  Safe calls after
+                # the approved call execute immediately; the next approval
+                # pauses the run again without asking the model to regenerate
+                # any arguments.
+                if batch_calls:
+                    approved_index = next(
+                        (
+                            index
+                            for index, item in enumerate(batch_calls)
+                            if item.id == pending_call.id
+                        ),
+                        len(batch_calls) - 1,
+                    )
+                    remaining_calls = tuple(batch_calls[approved_index + 1 :])
+                    if remaining_calls:
+                        batch_span = Span(
+                            id=uuid4(),
+                            trace_id=trace.id,
+                            parent_span_id=root_span.id,
+                            run_id=run.id,
+                            span_type=SpanType.MODEL,
+                            name="approval.batch.resume",
+                            status=SpanStatus.COMPLETED,
+                            started_at=datetime.now(UTC),
+                            attributes={"approval_request_id": str(approval.id)},
+                        )
+                        self.session.add(batch_span)
+                        await self.session.flush()
+                        resume_records.extend(
+                            await self._execute_tool_calls(
+                                request,
+                                run,
+                                trace,
+                                batch_span,
+                                remaining_calls,
+                                timeout_seconds=tracker.remaining_seconds(),
+                                persist_assistant=False,
+                            )
+                        )
+                context = ContextBuildResult(
+                    request=context.request.model_copy(
+                        update={
+                            "messages": tuple(context.request.messages)
+                            + tuple(record.message for record in resume_records)
+                        }
+                    ),
+                    input_token_estimate=estimate_model_request(context.request),
+                )
+                await self.session.commit()
             while True:
                 remaining = tracker.begin_model_call()
                 model_span = Span(
@@ -610,6 +746,22 @@ class AgentRuntime:
                 usage,
             )
         except RuntimeExecutionError as error:
+            if error.code == "GUARDRAIL_APPROVAL_REQUIRED" and error.run_id is not None:
+                return AgentRunResult(
+                    run_id=error.run_id,
+                    trace_id=error.trace_id or trace.id,
+                    agent_version_id=request.agent_version.id,
+                    session_id=request.session.id,
+                    status="WAITING_APPROVAL",
+                    usage=(
+                        TokenUsage.model_validate(self._execution_context.snapshot())
+                        if self._execution_context is not None
+                        else TokenUsage()
+                    ),
+                    citations=request.citations,
+                    started_at=run.started_at or datetime.now(UTC),
+                    completed_at=None,
+                )
             await self._fail_run(
                 run.id,
                 trace.id,
@@ -1125,6 +1277,21 @@ class AgentRuntime:
                 },
             )
         except RuntimeExecutionError as error:
+            if error.code == "GUARDRAIL_APPROVAL_REQUIRED" and error.run_id is not None:
+                while self._guardrail_events:
+                    yield RuntimeStreamEvent(
+                        event="guardrail.triggered",
+                        data=self._guardrail_events.pop(0),
+                    )
+                yield RuntimeStreamEvent(
+                    event="approval.required",
+                    data={
+                        "run_id": str(error.run_id),
+                        "trace_id": str(error.trace_id or trace.id),
+                        **error.details,
+                    },
+                )
+                return
             await self._fail_run(
                 run.id,
                 trace.id,
@@ -1238,6 +1405,8 @@ class AgentRuntime:
         calls: tuple[ModelToolCall, ...],
         *,
         timeout_seconds: float,
+        approved_call_id: str | None = None,
+        persist_assistant: bool = True,
     ) -> list[ToolExecutionRecord]:
         """Resolve published bindings and execute through the shared pipeline."""
         execution_context = self._execution_context
@@ -1282,10 +1451,14 @@ class AgentRuntime:
                     tool_name=call.name,
                     tool_risk=version.risk_level,
                     tool_side_effect=version.side_effect,
+                    approval_resolved=call.id == approved_call_id,
                 )
                 if evaluation.decision == GuardrailDecision.BLOCK:
                     blocked_code = "TOOL_GUARDRAIL_BLOCKED"
-                elif evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL:
+                elif (
+                    evaluation.decision == GuardrailDecision.REQUIRE_APPROVAL
+                    and call.id != approved_call_id
+                ):
                     blocked_code = "GUARDRAIL_APPROVAL_REQUIRED"
                 elif isinstance(evaluation.value, dict):
                     safe_call = call.model_copy(update={"arguments": evaluation.value})
@@ -1299,22 +1472,24 @@ class AgentRuntime:
             )
         )
         next_sequence = int(sequence or 0) + 1
-        self.session.add(
-            Message(
-                id=uuid4(),
-                workspace_id=request.workspace_id,
-                session_id=request.session.id,
-                run_id=run.id,
-                role=MessageRole.ASSISTANT,
-                sequence_no=next_sequence,
-                content={
-                    "type": "tool_calls",
-                    "tool_calls": [
-                        redactor.redact(call.model_dump()) for call, _ in prepared_calls
-                    ],
-                },
+        if persist_assistant:
+            self.session.add(
+                Message(
+                    id=uuid4(),
+                    workspace_id=request.workspace_id,
+                    session_id=request.session.id,
+                    run_id=run.id,
+                    role=MessageRole.ASSISTANT,
+                    sequence_no=next_sequence,
+                    content={
+                        "type": "tool_calls",
+                        "tool_calls": [
+                            redactor.redact(call.model_dump())
+                            for call, _ in prepared_calls
+                        ],
+                    },
+                )
             )
-        )
         next_sequence += 1
         for call, blocked_code in prepared_calls:
             runtime_tool = by_name.get(call.name)
@@ -1324,6 +1499,54 @@ class AgentRuntime:
             version = version_pair[0] if version_pair else None
             catalog_tool = version_pair[1] if version_pair else None
             started = datetime.now(UTC)
+            if blocked_code == "GUARDRAIL_APPROVAL_REQUIRED":
+                # Persist the model's redacted tool batch and every completed
+                # predecessor before suspending.  The worker resumes this
+                # exact call; it never asks the model to regenerate arguments.
+                await self.session.commit()
+                approval_span = Span(
+                    id=uuid4(),
+                    trace_id=trace.id,
+                    parent_span_id=parent_span.id,
+                    run_id=run.id,
+                    span_type=SpanType.APPROVAL,
+                    name=f"approval.{call.name}",
+                    status=SpanStatus.RUNNING,
+                    input={"tool": call.name, "tool_call_id": call.id},
+                    attributes={
+                        "tool_version_id": str(version.id) if version else None,
+                        "risk_reason": "A published guardrail requires human approval.",
+                    },
+                    started_at=datetime.now(UTC),
+                )
+                self.session.add(approval_span)
+                await self.session.flush()
+                approval = await create_approval(
+                    self.session,
+                    workspace_id=request.workspace_id,
+                    kind=ApprovalKind.TOOL_CALL,
+                    run_id=run.id,
+                    workflow_run_id=run.workflow_run_id,
+                    tool_version_id=version.id if version else None,
+                    tool_call_id=call.id,
+                    approval_span_id=approval_span.id,
+                    requested_action=call.name,
+                    arguments=redactor.redact(call.arguments),
+                    risk_reason="A published guardrail requires human approval.",
+                    metadata={"tool_name": call.name},
+                )
+                await mark_tool_run_waiting(self.session, run)
+                parent_span.status = SpanStatus.COMPLETED
+                parent_span.completed_at = datetime.now(UTC)
+                await self.session.commit()
+                raise RuntimeExecutionError(
+                    "GUARDRAIL_APPROVAL_REQUIRED",
+                    "This tool call requires approval before it can execute.",
+                    status_code=202,
+                    run_id=run.id,
+                    trace_id=trace.id,
+                    details={"approval_request_id": str(approval.id)},
+                )
             span = Span(
                 id=uuid4(),
                 trace_id=trace.id,
@@ -1583,7 +1806,11 @@ class AgentRuntime:
                             result = {
                                 "ok": True,
                                 "output": {
-                                    "text": child_result.output.text,
+                                    "text": (
+                                        child_result.output.text
+                                        if child_result.output is not None
+                                        else ""
+                                    ),
                                     "run_id": str(child_result.run_id),
                                 },
                             }
@@ -2067,6 +2294,38 @@ class AgentRuntime:
         request: AgentRunRequest,
         execution_context: ExecutionContext | None = None,
     ) -> tuple[Run, Trace, Span, Message]:
+        if request.resume_run_id is not None:
+            run = await self.session.get(
+                Run, request.resume_run_id, with_for_update=True
+            )
+            if run is None or run.workspace_id != request.workspace_id:
+                raise RuntimeExecutionError(
+                    "RESOURCE_NOT_FOUND", "The run was not found.", status_code=404
+                )
+            trace = await self.session.get(Trace, run.trace_id)
+            root_span = await self.session.scalar(
+                select(Span).where(
+                    Span.run_id == run.id, Span.span_type == SpanType.RUN
+                )
+            )
+            user_message = await self.session.scalar(
+                select(Message)
+                .where(Message.run_id == run.id, Message.role == MessageRole.USER)
+                .order_by(Message.sequence_no.asc())
+            )
+            if trace is None or root_span is None or user_message is None:
+                raise RuntimeExecutionError(
+                    "RUN_STATE_INVALID",
+                    "The waiting run is missing execution state.",
+                    status_code=409,
+                )
+            if run.status != RunStatus.WAITING_APPROVAL:
+                raise RuntimeExecutionError(
+                    "RUN_NOT_WAITING_APPROVAL",
+                    "The run is not waiting for approval.",
+                    status_code=409,
+                )
+            return run, trace, root_span, user_message
         conversation = await self.session.scalar(
             select(Session)
             .where(
@@ -2291,6 +2550,13 @@ class AgentRuntime:
         safe_provider_metadata = _safe_provider_metadata(response.provider_metadata)
         run.metadata_json = {"provider_metadata": safe_provider_metadata}
         run.completed_at = now
+        if request.resume_approval_id is not None:
+            approval = await self.session.get(
+                ApprovalRequest, request.resume_approval_id
+            )
+            if approval is not None:
+                approval.continuation_status = "COMPLETED"
+                approval.continuation_completed_at = now
         model_span.status = SpanStatus.COMPLETED
         model_usage = usage.model_dump(exclude_none=True)
         if usage.input_tokens is None:

@@ -23,7 +23,7 @@ services:
             VF_BLOB_STORAGE_BUCKET: ${VF_BLOB_STORAGE_BUCKET:-}
             VF_MAX_DOCUMENT_BYTES: ${VF_MAX_DOCUMENT_BYTES:-20971520}
             VF_WORKFLOW_DEFAULT_TIMEOUT_SECONDS: ${VF_WORKFLOW_DEFAULT_TIMEOUT_SECONDS:-900}
-            VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.6-luna}
+            VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-6-luna}
         ports:
             - "8000:8000"
         restart: unless-stopped
@@ -86,7 +86,7 @@ services:
         environment:
             VF_EMBEDDING_BATCH_SIZE: ${VF_EMBEDDING_BATCH_SIZE:-8}
             VF_MODEL_PROVIDER_TIMEOUT_SECONDS: ${VF_MODEL_PROVIDER_TIMEOUT_SECONDS:-60}
-            VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-5.6-luna}
+            VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-6-luna}
         depends_on:
             postgres:
                 condition: service_healthy

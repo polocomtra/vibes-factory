@@ -5623,6 +5623,34 @@ Therefore every implementation decision should prioritize reusable platform prim
 
 ---
 
+# Phase 14 Implementation Record — Human-in-the-Loop
+
+Phase 14 is implemented after the Phase 12/13 workflow and guardrail
+foundations. Migration `0015_phase14_approvals` adds the durable
+`approval_requests` subsystem, including workspace-scoped indexes, immutable
+tool/workflow targets, TTL metadata, and idempotent continuation state.
+
+The API exposes cursor-paginated approval queues and member-level approve or
+reject transitions. Resolution is row-locked and schedules an
+`APPROVAL_RESUME` job in the same transaction. Runtime tool calls persist the
+published tool version and redacted arguments, pause the run in
+`WAITING_APPROVAL`, and resume the exact model batch in order without asking
+the provider to regenerate arguments. Workflow `APPROVAL` nodes and risky
+TOOL nodes use the same subsystem and route approved/rejected/expired outcomes
+through durable workflow events.
+
+The console adds the Platform Approvals queue, confirmation dialogs and live
+pending status, plus approval-node configuration and Playground waiting state.
+The existing Obsidian/Frost semantic tokens, Inter/JetBrains Mono typography,
+Lucide icons, keyboard-visible focus and responsive controls remain the source
+of truth; no external palette is introduced.
+
+Verification completed locally for the current change set: `ruff check
+apps/api tests`, `PYTHONPATH=. pytest -q`, and the web lint/typecheck suites.
+Before release, run `alembic upgrade head`, `npm run build`, mypy and the
+approval-specific API/runtime/workflow acceptance tests against PostgreSQL.
+
+
 # Appendix A — Codex Kickoff Instructions
 
 The following instructions can be supplied to the coding agent together with the BRD, System Architecture and this Implementation Plan.

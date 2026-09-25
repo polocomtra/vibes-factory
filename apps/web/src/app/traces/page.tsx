@@ -166,7 +166,7 @@ function TraceGridCard({
                         type="button"
                         onClick={() => onOpenTrace(trace)}
                     >
-                        Open to Workflow Run History <span aria-hidden="true">→</span>
+                        Open workflow<span aria-hidden="true">→</span>
                     </button>
                 ) : (
                     <span className="trace-no-session">No session</span>

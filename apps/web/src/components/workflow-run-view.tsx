@@ -15,6 +15,7 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { ApprovalDecisionCard } from "./approval-decision-card";
 import { apiFetch, readApiError } from "../lib/api";
 import {
   fetchWorkflowNodeRuns,
@@ -146,6 +147,7 @@ export function WorkflowRunView({ runId }: { runId: string }) {
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [nodeRuns, setNodeRuns] = useState<WorkflowNodeRun[]>([]);
   const [childRuns, setChildRuns] = useState<ChildRun[]>([]);
+  const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
   const [selectedNodeRunId, setSelectedNodeRunId] = useState<string | null>(null);
   const [selectedChildRunId, setSelectedChildRunId] = useState<string | null>(null);
   const [connection, setConnection] = useState<"Connected" | "Reconnecting" | "Polling">("Reconnecting");
@@ -208,6 +210,12 @@ export function WorkflowRunView({ runId }: { runId: string }) {
             try {
               const event = JSON.parse(dataLine.slice(5)) as WorkflowEvent;
               cursor = event.sequence;
+              if (
+                event.event === "approval.required" &&
+                typeof event.data.approval_request_id === "string"
+              ) {
+                setApprovalRequestId(event.data.approval_request_id);
+              }
               setEvents((current) => {
                 if (current.some((item) => item.sequence === event.sequence)) return current;
                 return [...current, event].sort((left, right) => left.sequence - right.sequence);
@@ -263,6 +271,10 @@ export function WorkflowRunView({ runId }: { runId: string }) {
           <span>Tokens {String(run.usage.total_tokens ?? "—")}</span>
         </div>
       </div>
+
+      {run.status === "WAITING_APPROVAL" && approvalRequestId ? (
+        <ApprovalDecisionCard approvalId={approvalRequestId} />
+      ) : null}
 
       {error ? <div className="form-error agent-alert" role="alert">{error}</div> : null}
 

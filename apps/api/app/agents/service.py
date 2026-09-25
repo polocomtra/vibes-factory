@@ -167,7 +167,7 @@ def build_snapshot(
     if guardrails is not None:
         guardrail_snapshot = {
             "enabled": draft.guardrails_enabled,
-            "baseline_version": 1,
+            "baseline_version": 2,
             "policies": guardrails,
         }
     return {
@@ -535,7 +535,7 @@ async def publish_version(
         for binding, version_row, policy in guardrail_rows
     ]
     baseline_configuration = GuardrailConfiguration.model_validate(
-        default_baseline().configuration
+        default_baseline(version=2).configuration
     ).model_dump(mode="json")
     guardrail_snapshots.insert(
         0,
@@ -543,7 +543,7 @@ async def publish_version(
             "id": None,
             "policy_id": None,
             "policy_name": "Platform Default",
-            "version_number": 1,
+            "version_number": 2,
             "hook": "ALL",
             "priority": 0,
             "type": "RULE_SET",

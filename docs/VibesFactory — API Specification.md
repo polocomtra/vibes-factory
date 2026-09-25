@@ -180,8 +180,8 @@ Backend resolves JWT into:
 
 ```json
 {
-  "user_id": "uuid",
-  "email": "user@example.com"
+    "user_id": "uuid",
+    "email": "user@example.com"
 }
 ```
 
@@ -253,23 +253,23 @@ but the backend must resolve and verify workspace access.
 
 Use:
 
-| Status | Meaning |
-|---|---|
-| 200 | Successful read/update/action |
-| 201 | Resource created |
-| 202 | Accepted for async processing |
-| 204 | Successful delete/no body |
-| 400 | Invalid request |
-| 401 | Authentication required/invalid |
-| 403 | Authenticated but unauthorized |
-| 404 | Resource not found |
-| 409 | Resource conflict |
-| 422 | Semantic validation failure |
-| 429 | Rate limited |
-| 500 | Internal platform failure |
-| 502 | Upstream provider/tool failure |
-| 503 | Temporary service unavailable |
-| 504 | Timeout |
+| Status | Meaning                         |
+| ------ | ------------------------------- |
+| 200    | Successful read/update/action   |
+| 201    | Resource created                |
+| 202    | Accepted for async processing   |
+| 204    | Successful delete/no body       |
+| 400    | Invalid request                 |
+| 401    | Authentication required/invalid |
+| 403    | Authenticated but unauthorized  |
+| 404    | Resource not found              |
+| 409    | Resource conflict               |
+| 422    | Semantic validation failure     |
+| 429    | Rate limited                    |
+| 500    | Internal platform failure       |
+| 502    | Upstream provider/tool failure  |
+| 503    | Temporary service unavailable   |
+| 504    | Timeout                         |
 
 Do not return HTTP 200 with an embedded failure object for failed operations.
 
@@ -281,12 +281,12 @@ All non-stream API errors shall use:
 
 ```json
 {
-  "error": {
-    "code": "RESOURCE_NOT_FOUND",
-    "message": "Agent was not found.",
-    "request_id": "req_123",
-    "details": {}
-  }
+    "error": {
+        "code": "RESOURCE_NOT_FOUND",
+        "message": "Agent was not found.",
+        "request_id": "req_123",
+        "details": {}
+    }
 }
 ```
 
@@ -397,7 +397,7 @@ Example:
 
 ```json
 {
-  "created_at": "2026-09-15T04:30:00Z"
+    "created_at": "2026-09-15T04:30:00Z"
 }
 ```
 
@@ -429,11 +429,11 @@ Response:
 
 ```json
 {
-  "data": [],
-  "pagination": {
-    "next_cursor": "opaque-value",
-    "has_more": true
-  }
+    "data": [],
+    "pagination": {
+        "next_cursor": "opaque-value",
+        "has_more": true
+    }
 }
 ```
 
@@ -447,13 +447,11 @@ Collection response:
 
 ```json
 {
-  "data": [
-    {}
-  ],
-  "pagination": {
-    "next_cursor": null,
-    "has_more": false
-  }
+    "data": [{}],
+    "pagination": {
+        "next_cursor": null,
+        "has_more": false
+    }
 }
 ```
 
@@ -469,8 +467,8 @@ Example:
 
 ```json
 {
-  "id": "...",
-  "name": "Research Agent"
+    "id": "...",
+    "name": "Research Agent"
 }
 ```
 
@@ -528,7 +526,7 @@ Response:
 
 ```json
 {
-  "status": "ok"
+    "status": "ok"
 }
 ```
 
@@ -546,10 +544,10 @@ Response:
 
 ```json
 {
-  "status": "ready",
-  "checks": {
-    "database": "ok"
-  }
+    "status": "ready",
+    "checks": {
+        "database": "ok"
+    }
 }
 ```
 
@@ -569,10 +567,10 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "email": "user@example.com",
-  "display_name": "William",
-  "avatar_url": null
+    "id": "uuid",
+    "email": "user@example.com",
+    "display_name": "William",
+    "avatar_url": null
 }
 ```
 
@@ -586,8 +584,8 @@ Request:
 
 ```json
 {
-  "name": "Personal",
-  "slug": "personal"
+    "name": "Personal",
+    "slug": "personal"
 }
 ```
 
@@ -595,11 +593,11 @@ Response `201`:
 
 ```json
 {
-  "id": "uuid",
-  "name": "Personal",
-  "slug": "personal",
-  "role": "OWNER",
-  "created_at": "..."
+    "id": "uuid",
+    "name": "Personal",
+    "slug": "personal",
+    "role": "OWNER",
+    "created_at": "..."
 }
 ```
 
@@ -625,7 +623,7 @@ Request:
 
 ```json
 {
-  "name": "AI Lab"
+    "name": "AI Lab"
 }
 ```
 
@@ -639,9 +637,9 @@ Response item:
 
 ```json
 {
-  "user_id": "uuid",
-  "email": "user@example.com",
-  "role": "MEMBER"
+    "user_id": "uuid",
+    "email": "user@example.com",
+    "role": "MEMBER"
 }
 ```
 
@@ -655,7 +653,7 @@ Request:
 
 ```json
 {
-  "email": "user@example.com"
+    "email": "user@example.com"
 }
 ```
 
@@ -675,18 +673,18 @@ Request:
 
 ```json
 {
-  "name": "Research Agent",
-  "slug": "research-agent",
-  "description": "Researches technical topics.",
-  "instructions": "You are a technical research agent.",
-  "model": {
-    "provider": "google",
-    "name": "gemini-model-name",
-    "config": {
-      "temperature": 0.2,
-      "max_output_tokens": 4096
+    "name": "Research Agent",
+    "slug": "research-agent",
+    "description": "Researches technical topics.",
+    "instructions": "You are a technical research agent.",
+    "model": {
+        "provider": "google",
+        "name": "gemini-model-name",
+        "config": {
+            "temperature": 0.2,
+            "max_output_tokens": 4096
+        }
     }
-  }
 }
 ```
 
@@ -694,15 +692,15 @@ Response `201`:
 
 ```json
 {
-  "id": "uuid",
-  "workspace_id": "uuid",
-  "name": "Research Agent",
-  "slug": "research-agent",
-  "description": "Researches technical topics.",
-  "status": "ACTIVE",
-  "latest_version_number": 0,
-  "is_supervisor": false,
-  "created_at": "..."
+    "id": "uuid",
+    "workspace_id": "uuid",
+    "name": "Research Agent",
+    "slug": "research-agent",
+    "description": "Researches technical topics.",
+    "status": "ACTIVE",
+    "latest_version_number": 0,
+    "is_supervisor": false,
+    "created_at": "..."
 }
 ```
 
@@ -743,16 +741,16 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "workspace_id": "uuid",
-  "name": "Research Agent",
-  "slug": "research-agent",
-  "description": "...",
-  "status": "ACTIVE",
-  "latest_version_number": 3,
-  "is_supervisor": true,
-  "created_at": "...",
-  "updated_at": "..."
+    "id": "uuid",
+    "workspace_id": "uuid",
+    "name": "Research Agent",
+    "slug": "research-agent",
+    "description": "...",
+    "status": "ACTIVE",
+    "latest_version_number": 3,
+    "is_supervisor": true,
+    "created_at": "...",
+    "updated_at": "..."
 }
 ```
 
@@ -766,8 +764,8 @@ Request:
 
 ```json
 {
-  "name": "Technical Research Agent",
-  "description": "Updated description."
+    "name": "Technical Research Agent",
+    "description": "Updated description."
 }
 ```
 
@@ -803,26 +801,26 @@ Response:
 
 ```json
 {
-  "agent_id": "uuid",
-  "instructions": "You are...",
-  "model": {
-    "provider": "google",
-    "name": "gemini-model-name",
-    "config": {}
-  },
-  "runtime_config": {
-    "max_steps": 20,
-    "max_model_calls": 10,
-    "max_tool_calls": 10,
-    "max_child_runs": 5,
-    "max_agent_depth": 3,
-    "max_total_tokens": 100000,
-    "timeout_seconds": 120
-  },
-  "memory_config": {
-    "enabled": false
-  },
-  "updated_at": "..."
+    "agent_id": "uuid",
+    "instructions": "You are...",
+    "model": {
+        "provider": "google",
+        "name": "gemini-model-name",
+        "config": {}
+    },
+    "runtime_config": {
+        "max_steps": 20,
+        "max_model_calls": 10,
+        "max_tool_calls": 10,
+        "max_child_runs": 5,
+        "max_agent_depth": 3,
+        "max_total_tokens": 100000,
+        "timeout_seconds": 120
+    },
+    "memory_config": {
+        "enabled": false
+    },
+    "updated_at": "..."
 }
 ```
 
@@ -838,14 +836,14 @@ Example:
 
 ```json
 {
-  "instructions": "You are an expert technical research agent.",
-  "model": {
-    "provider": "openai",
-    "name": "model-name",
-    "config": {
-      "temperature": 0.1
+    "instructions": "You are an expert technical research agent.",
+    "model": {
+        "provider": "openai",
+        "name": "model-name",
+        "config": {
+            "temperature": 0.1
+        }
     }
-  }
 }
 ```
 
@@ -861,7 +859,7 @@ Request:
 
 ```json
 {
-  "change_note": "Add technical research instructions."
+    "change_note": "Add technical research instructions."
 }
 ```
 
@@ -869,11 +867,11 @@ Response `201`:
 
 ```json
 {
-  "id": "uuid",
-  "agent_id": "uuid",
-  "version_number": 4,
-  "created_at": "...",
-  "change_note": "Add technical research instructions."
+    "id": "uuid",
+    "agent_id": "uuid",
+    "version_number": 4,
+    "created_at": "...",
+    "change_note": "Add technical research instructions."
 }
 ```
 
@@ -904,22 +902,22 @@ Example:
 
 ```json
 {
-  "id": "uuid",
-  "agent_id": "uuid",
-  "version_number": 4,
-  "instructions": "...",
-  "model": {
-    "provider": "google",
-    "name": "...",
-    "config": {}
-  },
-  "runtime_config": {},
-  "memory_config": {},
-  "tools": [],
-  "knowledge_bases": [],
-  "guardrails": [],
-  "child_agents": [],
-  "created_at": "..."
+    "id": "uuid",
+    "agent_id": "uuid",
+    "version_number": 4,
+    "instructions": "...",
+    "model": {
+        "provider": "google",
+        "name": "...",
+        "config": {}
+    },
+    "runtime_config": {},
+    "memory_config": {},
+    "tools": [],
+    "knowledge_bases": [],
+    "guardrails": [],
+    "child_agents": [],
+    "created_at": "..."
 }
 ```
 
@@ -937,20 +935,20 @@ Example:
 
 ```json
 {
-  "data": [
-    {
-      "provider": "google",
-      "name": "gemini-model-name",
-      "display_name": "Gemini ...",
-      "capabilities": {
-        "tool_calling": true,
-        "streaming": true,
-        "structured_output": true,
-        "vision": true,
-        "reasoning": true
-      }
-    }
-  ]
+    "data": [
+        {
+            "provider": "google",
+            "name": "gemini-model-name",
+            "display_name": "Gemini ...",
+            "capabilities": {
+                "tool_calling": true,
+                "streaming": true,
+                "structured_output": true,
+                "vision": true,
+                "reasoning": true
+            }
+        }
+    ]
 }
 ```
 
@@ -958,7 +956,7 @@ Model names should come from configured platform registry rather than arbitrary 
 
 The Google runtime adapter is implemented behind the platform provider
 registry, but Google models are temporarily hidden from the active catalog;
-the currently exposed catalog contains only `azure_openai / gpt-5.6-luna`.
+the currently exposed catalog contains only `azure_openai / gpt-6-luna`.
 When enabled, the adapter calls Google's official GenAI SDK `Interactions` API
 with a platform-owned, non-streaming request; provider conversation storage is
 disabled because VibesFactory owns session persistence.
@@ -978,15 +976,15 @@ Response:
 
 ```json
 {
-  "valid": false,
-  "errors": [
-    {
-      "code": "MODEL_TOOL_CALLING_UNSUPPORTED",
-      "field": "model.name",
-      "message": "Selected model does not support attached tools."
-    }
-  ],
-  "warnings": []
+    "valid": false,
+    "errors": [
+        {
+            "code": "MODEL_TOOL_CALLING_UNSUPPORTED",
+            "field": "model.name",
+            "message": "Selected model does not support attached tools."
+        }
+    ],
+    "warnings": []
 }
 ```
 
@@ -1000,7 +998,7 @@ Request:
 
 ```json
 {
-  "title": "AgentCore research"
+    "title": "AgentCore research"
 }
 ```
 
@@ -1008,10 +1006,10 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "agent_id": "uuid",
-  "title": "AgentCore research",
-  "created_at": "..."
+    "id": "uuid",
+    "agent_id": "uuid",
+    "title": "AgentCore research",
+    "created_at": "..."
 }
 ```
 
@@ -1038,11 +1036,11 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "agent_id": "uuid",
-  "title": "...",
-  "created_at": "...",
-  "last_activity_at": "..."
+    "id": "uuid",
+    "agent_id": "uuid",
+    "title": "...",
+    "created_at": "...",
+    "last_activity_at": "..."
 }
 ```
 
@@ -1065,14 +1063,14 @@ Response item:
 
 ```json
 {
-  "id": "uuid",
-  "role": "USER",
-  "content": {
-    "type": "text",
-    "text": "Explain AgentCore."
-  },
-  "run_id": "uuid",
-  "created_at": "..."
+    "id": "uuid",
+    "role": "USER",
+    "content": {
+        "type": "text",
+        "text": "Explain AgentCore."
+    },
+    "run_id": "uuid",
+    "created_at": "..."
 }
 ```
 
@@ -1088,12 +1086,12 @@ Request:
 
 ```json
 {
-  "input": {
-    "type": "text",
-    "text": "Explain the attached document."
-  },
-  "session_id": "uuid",
-  "agent_version_id": "uuid"
+    "input": {
+        "type": "text",
+        "text": "Explain the attached document."
+    },
+    "session_id": "uuid",
+    "agent_version_id": "uuid"
 }
 ```
 
@@ -1112,12 +1110,12 @@ Safer MVP contract:
 
 ```json
 {
-  "input": {
-    "type": "text",
-    "text": "..."
-  },
-  "session_id": "uuid",
-  "agent_version_id": "uuid"
+    "input": {
+        "type": "text",
+        "text": "..."
+    },
+    "session_id": "uuid",
+    "agent_version_id": "uuid"
 }
 ```
 
@@ -1129,20 +1127,20 @@ Response:
 
 ```json
 {
-  "id": "run_uuid",
-  "status": "COMPLETED",
-  "trace_id": "trace_uuid",
-  "output": {
-    "type": "text",
-    "text": "..."
-  },
-  "usage": {
-    "input_tokens": 1200,
-    "output_tokens": 350
-  },
-  "estimated_cost": "0.00125000",
-  "started_at": "...",
-  "completed_at": "..."
+    "id": "run_uuid",
+    "status": "COMPLETED",
+    "trace_id": "trace_uuid",
+    "output": {
+        "type": "text",
+        "text": "..."
+    },
+    "usage": {
+        "input_tokens": 1200,
+        "output_tokens": 350
+    },
+    "estimated_cost": "0.00125000",
+    "started_at": "...",
+    "completed_at": "..."
 }
 ```
 
@@ -1154,12 +1152,12 @@ The same endpoint may accept:
 
 ```json
 {
-  "input": {
-    "type": "text",
-    "text": "..."
-  },
-  "agent_version_id": "...",
-  "execution_mode": "async"
+    "input": {
+        "type": "text",
+        "text": "..."
+    },
+    "agent_version_id": "...",
+    "execution_mode": "async"
 }
 ```
 
@@ -1167,8 +1165,8 @@ Response `202`:
 
 ```json
 {
-  "id": "run_uuid",
-  "status": "QUEUED"
+    "id": "run_uuid",
+    "status": "QUEUED"
 }
 ```
 
@@ -1184,20 +1182,20 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "agent_id": "uuid",
-  "agent_version_id": "uuid",
-  "session_id": "uuid",
-  "parent_run_id": null,
-  "root_run_id": "uuid",
-  "status": "COMPLETED",
-  "input": {},
-  "output": {},
-  "usage": {},
-  "estimated_cost": "0.0012",
-  "error": null,
-  "started_at": "...",
-  "completed_at": "..."
+    "id": "uuid",
+    "agent_id": "uuid",
+    "agent_version_id": "uuid",
+    "session_id": "uuid",
+    "parent_run_id": null,
+    "root_run_id": "uuid",
+    "status": "COMPLETED",
+    "input": {},
+    "output": {},
+    "usage": {},
+    "estimated_cost": "0.0012",
+    "error": null,
+    "started_at": "...",
+    "completed_at": "..."
 }
 ```
 
@@ -1211,8 +1209,8 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "status": "CANCELLED"
+    "id": "uuid",
+    "status": "CANCELLED"
 }
 ```
 
@@ -1273,9 +1271,9 @@ data: {"run_id":"...","trace_id":"..."}
 
 ```json
 {
-  "run_id": "uuid",
-  "trace_id": "uuid",
-  "agent_version_id": "uuid"
+    "run_id": "uuid",
+    "trace_id": "uuid",
+    "agent_version_id": "uuid"
 }
 ```
 
@@ -1283,8 +1281,8 @@ data: {"run_id":"...","trace_id":"..."}
 
 ```json
 {
-  "run_id": "uuid",
-  "delta": "partial text"
+    "run_id": "uuid",
+    "delta": "partial text"
 }
 ```
 
@@ -1292,8 +1290,8 @@ data: {"run_id":"...","trace_id":"..."}
 
 ```json
 {
-  "run_id": "uuid",
-  "message_id": "uuid"
+    "run_id": "uuid",
+    "message_id": "uuid"
 }
 ```
 
@@ -1301,10 +1299,10 @@ data: {"run_id":"...","trace_id":"..."}
 
 ```json
 {
-  "run_id": "uuid",
-  "status": "COMPLETED",
-  "usage": {},
-  "estimated_cost": "0.0012"
+    "run_id": "uuid",
+    "status": "COMPLETED",
+    "usage": {},
+    "estimated_cost": "0.0012"
 }
 ```
 
@@ -1312,11 +1310,11 @@ data: {"run_id":"...","trace_id":"..."}
 
 ```json
 {
-  "run_id": "uuid",
-  "error": {
-    "code": "PROVIDER_ERROR",
-    "message": "Model provider failed."
-  }
+    "run_id": "uuid",
+    "error": {
+        "code": "PROVIDER_ERROR",
+        "message": "Model provider failed."
+    }
 }
 ```
 
@@ -1326,12 +1324,12 @@ Phase 6 adds `tool.started`, `tool.completed`, and `tool.failed`. Payloads conta
 
 ```json
 {
-  "run_id": "uuid",
-  "tool_id": "uuid",
-  "tool_version_id": "uuid",
-  "tool": "web_search",
-  "status": "running",
-  "duration_ms": 120
+    "run_id": "uuid",
+    "tool_id": "uuid",
+    "tool_version_id": "uuid",
+    "tool": "web_search",
+    "status": "running",
+    "duration_ms": 120
 }
 ```
 
@@ -1378,10 +1376,10 @@ Request:
 
 ```json
 {
-  "name": "Weather",
-  "slug": "weather",
-  "description": "Gets current weather.",
-  "type": "HTTP"
+    "name": "Weather",
+    "slug": "weather",
+    "description": "Gets current weather.",
+    "type": "HTTP"
 }
 ```
 
@@ -1389,10 +1387,10 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "name": "Weather",
-  "type": "HTTP",
-  "latest_version_number": 0
+    "id": "uuid",
+    "name": "Weather",
+    "type": "HTTP",
+    "latest_version_number": 0
 }
 ```
 
@@ -1414,8 +1412,8 @@ The response is a collection envelope:
 
 ```json
 {
-  "data": [],
-  "pagination": {"next_cursor": null, "has_more": false}
+    "data": [],
+    "pagination": { "next_cursor": null, "has_more": false }
 }
 ```
 
@@ -1433,45 +1431,45 @@ Request example for HTTP Tool:
 
 ```json
 {
-  "name": "get_weather",
-  "description": "Gets weather for a city.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "city": {
-        "type": "string"
-      }
+    "name": "get_weather",
+    "description": "Gets weather for a city.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "city": {
+                "type": "string"
+            }
+        },
+        "required": ["city"]
     },
-    "required": ["city"]
-  },
-  "output_schema": {
-    "type": "object"
-  },
-  "executor": {
-    "type": "HTTP",
-    "config": {
-      "method": "GET",
-      "base_url": "https://example.com",
-      "path": "/weather",
-      "query_mapping": {
-        "city": "{{city}}"
-      },
-      "credential_ref": "uuid",
-      "credential_binding": {
-        "location": "HEADER",
-        "name": "Authorization",
-        "prefix": "Bearer",
-        "secret_key": "token"
-      }
-    }
-  },
-  "timeout_seconds": 10,
-  "retry_policy": {
-    "max_attempts": 2
-  },
-  "risk_level": "LOW",
-  "side_effect": false,
-  "idempotent": true
+    "output_schema": {
+        "type": "object"
+    },
+    "executor": {
+        "type": "HTTP",
+        "config": {
+            "method": "GET",
+            "base_url": "https://example.com",
+            "path": "/weather",
+            "query_mapping": {
+                "city": "{{city}}"
+            },
+            "credential_ref": "uuid",
+            "credential_binding": {
+                "location": "HEADER",
+                "name": "Authorization",
+                "prefix": "Bearer",
+                "secret_key": "token"
+            }
+        }
+    },
+    "timeout_seconds": 10,
+    "retry_policy": {
+        "max_attempts": 2
+    },
+    "risk_level": "LOW",
+    "side_effect": false,
+    "idempotent": true
 }
 ```
 
@@ -1503,9 +1501,9 @@ Request:
 
 ```json
 {
-  "arguments": {
-    "city": "Ho Chi Minh City"
-  }
+    "arguments": {
+        "city": "Ho Chi Minh City"
+    }
 }
 ```
 
@@ -1513,9 +1511,9 @@ Response:
 
 ```json
 {
-  "status": "completed",
-  "output": {},
-  "duration_ms": 310
+    "status": "completed",
+    "output": {},
+    "duration_ms": 310
 }
 ```
 
@@ -1531,8 +1529,8 @@ Request:
 
 ```json
 {
-  "tool_version_id": "uuid",
-  "alias": "weather"
+    "tool_version_id": "uuid",
+    "alias": "weather"
 }
 ```
 
@@ -1558,13 +1556,13 @@ Request:
 
 ```json
 {
-  "name": "GitHub API",
-  "provider": "github",
-  "type": "API_KEY",
-  "secret": {
-    "token": "secret-value"
-  },
-  "metadata": {}
+    "name": "GitHub API",
+    "provider": "github",
+    "type": "API_KEY",
+    "secret": {
+        "token": "secret-value"
+    },
+    "metadata": {}
 }
 ```
 
@@ -1572,11 +1570,11 @@ Response must never return the secret:
 
 ```json
 {
-  "id": "uuid",
-  "name": "GitHub API",
-  "provider": "github",
-  "type": "API_KEY",
-  "created_at": "..."
+    "id": "uuid",
+    "name": "GitHub API",
+    "provider": "github",
+    "type": "API_KEY",
+    "created_at": "..."
 }
 ```
 
@@ -1616,9 +1614,9 @@ Request:
 
 ```json
 {
-  "secret": {
-    "token": "new-secret"
-  }
+    "secret": {
+        "token": "new-secret"
+    }
 }
 ```
 
@@ -1636,8 +1634,8 @@ to a Secret Store credential directly:
 
 ```json
 {
-  "credential_id": "uuid",
-  "keys": ["instance", "password", "token", "username"]
+    "credential_id": "uuid",
+    "keys": ["instance", "password", "token", "username"]
 }
 ```
 
@@ -1662,21 +1660,21 @@ Request:
 
 ```json
 {
-  "name": "GitHub MCP",
-  "transport": "STREAMABLE_HTTP",
-  "endpoint": "https://mcp.example.com",
-  "credential_id": "uuid",
-  "auth": {
-    "mode": "BEARER",
-    "header_name": "Authorization",
-    "prefix": "Bearer",
-    "secret_key": "token",
-    "custom_headers": [
-      { "header_name": "x-instance", "credential_id": "uuid" },
-      { "header_name": "x-username", "credential_id": "uuid" },
-      { "header_name": "x-password", "credential_id": "uuid" }
-    ]
-  }
+    "name": "GitHub MCP",
+    "transport": "STREAMABLE_HTTP",
+    "endpoint": "https://mcp.example.com",
+    "credential_id": "uuid",
+    "auth": {
+        "mode": "BEARER",
+        "header_name": "Authorization",
+        "prefix": "Bearer",
+        "secret_key": "token",
+        "custom_headers": [
+            { "header_name": "x-instance", "credential_id": "uuid" },
+            { "header_name": "x-username", "credential_id": "uuid" },
+            { "header_name": "x-password", "credential_id": "uuid" }
+        ]
+    }
 }
 ```
 
@@ -1695,9 +1693,9 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "name": "GitHub MCP",
-  "status": "ACTIVE"
+    "id": "uuid",
+    "name": "GitHub MCP",
+    "status": "ACTIVE"
 }
 ```
 
@@ -1717,8 +1715,8 @@ Response:
 
 ```json
 {
-  "status": "CONNECTED",
-  "latency_ms": 140
+    "status": "CONNECTED",
+    "latency_ms": 140
 }
 ```
 
@@ -1732,13 +1730,13 @@ Response:
 
 ```json
 {
-  "tools": [
-    {
-      "name": "search_issues",
-      "description": "...",
-      "input_schema": {}
-    }
-  ]
+    "tools": [
+        {
+            "name": "search_issues",
+            "description": "...",
+            "input_schema": {}
+        }
+    ]
 }
 ```
 
@@ -1754,9 +1752,9 @@ Request:
 
 ```json
 {
-  "remote_name": "search_issues",
-  "tool_name": "GitHub Issue Search",
-  "slug": "github-issue-search"
+    "remote_name": "search_issues",
+    "tool_name": "GitHub Issue Search",
+    "slug": "github-issue-search"
 }
 ```
 
@@ -1776,12 +1774,12 @@ Request:
 
 ```json
 {
-  "name": "Product Documentation",
-  "description": "Internal technical documentation.",
-  "embedding": {
-    "provider": "google",
-    "model": "embedding-model-name"
-  }
+    "name": "Product Documentation",
+    "description": "Internal technical documentation.",
+    "embedding": {
+        "provider": "google",
+        "model": "embedding-model-name"
+    }
 }
 ```
 
@@ -1829,10 +1827,10 @@ Response `202`:
 
 ```json
 {
-  "id": "document_uuid",
-  "name": "manual.pdf",
-  "status": "UPLOADED",
-  "created_at": "..."
+    "id": "document_uuid",
+    "name": "manual.pdf",
+    "status": "UPLOADED",
+    "created_at": "..."
 }
 ```
 
@@ -1861,14 +1859,14 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "knowledge_base_id": "uuid",
-  "name": "manual.pdf",
-  "mime_type": "application/pdf",
-  "size_bytes": 1200000,
-  "status": "READY",
-  "error": null,
-  "created_at": "..."
+    "id": "uuid",
+    "knowledge_base_id": "uuid",
+    "name": "manual.pdf",
+    "mime_type": "application/pdf",
+    "size_bytes": 1200000,
+    "status": "READY",
+    "error": null,
+    "created_at": "..."
 }
 ```
 
@@ -1882,8 +1880,8 @@ Response `202`:
 
 ```json
 {
-  "id": "uuid",
-  "status": "PROCESSING"
+    "id": "uuid",
+    "status": "PROCESSING"
 }
 ```
 
@@ -1915,9 +1913,9 @@ Request:
 
 ```json
 {
-  "query": "How does authentication work?",
-  "top_k": 5,
-  "filters": {}
+    "query": "How does authentication work?",
+    "top_k": 5,
+    "filters": {}
 }
 ```
 
@@ -1925,17 +1923,17 @@ Response:
 
 ```json
 {
-  "results": [
-    {
-      "chunk_id": "uuid",
-      "document_id": "uuid",
-      "content": "...",
-      "score": 0.84,
-      "source_name": "manual.pdf",
-      "page_number": 12,
-      "metadata": {}
-    }
-  ]
+    "results": [
+        {
+            "chunk_id": "uuid",
+            "document_id": "uuid",
+            "content": "...",
+            "score": 0.84,
+            "source_name": "manual.pdf",
+            "page_number": 12,
+            "metadata": {}
+        }
+    ]
 }
 ```
 
@@ -1949,14 +1947,14 @@ Request:
 
 ```json
 {
-  "knowledge_base_id": "uuid",
-  "mode": "auto",
-  "top_k": 5,
-  "score_threshold": 0.6,
-  "filters": {
-    "document_ids": [],
-    "metadata": {}
-  }
+    "knowledge_base_id": "uuid",
+    "mode": "auto",
+    "top_k": 5,
+    "score_threshold": 0.6,
+    "filters": {
+        "document_ids": [],
+        "metadata": {}
+    }
 }
 ```
 
@@ -1976,12 +1974,12 @@ Request:
 
 ```json
 {
-  "name": "User Memory",
-  "description": "Long-term user preferences.",
-  "embedding": {
-    "provider": "google",
-    "model": "embedding-model-name"
-  }
+    "name": "User Memory",
+    "description": "Long-term user preferences.",
+    "embedding": {
+        "provider": "google",
+        "model": "embedding-model-name"
+    }
 }
 ```
 
@@ -2011,14 +2009,14 @@ Response item:
 
 ```json
 {
-  "id": "uuid",
-  "type": "PROFILE",
-  "content": "User prefers Python.",
-  "importance": 0.8,
-  "confidence": 0.95,
-  "user_id": "uuid",
-  "agent_id": null,
-  "created_at": "..."
+    "id": "uuid",
+    "type": "PROFILE",
+    "content": "User prefers Python.",
+    "importance": 0.8,
+    "confidence": 0.95,
+    "user_id": "uuid",
+    "agent_id": null,
+    "created_at": "..."
 }
 ```
 
@@ -2032,10 +2030,10 @@ Request:
 
 ```json
 {
-  "user_id": "uuid",
-  "agent_id": null,
-  "type": "PROFILE",
-  "content": "User prefers Python."
+    "user_id": "uuid",
+    "agent_id": null,
+    "type": "PROFILE",
+    "content": "User prefers Python."
 }
 ```
 
@@ -2051,7 +2049,7 @@ Request:
 
 ```json
 {
-  "content": "User prefers Python and FastAPI."
+    "content": "User prefers Python and FastAPI."
 }
 ```
 
@@ -2075,10 +2073,10 @@ Request:
 
 ```json
 {
-  "query": "preferred programming language",
-  "user_id": "uuid",
-  "agent_id": null,
-  "top_k": 5
+    "query": "preferred programming language",
+    "user_id": "uuid",
+    "agent_id": null,
+    "top_k": 5
 }
 ```
 
@@ -2092,18 +2090,15 @@ Request:
 
 ```json
 {
-  "enabled": true,
-  "memory_store_id": "uuid",
-  "retrieve": {
-    "top_k": 5
-  },
-  "write": {
     "enabled": true,
-    "types": [
-      "PROFILE",
-      "SEMANTIC"
-    ]
-  }
+    "memory_store_id": "uuid",
+    "retrieve": {
+        "top_k": 5
+    },
+    "write": {
+        "enabled": true,
+        "types": ["PROFILE", "SEMANTIC"]
+    }
 }
 ```
 
@@ -2117,8 +2112,8 @@ Request:
 
 ```json
 {
-  "name": "Default Safety",
-  "description": "Default runtime policies."
+    "name": "Default Safety",
+    "description": "Default runtime policies."
 }
 ```
 
@@ -2140,19 +2135,19 @@ Request:
 
 ```json
 {
-  "type": "RULE_SET",
-  "configuration": {
-    "rules": [
-      {
-        "id": "block-high-risk-side-effects",
-        "type": "TOOL_POLICY",
-        "hooks": ["TOOL_INPUT"],
-        "minimum_risk": "HIGH",
-        "side_effect_only": true,
-        "action": "BLOCK"
-      }
-    ]
-  }
+    "type": "RULE_SET",
+    "configuration": {
+        "rules": [
+            {
+                "id": "block-high-risk-side-effects",
+                "type": "TOOL_POLICY",
+                "hooks": ["TOOL_INPUT"],
+                "minimum_risk": "HIGH",
+                "side_effect_only": true,
+                "action": "BLOCK"
+            }
+        ]
+    }
 }
 ```
 
@@ -2179,9 +2174,9 @@ Request:
 
 ```json
 {
-  "guardrail_version_id": "uuid",
-  "hook": "TOOL_INPUT",
-  "priority": 100
+    "guardrail_version_id": "uuid",
+    "hook": "TOOL_INPUT",
+    "priority": 100
 }
 ```
 
@@ -2213,9 +2208,9 @@ Request:
 
 ```json
 {
-  "name": "Research Workflow",
-  "slug": "research-workflow",
-  "description": "Research and summarize."
+    "name": "Research Workflow",
+    "slug": "research-workflow",
+    "description": "Research and summarize."
 }
 ```
 
@@ -2229,29 +2224,29 @@ Example:
 
 ```json
 {
-  "nodes": [
-    {
-      "key": "start",
-      "type": "START",
-      "name": "Start",
-      "config": {}
-    },
-    {
-      "key": "research",
-      "type": "AGENT",
-      "name": "Research",
-      "config": {
-        "agent_id": "uuid",
-        "agent_version_id": "uuid"
-      }
-    }
-  ],
-  "edges": [
-    {
-      "source": "start",
-      "target": "research"
-    }
-  ]
+    "nodes": [
+        {
+            "key": "start",
+            "type": "START",
+            "name": "Start",
+            "config": {}
+        },
+        {
+            "key": "research",
+            "type": "AGENT",
+            "name": "Research",
+            "config": {
+                "agent_id": "uuid",
+                "agent_version_id": "uuid"
+            }
+        }
+    ],
+    "edges": [
+        {
+            "source": "start",
+            "target": "research"
+        }
+    ]
 }
 ```
 
@@ -2267,8 +2262,8 @@ Request:
 
 ```json
 {
-  "nodes": [],
-  "edges": []
+    "nodes": [],
+    "edges": []
 }
 ```
 
@@ -2284,13 +2279,13 @@ Response:
 
 ```json
 {
-  "valid": false,
-  "errors": [
-    {
-      "code": "UNREACHABLE_NODE",
-      "node_key": "writer"
-    }
-  ]
+    "valid": false,
+    "errors": [
+        {
+            "code": "UNREACHABLE_NODE",
+            "node_key": "writer"
+        }
+    ]
 }
 ```
 
@@ -2328,11 +2323,11 @@ Request:
 
 ```json
 {
-  "workflow_version_id": "uuid",
-  "input": {
-    "topic": "AgentCore"
-  },
-  "execution_mode": "sync"
+    "workflow_version_id": "uuid",
+    "input": {
+        "topic": "AgentCore"
+    },
+    "execution_mode": "sync"
 }
 ```
 
@@ -2340,10 +2335,10 @@ Response:
 
 ```json
 {
-  "id": "workflow_run_uuid",
-  "status": "COMPLETED",
-  "trace_id": "uuid",
-  "output": {}
+    "id": "workflow_run_uuid",
+    "status": "COMPLETED",
+    "trace_id": "uuid",
+    "output": {}
 }
 ```
 
@@ -2375,23 +2370,23 @@ Response:
 
 ```json
 {
-  "data": [
-    {
-      "id": "uuid",
-      "node_key": "research",
-      "node_name": "Research topic",
-      "status": "COMPLETED",
-      "agent_run_id": "uuid",
-      "usage": {
-        "input_tokens": 120,
-        "output_tokens": 240,
-        "total_tokens": 360
-      },
-      "duration_ms": 1820,
-      "started_at": "...",
-      "completed_at": "..."
-    }
-  ]
+    "data": [
+        {
+            "id": "uuid",
+            "node_key": "research",
+            "node_name": "Research topic",
+            "status": "COMPLETED",
+            "agent_run_id": "uuid",
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 240,
+                "total_tokens": 360
+            },
+            "duration_ms": 1820,
+            "started_at": "...",
+            "completed_at": "..."
+        }
+    ]
 }
 ```
 
@@ -2415,10 +2410,10 @@ Request:
 
 ```json
 {
-  "child_agent_id": "uuid",
-  "child_agent_version_id": "uuid",
-  "alias": "research",
-  "description": "Research technical topics."
+    "child_agent_id": "uuid",
+    "child_agent_version_id": "uuid",
+    "alias": "research",
+    "description": "Research technical topics."
 }
 ```
 
@@ -2460,15 +2455,15 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "status": "PENDING",
-  "requested_action": "delete_repository",
-  "arguments": {
-    "repository": "example"
-  },
-  "risk_reason": "High-risk destructive tool.",
-  "run_id": "uuid",
-  "requested_at": "..."
+    "id": "uuid",
+    "status": "PENDING",
+    "requested_action": "delete_repository",
+    "arguments": {
+        "repository": "example"
+    },
+    "risk_reason": "High-risk destructive tool.",
+    "run_id": "uuid",
+    "requested_at": "..."
 }
 ```
 
@@ -2484,7 +2479,7 @@ Request:
 
 ```json
 {
-  "comment": "Approved."
+    "comment": "Approved."
 }
 ```
 
@@ -2492,9 +2487,9 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "status": "APPROVED",
-  "resolved_at": "..."
+    "id": "uuid",
+    "status": "APPROVED",
+    "resolved_at": "..."
 }
 ```
 
@@ -2510,7 +2505,7 @@ Request:
 
 ```json
 {
-  "comment": "Operation is not allowed."
+    "comment": "Operation is not allowed."
 }
 ```
 
@@ -2524,8 +2519,8 @@ Request:
 
 ```json
 {
-  "name": "Research Agent Regression",
-  "description": "Core behavior regression suite."
+    "name": "Research Agent Regression",
+    "description": "Core behavior regression suite."
 }
 ```
 
@@ -2539,14 +2534,14 @@ Request:
 
 ```json
 {
-  "input": {
-    "type": "text",
-    "text": "What does the refund policy say?"
-  },
-  "expected_output": null,
-  "expected_tool": "search_knowledge",
-  "expected_schema": null,
-  "rubric": "Answer must be grounded in the provided knowledge."
+    "input": {
+        "type": "text",
+        "text": "What does the refund policy say?"
+    },
+    "expected_output": null,
+    "expected_tool": "search_knowledge",
+    "expected_schema": null,
+    "rubric": "Answer must be grounded in the provided knowledge."
 }
 ```
 
@@ -2580,27 +2575,24 @@ Request:
 
 ```json
 {
-  "agent_version_id": "uuid",
-  "evaluators": [
-    {
-      "type": "TOOL_CALL"
-    },
-    {
-      "type": "LATENCY",
-      "config": {
-        "max_ms": 10000
-      }
-    },
-    {
-      "type": "LLM_JUDGE",
-      "config": {
-        "criteria": [
-          "correctness",
-          "groundedness"
-        ]
-      }
-    }
-  ]
+    "agent_version_id": "uuid",
+    "evaluators": [
+        {
+            "type": "TOOL_CALL"
+        },
+        {
+            "type": "LATENCY",
+            "config": {
+                "max_ms": 10000
+            }
+        },
+        {
+            "type": "LLM_JUDGE",
+            "config": {
+                "criteria": ["correctness", "groundedness"]
+            }
+        }
+    ]
 }
 ```
 
@@ -2608,8 +2600,8 @@ Response `202`:
 
 ```json
 {
-  "id": "evaluation_run_uuid",
-  "status": "QUEUED"
+    "id": "evaluation_run_uuid",
+    "status": "QUEUED"
 }
 ```
 
@@ -2623,16 +2615,16 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "agent_version_id": "uuid",
-  "status": "COMPLETED",
-  "aggregate_metrics": {
-    "pass_rate": 0.9,
-    "average_latency_ms": 2800,
-    "average_cost": 0.003
-  },
-  "started_at": "...",
-  "completed_at": "..."
+    "id": "uuid",
+    "agent_version_id": "uuid",
+    "status": "COMPLETED",
+    "aggregate_metrics": {
+        "pass_rate": 0.9,
+        "average_latency_ms": 2800,
+        "average_cost": 0.003
+    },
+    "started_at": "...",
+    "completed_at": "..."
 }
 ```
 
@@ -2646,12 +2638,12 @@ Each result:
 
 ```json
 {
-  "case_id": "uuid",
-  "run_id": "uuid",
-  "evaluator": "TOOL_CALL",
-  "score": 1,
-  "passed": true,
-  "details": {}
+    "case_id": "uuid",
+    "run_id": "uuid",
+    "evaluator": "TOOL_CALL",
+    "score": 1,
+    "passed": true,
+    "details": {}
 }
 ```
 
@@ -2665,8 +2657,8 @@ Request:
 
 ```json
 {
-  "baseline_run_id": "uuid",
-  "candidate_run_id": "uuid"
+    "baseline_run_id": "uuid",
+    "candidate_run_id": "uuid"
 }
 ```
 
@@ -2674,17 +2666,17 @@ Response:
 
 ```json
 {
-  "baseline": {
-    "agent_version_id": "uuid"
-  },
-  "candidate": {
-    "agent_version_id": "uuid"
-  },
-  "deltas": {
-    "pass_rate": 0.08,
-    "average_latency_ms": 320,
-    "estimated_cost": 0.0004
-  }
+    "baseline": {
+        "agent_version_id": "uuid"
+    },
+    "candidate": {
+        "agent_version_id": "uuid"
+    },
+    "deltas": {
+        "pass_rate": 0.08,
+        "average_latency_ms": 320,
+        "estimated_cost": 0.0004
+    }
 }
 ```
 
@@ -2700,11 +2692,11 @@ Request:
 
 ```json
 {
-  "name": "Research Production",
-  "slug": "research-production",
-  "agent_id": "uuid",
-  "agent_version_id": "uuid",
-  "environment": "PRODUCTION"
+    "name": "Research Production",
+    "slug": "research-production",
+    "agent_id": "uuid",
+    "agent_version_id": "uuid",
+    "environment": "PRODUCTION"
 }
 ```
 
@@ -2740,7 +2732,7 @@ Request:
 
 ```json
 {
-  "agent_version_id": "previous-version-uuid"
+    "agent_version_id": "previous-version-uuid"
 }
 ```
 
@@ -2768,8 +2760,8 @@ Request:
 
 ```json
 {
-  "name": "Production Client",
-  "expires_at": null
+    "name": "Production Client",
+    "expires_at": null
 }
 ```
 
@@ -2777,11 +2769,11 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "name": "Production Client",
-  "key": "vf_live_xxxxxxxxxxxxx",
-  "key_prefix": "vf_live_abcd",
-  "created_at": "..."
+    "id": "uuid",
+    "name": "Production Client",
+    "key": "vf_live_xxxxxxxxxxxxx",
+    "key_prefix": "vf_live_abcd",
+    "created_at": "..."
 }
 ```
 
@@ -2823,15 +2815,15 @@ Request:
 
 ```json
 {
-  "input": {
-    "type": "text",
-    "text": "Research production agent platforms."
-  },
-  "session_id": null,
-  "stream": false,
-  "metadata": {
-    "external_user_id": "customer-123"
-  }
+    "input": {
+        "type": "text",
+        "text": "Research production agent platforms."
+    },
+    "session_id": null,
+    "stream": false,
+    "metadata": {
+        "external_user_id": "customer-123"
+    }
 }
 ```
 
@@ -2839,15 +2831,15 @@ Response:
 
 ```json
 {
-  "id": "run_uuid",
-  "status": "COMPLETED",
-  "output": {
-    "type": "text",
-    "text": "..."
-  },
-  "usage": {},
-  "estimated_cost": "0.003",
-  "created_at": "..."
+    "id": "run_uuid",
+    "status": "COMPLETED",
+    "output": {
+        "type": "text",
+        "text": "..."
+    },
+    "usage": {},
+    "estimated_cost": "0.003",
+    "created_at": "..."
 }
 ```
 
@@ -2896,27 +2888,27 @@ The response follows the standard collection contract and includes the owning ag
 
 ```json
 {
-  "data": [
-    {
-      "id": "trace_uuid",
-      "agent_id": "agent_uuid",
-      "agent_name": "Research Agent",
-      "agent_version_id": "version_uuid",
-      "run_id": "run_uuid",
-      "session_id": "session_uuid",
-      "status": "COMPLETED",
-      "started_at": "...",
-      "completed_at": "...",
-      "duration_ms": 920,
-      "input_text": "Hello",
-      "output_text": "Hi there",
-      "error_code": null
+    "data": [
+        {
+            "id": "trace_uuid",
+            "agent_id": "agent_uuid",
+            "agent_name": "Research Agent",
+            "agent_version_id": "version_uuid",
+            "run_id": "run_uuid",
+            "session_id": "session_uuid",
+            "status": "COMPLETED",
+            "started_at": "...",
+            "completed_at": "...",
+            "duration_ms": 920,
+            "input_text": "Hello",
+            "output_text": "Hi there",
+            "error_code": null
+        }
+    ],
+    "pagination": {
+        "next_cursor": null,
+        "has_more": false
     }
-  ],
-  "pagination": {
-    "next_cursor": null,
-    "has_more": false
-  }
 }
 ```
 
@@ -2926,15 +2918,15 @@ Response:
 
 ```json
 {
-  "trace": {
-    "id": "uuid",
-    "status": "COMPLETED",
-    "started_at": "...",
-    "completed_at": "..."
-  },
-  "root_span": {
-    "id": "uuid"
-  }
+    "trace": {
+        "id": "uuid",
+        "status": "COMPLETED",
+        "started_at": "...",
+        "completed_at": "..."
+    },
+    "root_span": {
+        "id": "uuid"
+    }
 }
 ```
 
@@ -2959,25 +2951,25 @@ Response item:
 
 ```json
 {
-  "id": "uuid",
-  "parent_span_id": "uuid",
-  "run_id": "uuid",
-  "type": "MODEL",
-  "name": "google.generate",
-  "status": "COMPLETED",
-  "started_at": "...",
-  "completed_at": "...",
-  "duration_ms": 920,
-  "usage": {
-    "input_tokens": 1030,
-    "output_tokens": 214,
-    "total_tokens": 1244,
-    "cached_input_tokens": 0
-  },
-  "attributes": {
-    "provider": "google",
-    "model": "..."
-  }
+    "id": "uuid",
+    "parent_span_id": "uuid",
+    "run_id": "uuid",
+    "type": "MODEL",
+    "name": "google.generate",
+    "status": "COMPLETED",
+    "started_at": "...",
+    "completed_at": "...",
+    "duration_ms": 920,
+    "usage": {
+        "input_tokens": 1030,
+        "output_tokens": 214,
+        "total_tokens": 1244,
+        "cached_input_tokens": 0
+    },
+    "attributes": {
+        "provider": "google",
+        "model": "..."
+    }
 }
 ```
 
@@ -3025,26 +3017,26 @@ Response:
 
 ```json
 {
-  "period": {
-    "from": "...",
-    "to": "..."
-  },
-  "runs": {
-    "total": 8291,
-    "completed": 8018,
-    "failed": 273,
-    "success_rate": 0.967
-  },
-  "latency": {
-    "average_ms": 2400,
-    "p95_ms": 6800
-  },
-  "usage": {
-    "input_tokens": 1000000,
-    "output_tokens": 300000
-  },
-  "estimated_cost": "12.48",
-  "tool_failure_rate": 0.012
+    "period": {
+        "from": "...",
+        "to": "..."
+    },
+    "runs": {
+        "total": 8291,
+        "completed": 8018,
+        "failed": 273,
+        "success_rate": 0.967
+    },
+    "latency": {
+        "average_ms": 2400,
+        "p95_ms": 6800
+    },
+    "usage": {
+        "input_tokens": 1000000,
+        "output_tokens": 300000
+    },
+    "estimated_cost": "12.48",
+    "tool_failure_rate": 0.012
 }
 ```
 
@@ -3079,14 +3071,14 @@ Response:
 
 ```json
 {
-  "metric": "runs",
-  "interval": "1h",
-  "points": [
-    {
-      "timestamp": "...",
-      "value": 14
-    }
-  ]
+    "metric": "runs",
+    "interval": "1h",
+    "points": [
+        {
+            "timestamp": "...",
+            "value": 14
+        }
+    ]
 }
 ```
 
@@ -3133,16 +3125,16 @@ Response:
 
 ```json
 {
-  "data": [
-    {
-      "id": "uuid",
-      "actor_user_id": "uuid",
-      "action": "agent.version.published",
-      "resource_type": "agent",
-      "resource_id": "uuid",
-      "created_at": "..."
-    }
-  ]
+    "data": [
+        {
+            "id": "uuid",
+            "actor_user_id": "uuid",
+            "action": "agent.version.published",
+            "resource_type": "agent",
+            "resource_id": "uuid",
+            "created_at": "..."
+        }
+    ]
 }
 ```
 
@@ -3180,7 +3172,7 @@ Request:
 
 ```json
 {
-  "provider": "openai"
+    "provider": "openai"
 }
 ```
 
@@ -3188,7 +3180,7 @@ Response:
 
 ```json
 {
-  "status": "VALID"
+    "status": "VALID"
 }
 ```
 
@@ -3206,15 +3198,15 @@ Response:
 
 ```json
 {
-  "data": [
-    {
-      "tool_id": "uuid",
-      "tool_version_id": "uuid",
-      "name": "Weather",
-      "alias": "weather",
-      "type": "HTTP"
-    }
-  ]
+    "data": [
+        {
+            "tool_id": "uuid",
+            "tool_version_id": "uuid",
+            "name": "Weather",
+            "alias": "weather",
+            "type": "HTTP"
+        }
+    ]
 }
 ```
 
@@ -3250,12 +3242,12 @@ Response:
 
 ```json
 {
-  "id": "uuid",
-  "type": "DOCUMENT_INGESTION",
-  "status": "COMPLETED",
-  "attempt_count": 1,
-  "created_at": "...",
-  "completed_at": "..."
+    "id": "uuid",
+    "type": "DOCUMENT_INGESTION",
+    "status": "COMPLETED",
+    "attempt_count": 1,
+    "created_at": "...",
+    "completed_at": "..."
 }
 ```
 
@@ -3393,19 +3385,19 @@ Example:
 
 ```json
 {
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Request validation failed.",
-    "request_id": "req_123",
-    "details": {
-      "fields": [
-        {
-          "field": "runtime_config.max_steps",
-          "message": "Must be between 1 and 100."
+    "error": {
+        "code": "VALIDATION_ERROR",
+        "message": "Request validation failed.",
+        "request_id": "req_123",
+        "details": {
+            "fields": [
+                {
+                    "field": "runtime_config.max_steps",
+                    "message": "Must be between 1 and 100."
+                }
+            ]
         }
-      ]
     }
-  }
 }
 ```
 
@@ -3424,11 +3416,11 @@ Normalize:
 
 ```json
 {
-  "error": {
-    "code": "PROVIDER_RATE_LIMITED",
-    "message": "The configured model provider is temporarily rate limited.",
-    "request_id": "..."
-  }
+    "error": {
+        "code": "PROVIDER_RATE_LIMITED",
+        "message": "The configured model provider is temporarily rate limited.",
+        "request_id": "..."
+    }
 }
 ```
 
@@ -3442,11 +3434,11 @@ Example runtime error:
 
 ```json
 {
-  "error": {
-    "code": "TOOL_EXECUTION_FAILED",
-    "message": "Tool execution failed.",
-    "request_id": "..."
-  }
+    "error": {
+        "code": "TOOL_EXECUTION_FAILED",
+        "message": "Tool execution failed.",
+        "request_id": "..."
+    }
 }
 ```
 
@@ -3478,11 +3470,11 @@ Body:
 
 ```json
 {
-  "error": {
-    "code": "RATE_LIMITED",
-    "message": "Too many requests.",
-    "request_id": "..."
-  }
+    "error": {
+        "code": "RATE_LIMITED",
+        "message": "Too many requests.",
+        "request_id": "..."
+    }
 }
 ```
 
@@ -3525,8 +3517,8 @@ Initial input:
 
 ```json
 {
-  "type": "text",
-  "text": "..."
+    "type": "text",
+    "text": "..."
 }
 ```
 
@@ -3534,12 +3526,12 @@ Future-compatible shape:
 
 ```json
 {
-  "parts": [
-    {
-      "type": "text",
-      "text": "..."
-    }
-  ]
+    "parts": [
+        {
+            "type": "text",
+            "text": "..."
+        }
+    ]
 }
 ```
 
@@ -3553,8 +3545,8 @@ Initial response:
 
 ```json
 {
-  "type": "text",
-  "text": "..."
+    "type": "text",
+    "text": "..."
 }
 ```
 
@@ -3562,8 +3554,8 @@ Metadata may include:
 
 ```json
 {
-  "citations": [],
-  "structured_output": null
+    "citations": [],
+    "structured_output": null
 }
 ```
 
@@ -3575,10 +3567,10 @@ Normalized API usage:
 
 ```json
 {
-  "input_tokens": 1000,
-  "output_tokens": 250,
-  "cached_input_tokens": 0,
-  "total_tokens": 1250
+    "input_tokens": 1000,
+    "output_tokens": 250,
+    "cached_input_tokens": 0,
+    "total_tokens": 1250
 }
 ```
 
@@ -3592,12 +3584,12 @@ A GET Run should expose normalized failure:
 
 ```json
 {
-  "id": "uuid",
-  "status": "FAILED",
-  "error": {
-    "code": "TOOL_TIMEOUT",
-    "message": "The tool exceeded its timeout."
-  }
+    "id": "uuid",
+    "status": "FAILED",
+    "error": {
+        "code": "TOOL_TIMEOUT",
+        "message": "The tool exceeded its timeout."
+    }
 }
 ```
 
@@ -3776,8 +3768,8 @@ Recommended future-compatible response:
 
 ```json
 {
-  "revision": 12,
-  "updated_at": "..."
+    "revision": 12,
+    "updated_at": "..."
 }
 ```
 
@@ -3903,10 +3895,10 @@ Public deployment requests may accept client metadata:
 
 ```json
 {
-  "metadata": {
-    "external_user_id": "customer-42",
-    "conversation_source": "website"
-  }
+    "metadata": {
+        "external_user_id": "customer-42",
+        "conversation_source": "website"
+    }
 }
 ```
 
@@ -3960,8 +3952,8 @@ If truncated:
 
 ```json
 {
-  "truncated": true,
-  "preview": "..."
+    "truncated": true,
+    "preview": "..."
 }
 ```
 
@@ -4075,8 +4067,8 @@ Error:
 
 ```json
 {
-  "code": "RUN_LIMIT_EXCEEDED",
-  "message": "Agent execution exceeded its configured limit."
+    "code": "RUN_LIMIT_EXCEEDED",
+    "message": "Agent execution exceeded its configured limit."
 }
 ```
 
@@ -4193,21 +4185,21 @@ Read-only API requests do not require audit records by default.
 
 Initial simplified matrix:
 
-| Resource | OWNER | MEMBER |
-|---|---:|---:|
-| Read Agent | Yes | Yes |
-| Create Agent | Yes | Yes |
-| Update Agent | Yes | Yes |
-| Publish Agent | Yes | Yes |
-| Manage Tools | Yes | Yes |
-| Manage Knowledge | Yes | Yes |
-| Manage Memory | Yes | Yes |
-| Run Agent | Yes | Yes |
-| Evaluation | Yes | Yes |
-| Deploy Agent | Yes | Yes |
-| Manage Credentials | Yes | Limited/Yes initially |
-| Manage Workspace | Yes | No |
-| Manage Members | Yes | No |
+| Resource           | OWNER |                MEMBER |
+| ------------------ | ----: | --------------------: |
+| Read Agent         |   Yes |                   Yes |
+| Create Agent       |   Yes |                   Yes |
+| Update Agent       |   Yes |                   Yes |
+| Publish Agent      |   Yes |                   Yes |
+| Manage Tools       |   Yes |                   Yes |
+| Manage Knowledge   |   Yes |                   Yes |
+| Manage Memory      |   Yes |                   Yes |
+| Run Agent          |   Yes |                   Yes |
+| Evaluation         |   Yes |                   Yes |
+| Deploy Agent       |   Yes |                   Yes |
+| Manage Credentials |   Yes | Limited/Yes initially |
+| Manage Workspace   |   Yes |                    No |
+| Manage Members     |   Yes |                    No |
 
 MVP may allow broad MEMBER privileges.
 
@@ -4564,10 +4556,10 @@ Body:
 
 ```json
 {
-  "input": {
-    "type": "text",
-    "text": "Hello"
-  }
+    "input": {
+        "type": "text",
+        "text": "Hello"
+    }
 }
 ```
 
@@ -4575,12 +4567,12 @@ Response:
 
 ```json
 {
-  "id": "run_uuid",
-  "status": "COMPLETED",
-  "output": {
-    "type": "text",
-    "text": "Hello!"
-  }
+    "id": "run_uuid",
+    "status": "COMPLETED",
+    "output": {
+        "type": "text",
+        "text": "Hello!"
+    }
 }
 ```
 
@@ -4830,3 +4822,21 @@ bindings are draft-only until publish at
 
 `AGENT`, `TOOL`, `CONDITION`, and `TRANSFORM` expressions use a tagged AST.
 Arbitrary expression strings and `eval()` are not part of the contract.
+
+## Phase 14 approval contract
+
+Approval-sensitive executions are durable and workspace-scoped:
+
+```text
+GET  /v1/workspaces/{workspace_id}/approval-requests
+GET  /v1/approval-requests/{approval_request_id}
+POST /v1/approval-requests/{approval_request_id}:approve
+POST /v1/approval-requests/{approval_request_id}:reject
+```
+
+Members and owners may resolve pending requests. Responses contain only
+redacted arguments and safe run/workflow identifiers. Resolution returns `202`
+and atomically queues an `APPROVAL_RESUME` continuation; a second resolution is
+`409 APPROVAL_ALREADY_RESOLVED`, while an expired request is `422
+APPROVAL_EXPIRED`. Runtime SSE emits `approval.required` and closes cleanly so
+clients can poll the request and run before reconnecting after continuation.

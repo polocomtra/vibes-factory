@@ -57,7 +57,7 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
         output=[],
         usage=SimpleNamespace(input_tokens=2, output_tokens=1, total_tokens=3),
         status="completed",
-        model="gpt-5.6-luna",
+        model="gpt-6-luna",
     )
     client = FakeOpenAIClient(response)
     factory = cast(Callable[..., AsyncOpenAI], lambda **kwargs: client)
@@ -66,7 +66,7 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
         client_factory=factory,
     )
 
-    azure_request = request("azure_openai", "gpt-5.6-luna").model_copy(
+    azure_request = request("azure_openai", "gpt-6-luna").model_copy(
         update={"temperature": 0.2}
     )
     result = await provider.generate(azure_request, "temporary-key")
@@ -75,7 +75,7 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
     assert result.usage is not None and result.usage.total_tokens == 3
     client.responses.create.assert_awaited_once()
     kwargs = client.responses.create.await_args.kwargs
-    assert kwargs["model"] == "gpt-5.6-luna"
+    assert kwargs["model"] == "gpt-6-luna"
     assert kwargs["store"] is False
     assert kwargs["input"] == "hello"
     assert "temperature" not in kwargs
@@ -89,7 +89,7 @@ async def test_azure_stream_normalizes_text_deltas_and_completed_response() -> N
         output=[],
         usage=SimpleNamespace(input_tokens=2, output_tokens=2, total_tokens=4),
         status="completed",
-        model="gpt-5.6-luna",
+        model="gpt-6-luna",
     )
 
     async def events():
@@ -103,7 +103,7 @@ async def test_azure_stream_normalizes_text_deltas_and_completed_response() -> N
         base_url="https://resource.services.ai.azure.com/openai/v1",
         client_factory=factory,
     )
-    stream_request = request("azure_openai", "gpt-5.6-luna").model_copy(
+    stream_request = request("azure_openai", "gpt-6-luna").model_copy(
         update={"stream": True}
     )
 
@@ -144,7 +144,7 @@ async def test_azure_stream_keeps_usable_incomplete_text_response() -> None:
         base_url="https://resource.services.ai.azure.com/openai/v1",
         client_factory=cast(Callable[..., AsyncOpenAI], lambda **kwargs: client),
     )
-    stream_request = request("azure_openai", "gpt-5.6-luna").model_copy(
+    stream_request = request("azure_openai", "gpt-6-luna").model_copy(
         update={"stream": True}
     )
 
@@ -302,9 +302,9 @@ def test_azure_model_is_backend_default_and_uses_configured_endpoint() -> None:
         azure_openai_base_url="https://resource.services.ai.azure.com/openai/v1",
     )
 
-    assert (default.provider, default.name) == ("azure_openai", "gpt-5.6-luna")
+    assert (default.provider, default.name) == ("azure_openai", "gpt-6-luna")
     assert [(model.provider, model.name) for model in list_models()] == [
-        ("azure_openai", "gpt-5.6-luna")
+        ("azure_openai", "gpt-6-luna")
     ]
     assert find_model("google", "gemini-3.8-flash") is None
     assert registry.builtin_api_key("azure_openai") == "environment-key"

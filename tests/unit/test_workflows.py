@@ -28,8 +28,15 @@ def test_condition_supports_composition() -> None:
         {
             "op": "all",
             "items": [
-                {"op": "exists", "value": {"kind": "ref", "scope": "input", "path": "/topic"}},
-                {"op": "eq", "left": {"kind": "literal", "value": "A"}, "right": {"kind": "literal", "value": "A"}},
+                {
+                    "op": "exists",
+                    "value": {"kind": "ref", "scope": "input", "path": "/topic"},
+                },
+                {
+                    "op": "eq",
+                    "left": {"kind": "literal", "value": "A"},
+                    "right": {"kind": "literal", "value": "A"},
+                },
             ],
         },
         {"topic": "x"},
@@ -42,7 +49,12 @@ def test_graph_rejects_cycle_and_path_without_end() -> None:
     issues = validate_graph(
         definition(
             {"key": "start", "type": "START", "name": "Start"},
-            {"key": "agent", "type": "TRANSFORM", "name": "Agent", "config": {"assignments": []}},
+            {
+                "key": "agent",
+                "type": "TRANSFORM",
+                "name": "Agent",
+                "config": {"assignments": []},
+            },
             {"key": "end", "type": "END", "name": "End"},
             edges=[
                 {"source": "start", "target": "agent"},
@@ -58,7 +70,17 @@ def test_graph_requires_true_and_false_condition_edges() -> None:
     issues = validate_graph(
         definition(
             {"key": "start", "type": "START", "name": "Start"},
-            {"key": "condition", "type": "CONDITION", "name": "Condition", "config": {"expression": {"op": "exists", "value": {"kind": "ref", "scope": "input", "path": "/topic"}}}},
+            {
+                "key": "condition",
+                "type": "CONDITION",
+                "name": "Condition",
+                "config": {
+                    "expression": {
+                        "op": "exists",
+                        "value": {"kind": "ref", "scope": "input", "path": "/topic"},
+                    }
+                },
+            },
             {"key": "end", "type": "END", "name": "End"},
             edges=[
                 {"source": "start", "target": "condition"},
@@ -67,6 +89,36 @@ def test_graph_requires_true_and_false_condition_edges() -> None:
         )
     )
     assert any(issue.code == "CONDITION_BRANCH_INVALID" for issue in issues)
+
+
+def test_graph_requires_approval_branches_and_message() -> None:
+    issues = validate_graph(
+        definition(
+            {"key": "start", "type": "START", "name": "Start"},
+            {
+                "key": "review",
+                "type": "APPROVAL",
+                "name": "Review",
+                "config": {"message": "Approve this action"},
+            },
+            {"key": "approved", "type": "END", "name": "Approved"},
+            {"key": "rejected", "type": "END", "name": "Rejected"},
+            edges=[
+                {"source": "start", "target": "review"},
+                {
+                    "source": "review",
+                    "target": "approved",
+                    "source_handle": "approved",
+                },
+                {
+                    "source": "review",
+                    "target": "rejected",
+                    "source_handle": "rejected",
+                },
+            ],
+        )
+    )
+    assert not any(issue.code == "APPROVAL_BRANCH_INVALID" for issue in issues)
 
 
 def test_transform_accepts_nested_json_pointer_targets() -> None:

@@ -24,7 +24,7 @@ def valid_create_payload() -> AgentCreateRequest:
         instructions="Research technical topics accurately.",
         model=ModelConfiguration(
             provider="Azure_OpenAI",
-            name="GPT-5.6-Luna",
+            name="gpt-6-luna",
             config={"temperature": 0.2},
         ),
     )
@@ -35,7 +35,7 @@ def test_model_configuration_normalizes_catalog_identifiers() -> None:
     assert model is not None
 
     assert model.provider == "azure_openai"
-    assert model.name == "gpt-5.6-luna"
+    assert model.name == "gpt-6-luna"
     assert find_model(model.provider, model.name) is not None
 
 
@@ -78,7 +78,7 @@ def test_snapshot_contains_future_binding_slots() -> None:
     assert snapshot["instructions"] == payload.instructions
     assert snapshot["model"] == {
         "provider": "azure_openai",
-        "name": "gpt-5.6-luna",
+        "name": "gpt-6-luna",
         "config": {"temperature": 0.2},
         "reasoning_options": {},
         "provider_options": {},

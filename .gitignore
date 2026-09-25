@@ -122,6 +122,8 @@ activemq-data/
 .env
 .env.local
 .envrc
+.env.compose
+.env.*
 .venv
 env/
 venv/

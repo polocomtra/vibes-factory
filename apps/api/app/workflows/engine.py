@@ -19,6 +19,11 @@ import structlog
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..approvals.service import (
+    create_approval,
+    mark_tool_run_waiting,
+    mark_workflow_waiting,
+)
 from ..config import get_settings
 from ..credentials.service import DatabaseCredentialResolver
 from ..db import SessionFactory
@@ -28,6 +33,9 @@ from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
     Agent,
     AgentVersion,
+    ApprovalKind,
+    ApprovalRequest,
+    ApprovalStatus,
     Job,
     JobStatus,
     Run,
@@ -89,6 +97,12 @@ class WorkflowExecutionError(RuntimeError):
         self.message = message
         self.retryable = retryable
         self.details = details or {}
+
+
+class WorkflowApprovalRequired(WorkflowExecutionError):
+    """A workflow node was durably parked behind a pending approval."""
+
+    pass
 
 
 def _pointer_get(document: Any, path: str) -> Any:
@@ -487,17 +501,44 @@ class WorkflowEngine:
             raise
         persisted_run = await self.session.get(Run, result.run_id)
         if persisted_run is not None:
-            persisted_run.session_id = None
-            await self.session.delete(hidden_session)
-            await self.session.flush()
+            if result.status != "WAITING_APPROVAL":
+                persisted_run.session_id = None
+                await self.session.delete(hidden_session)
+                await self.session.flush()
+        if result.status == "WAITING_APPROVAL":
+            child_run = await self.session.get(Run, result.run_id)
+            approval = await self.session.scalar(
+                select(ApprovalRequest)
+                .where(
+                    ApprovalRequest.run_id == result.run_id,
+                    ApprovalRequest.status == ApprovalStatus.PENDING,
+                )
+                .order_by(ApprovalRequest.requested_at.desc())
+                .limit(1)
+            )
+            if child_run is not None:
+                await mark_tool_run_waiting(self.session, child_run)
+            raise RuntimeExecutionError(
+                "GUARDRAIL_APPROVAL_REQUIRED",
+                "The child agent is waiting for human approval.",
+                status_code=202,
+                run_id=result.run_id,
+                trace_id=child_run.trace_id if child_run is not None else None,
+                details={"approval_request_id": str(approval.id) if approval else None},
+            )
         return {
-            "text": result.output.text,
+            "text": result.output.text if result.output is not None else "",
             "run_id": str(result.run_id),
             "usage": result.usage.model_dump(exclude_none=True),
         }, result.run_id
 
     async def _execute_tool(
-        self, run: WorkflowRun, node: WorkflowNode, arguments: dict[str, Any]
+        self,
+        run: WorkflowRun,
+        node: WorkflowNode,
+        node_run: WorkflowNodeRun,
+        node_span: Span,
+        arguments: dict[str, Any],
     ) -> dict[str, Any]:
         if self.execution_context is not None:
             self.execution_context.increment("tool_calls", limit_name="max_tool_calls")
@@ -512,10 +553,55 @@ class WorkflowEngine:
             ToolRiskLevel.MEDIUM,
             ToolRiskLevel.HIGH,
         }:
-            raise WorkflowExecutionError(
-                "TOOL_SIDE_EFFECT_BLOCKED",
-                "Side-effect and elevated-risk workflow tools are disabled "
-                "in Phase 12.",
+            approval_span = Span(
+                id=uuid4(),
+                trace_id=run.trace_id,
+                workflow_run_id=run.id,
+                parent_span_id=node_span.id,
+                span_type=SpanType.APPROVAL,
+                name=f"approval.{node.node_key}.tool",
+                status=SpanStatus.RUNNING,
+                input={"tool": version.name, "node_key": node.node_key},
+                attributes={"tool_version_id": str(version.id)},
+                started_at=datetime.now(UTC),
+            )
+            self.session.add(approval_span)
+            await self.session.flush()
+            approval = await create_approval(
+                self.session,
+                workspace_id=run.workspace_id,
+                kind=ApprovalKind.WORKFLOW_NODE,
+                workflow_run_id=run.id,
+                workflow_node_run_id=node_run.id,
+                tool_version_id=version.id,
+                approval_span_id=approval_span.id,
+                requested_action=version.name,
+                arguments=self.redactor.redact(arguments),
+                risk_reason=(
+                    "Workflow tool has side effects or a medium/high risk level."
+                ),
+                metadata={
+                    "workflow_tool": True,
+                    "node_key": node.node_key,
+                    "tool_name": version.name,
+                },
+            )
+            await mark_workflow_waiting(self.session, run, node_run)
+            await self._event(
+                run,
+                WorkflowEventType.APPROVAL_REQUIRED,
+                {
+                    "approval_request_id": str(approval.id),
+                    "node_key": node.node_key,
+                    "tool_name": version.name,
+                },
+                node_run.id,
+            )
+            await self.session.commit()
+            raise WorkflowApprovalRequired(
+                "WORKFLOW_TOOL_APPROVAL_REQUIRED",
+                "This workflow tool requires approval before it can execute.",
+                details={"approval_request_id": str(approval.id)},
             )
         pipeline = ToolExecutionPipeline(
             credential_resolver=DatabaseCredentialResolver(self.session),
@@ -547,6 +633,7 @@ class WorkflowEngine:
             WorkflowRunStatus.COMPLETED,
             WorkflowRunStatus.FAILED,
             WorkflowRunStatus.CANCELLED,
+            WorkflowRunStatus.WAITING_APPROVAL,
         }:
             return
         by_id, outgoing = await self._load_graph(run)
@@ -608,6 +695,7 @@ class WorkflowEngine:
             if run.started_at
             else 0.0
         )
+        elapsed = max(0.0, elapsed - float(run.usage.get("approval_wait_seconds", 0.0)))
         normalized_budget = {
             **budget,
             "max_steps": int(budget.get("max_total_steps", 100)),
@@ -795,6 +883,60 @@ class WorkflowEngine:
                         node_run.span_id,
                         self.execution_context,
                     )
+                elif node.node_type == WorkflowNodeType.APPROVAL:
+                    payload = resolve_expression(
+                        node.configuration.get(
+                            "payload", {"kind": "ref", "scope": "input", "path": ""}
+                        ),
+                        run.input,
+                        run.variables,
+                        run.node_outputs,
+                    )
+                    approval_span = Span(
+                        id=uuid4(),
+                        trace_id=run.trace_id,
+                        workflow_run_id=run.id,
+                        parent_span_id=node_span.id,
+                        span_type=SpanType.APPROVAL,
+                        name=f"approval.{node.node_key}",
+                        status=SpanStatus.RUNNING,
+                        input={"node_key": node.node_key},
+                        attributes={"message": node.configuration["message"]},
+                        started_at=datetime.now(UTC),
+                    )
+                    self.session.add(approval_span)
+                    await self.session.flush()
+                    approval = await create_approval(
+                        self.session,
+                        workspace_id=run.workspace_id,
+                        kind=ApprovalKind.WORKFLOW_NODE,
+                        workflow_run_id=run.id,
+                        workflow_node_run_id=node_run.id,
+                        approval_span_id=approval_span.id,
+                        requested_action=node.name,
+                        arguments=self.redactor.redact(
+                            payload if isinstance(payload, dict) else {"value": payload}
+                        ),
+                        risk_reason=str(node.configuration["message"]),
+                        ttl_seconds=node.configuration.get("ttl_seconds"),
+                        metadata={
+                            "message": node.configuration["message"],
+                            "node_key": node.node_key,
+                        },
+                    )
+                    await mark_workflow_waiting(self.session, run, node_run)
+                    await self._event(
+                        run,
+                        WorkflowEventType.APPROVAL_REQUIRED,
+                        {
+                            "approval_request_id": str(approval.id),
+                            "node_key": node.node_key,
+                        },
+                        node_run.id,
+                    )
+                    node_span.status = SpanStatus.RUNNING
+                    await self.session.commit()
+                    return
                 elif node.node_type == WorkflowNodeType.TOOL:
                     args: dict[str, Any] = {}
                     for assignment in node.configuration.get("arguments", []):
@@ -808,12 +950,38 @@ class WorkflowEngine:
                                 run.node_outputs,
                             ),
                         )
-                    output = await self._execute_tool(run, node, args)
+                    output = await self._execute_tool(
+                        run, node, node_run, node_span, args
+                    )
                 else:
                     raise WorkflowExecutionError(
                         "NODE_TYPE_UNSUPPORTED", "The node type is not supported."
                     )
+            except WorkflowApprovalRequired:
+                return
             except (WorkflowExecutionError, RuntimeExecutionError) as error:
+                if (
+                    isinstance(error, RuntimeExecutionError)
+                    and error.code == "GUARDRAIL_APPROVAL_REQUIRED"
+                ):
+                    run.status = WorkflowRunStatus.WAITING_APPROVAL
+                    run.waiting_reason = "CHILD_AGENT_APPROVAL"
+                    approval_request_id = getattr(error, "details", {}).get(
+                        "approval_request_id"
+                    )
+                    if approval_request_id:
+                        await self._event(
+                            run,
+                            WorkflowEventType.APPROVAL_REQUIRED,
+                            {
+                                "approval_request_id": str(approval_request_id),
+                                "node_key": node.node_key,
+                                "source": "AGENT",
+                            },
+                            node_run.id,
+                        )
+                    await self.session.commit()
+                    return
                 code = getattr(error, "code", "WORKFLOW_NODE_FAILED")
                 message = getattr(error, "message", str(error))
                 await self._fail(

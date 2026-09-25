@@ -11,6 +11,8 @@ import structlog
 from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .app.approvals.service import expire_approvals
+from .app.approvals.worker import process_approval_resume
 from .app.config import get_settings
 from .app.db import SessionFactory, dispose_engine
 from .app.knowledge.embedding import EmbeddingUnavailable, HttpEmbeddingProvider
@@ -630,8 +632,16 @@ async def run_worker() -> None:
         heartbeat_seconds=settings.workflow_heartbeat_seconds,
     )
     last_idle_log = monotonic()
+    last_approval_sweep = monotonic()
     try:
         while True:
+            if (
+                monotonic() - last_approval_sweep
+                >= get_settings().approval_sweep_seconds
+            ):
+                async with SessionFactory() as sweep_session:
+                    await expire_approvals(sweep_session)
+                last_approval_sweep = monotonic()
             job = await claim_job(worker_id)
             if job is None:
                 if monotonic() - last_idle_log >= 30:
@@ -649,6 +659,8 @@ async def run_worker() -> None:
                     await process_memory_extraction(job, worker_id)
                 elif job.job_type == JobType.WORKFLOW_EXECUTION:
                     await process_workflow_execution(job, worker_id)
+                elif job.job_type == JobType.APPROVAL_RESUME:
+                    await process_approval_resume(job, worker_id)
             except Exception:
                 logger.exception(
                     "job_processing_crashed",

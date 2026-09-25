@@ -369,7 +369,10 @@ class GuardrailEngine:
         )
 
 
-def default_baseline() -> GuardrailPolicyInput:
+def default_baseline(version: int = 1) -> GuardrailPolicyInput:
+    high_risk_action = (
+        GuardrailDecision.REQUIRE_APPROVAL if version >= 2 else GuardrailDecision.BLOCK
+    )
     return GuardrailPolicyInput(
         source="PLATFORM_DEFAULT",
         priority=0,
@@ -403,7 +406,7 @@ def default_baseline() -> GuardrailPolicyInput:
                 {
                     "id": "default-high-risk-tool",
                     "type": "TOOL_POLICY",
-                    "action": "BLOCK",
+                    "action": high_risk_action.value,
                     "hooks": ["TOOL_INPUT"],
                     "minimum_risk": "HIGH",
                     "side_effect_only": True,

@@ -23,3 +23,4 @@ __pycache__
 !.env.example
 !**/.env.example
 data
+.env.compose

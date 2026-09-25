@@ -10,6 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette import status
 
 from .agents.routes import router as agent_router
+from .approvals.routes import router as approval_router
 from .config import get_settings
 from .credentials.routes import router as credential_router
 from .db import check_database, dispose_engine
@@ -60,6 +61,7 @@ app.middleware("http")(request_id_middleware)
 register_exception_handlers(app)
 app.include_router(workspace_router)
 app.include_router(agent_router)
+app.include_router(approval_router)
 app.include_router(model_provider_router)
 app.include_router(session_router)
 app.include_router(run_router)

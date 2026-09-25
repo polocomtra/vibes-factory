@@ -30,6 +30,7 @@ class RunResponse(BaseModel):
     agent_id: UUID
     agent_version_id: UUID
     session_id: UUID | None
+    workflow_run_id: UUID | None
     parent_run_id: UUID | None
     root_run_id: UUID
     agent_depth: int

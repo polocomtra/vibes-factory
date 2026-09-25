@@ -36,7 +36,9 @@ import {
 import remarkGfm from "remark-gfm";
 
 import { AppShell } from "../../../../components/app-shell";
+import { ApprovalDecisionCard } from "../../../../components/approval-decision-card";
 import { PrimarySelect } from "../../../../components/primary-select";
+import { fetchApprovals } from "../../../../lib/approvals";
 import {
     createRunStream,
     createSession,
@@ -1064,11 +1066,12 @@ export default function PlaygroundPage() {
     const [tracesLoading, setTracesLoading] = useState(false);
     const [traceRunId, setTraceRunId] = useState<string | null>(null);
     const [status, setStatus] = useState<
-        "READY" | "RUNNING" | "COMPLETED" | "FAILED"
+        "READY" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED"
     >("READY");
     const [streamingText, setStreamingText] = useState("");
     const [streamRunId, setStreamRunId] = useState<string | null>(null);
     const [toolActivity, setToolActivity] = useState<string | null>(null);
+    const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
     const [childActivities, setChildActivities] = useState<ChildAgentActivity[]>(
         [],
     );
@@ -1141,6 +1144,8 @@ export default function PlaygroundPage() {
                     ? "COMPLETED"
                     : run.status === "FAILED"
                       ? "FAILED"
+                      : run.status === "WAITING_APPROVAL"
+                        ? "WAITING_APPROVAL"
                       : "RUNNING",
             );
             const [children, spans] = await Promise.all([
@@ -1161,6 +1166,34 @@ export default function PlaygroundPage() {
             setStatus("READY");
         }
     }, []);
+
+    useEffect(() => {
+        if (
+            status !== "WAITING_APPROVAL" ||
+            approvalRequestId ||
+            !lastRun ||
+            !agent
+        ) {
+            return;
+        }
+        let cancelled = false;
+        void fetchApprovals(agent.workspace_id, undefined, undefined, {
+            runId: lastRun.id,
+        })
+            .then((requests) => {
+                if (cancelled) return;
+                const request =
+                    requests.find((item) => item.status === "PENDING") ??
+                    requests[0];
+                if (request) setApprovalRequestId(request.id);
+            })
+            .catch(() => {
+                // The run remains visible while approval details reconnect.
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [status, approvalRequestId, lastRun, agent]);
 
     const refreshSessionTraces = useCallback(async (id: string) => {
         setTracesLoading(true);
@@ -1217,6 +1250,10 @@ export default function PlaygroundPage() {
                                 "The run failed. Try again.",
                         );
                     }
+                } else if (run.status === "WAITING_APPROVAL") {
+                    setLastRun(run);
+                    setStatus("WAITING_APPROVAL");
+                    setToolActivity("Waiting for approval…");
                 }
 
                 if (children.length > 0) {
@@ -1249,6 +1286,7 @@ export default function PlaygroundPage() {
                     });
                 }
                 if (terminalRun) {
+                    if (sessionId) void reloadMessages(sessionId);
                     setBusy(false);
                     abortControllerRef.current?.abort();
                 }
@@ -1266,7 +1304,7 @@ export default function PlaygroundPage() {
             cancelled = true;
             window.clearInterval(interval);
         };
-    }, [busy, streamRunId]);
+    }, [busy, streamRunId, reloadMessages, sessionId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1365,6 +1403,7 @@ export default function PlaygroundPage() {
             setLastRun(null);
             setSessionTraces([]);
             setStatus("READY");
+            setApprovalRequestId(null);
             setStreamingText("");
             setStreamRunId(null);
             setChildActivities([]);
@@ -1387,7 +1426,8 @@ export default function PlaygroundPage() {
             !sessionId ||
             !selectedVersionId ||
             busy ||
-            status === "RUNNING"
+            status === "RUNNING" ||
+            status === "WAITING_APPROVAL"
         )
             return;
         const optimisticMessage: Message = {
@@ -1405,6 +1445,7 @@ export default function PlaygroundPage() {
         setStatus("RUNNING");
         setError(null);
         setLastRun(null);
+        setApprovalRequestId(null);
         setComposer("");
         setStreamingText("");
         setStreamRunId(null);
@@ -1447,9 +1488,13 @@ export default function PlaygroundPage() {
                         event.data.decision === "REDACT"
                             ? `Guardrail redacted ${event.data.hook.toLowerCase().replace("_", " ")} content.`
                             : event.data.decision === "REQUIRE_APPROVAL"
-                              ? `Guardrail requires approval for ${event.data.hook.toLowerCase().replace("_", " ")}; this phase fails closed.`
+                              ? `Approval requested for ${event.data.hook.toLowerCase().replace("_", " ")} action.`
                               : `Guardrail blocked ${event.data.hook.toLowerCase().replace("_", " ")} content.`,
                     );
+                } else if (event.event === "approval.required") {
+                    setApprovalRequestId(event.data.approval_request_id);
+                    setStatus("WAITING_APPROVAL");
+                    setToolActivity("Waiting for approval…");
                 } else if (event.event === "message.delta") {
                     queueDelta(event.data.delta);
                 } else if (event.event === "child_agent.started") {
@@ -1533,7 +1578,7 @@ export default function PlaygroundPage() {
                 }
             }
             flushDelta();
-            let resolvedStatus: "COMPLETED" | "FAILED" | null = terminal;
+            let resolvedStatus: "COMPLETED" | "FAILED" | "WAITING_APPROVAL" | null = terminal;
             if (activeRunId) {
                 const run = await fetchRun(activeRunId);
                 setLastRun(run);
@@ -1542,6 +1587,8 @@ export default function PlaygroundPage() {
                         ? "COMPLETED"
                         : run.status === "FAILED"
                           ? "FAILED"
+                          : run.status === "WAITING_APPROVAL"
+                            ? "WAITING_APPROVAL"
                           : terminal;
                 setStatus(resolvedStatus ?? "RUNNING");
                 failureMessage = failureMessage ?? run.error?.message ?? null;
@@ -1807,6 +1854,8 @@ export default function PlaygroundPage() {
                                               ? "Response complete"
                                               : status === "FAILED"
                                                 ? "Response failed"
+                                                : status === "WAITING_APPROVAL"
+                                                  ? "Waiting for approval"
                                                 : "Ready"}
                                     </span>
                                     {lastRun?.usage?.total_tokens ? (
@@ -1817,6 +1866,19 @@ export default function PlaygroundPage() {
                                     ) : null}
                                 </div>
                             </div>
+                            {approvalRequestId &&
+                            (status === "WAITING_APPROVAL" || busy) ? (
+                                <ApprovalDecisionCard
+                                    approvalId={approvalRequestId}
+                                    onResolved={() => {
+                                        if (!lastRun) return;
+                                        setStatus("RUNNING");
+                                        setBusy(true);
+                                        setStreamRunId(lastRun.id);
+                                        setToolActivity("Decision recorded. Resuming run…");
+                                    }}
+                                />
+                            ) : null}
                             <div
                                 className="message-list"
                                 ref={messageListRef}
@@ -1935,7 +1997,11 @@ export default function PlaygroundPage() {
                                         }}
                                         placeholder="Ask your agent something…"
                                         rows={3}
-                                        disabled={busy || status === "RUNNING"}
+                                        disabled={
+                                            busy ||
+                                            status === "RUNNING" ||
+                                            status === "WAITING_APPROVAL"
+                                        }
                                     />
                                     <button
                                         className="button primary-button send-button"

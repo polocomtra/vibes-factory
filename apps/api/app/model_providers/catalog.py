@@ -24,8 +24,8 @@ class ModelDefinition:
 MODEL_CATALOG: Final[tuple[ModelDefinition, ...]] = (
     ModelDefinition(
         "azure_openai",
-        "gpt-5.6-luna",
-        "GPT-5.6 Luna",
+        "gpt-6-luna",
+        "GPT-6 Luna",
         {
             "tool_calling": True,
             "streaming": True,

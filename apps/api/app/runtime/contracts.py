@@ -151,6 +151,8 @@ class AgentRunRequest(BaseModel):
     citations: tuple[Citation, ...] = ()
     memory_context: str | None = None
     memory_results: tuple[RuntimeMemoryResult, ...] = ()
+    resume_run_id: UUID | None = None
+    resume_approval_id: UUID | None = None
 
 
 class AgentRunResult(BaseModel):
@@ -160,13 +162,13 @@ class AgentRunResult(BaseModel):
     trace_id: UUID
     agent_version_id: UUID
     session_id: UUID
-    status: Literal["COMPLETED"]
-    output: TextInput
+    status: Literal["COMPLETED", "WAITING_APPROVAL"]
+    output: TextInput | None = None
     citations: tuple[Citation, ...] = ()
     usage: TokenUsage
     estimated_cost: float | None = None
     started_at: datetime
-    completed_at: datetime
+    completed_at: datetime | None
 
 
 class RuntimeStreamEvent(BaseModel):
@@ -189,6 +191,7 @@ class RuntimeStreamEvent(BaseModel):
         "retrieval.failed",
         "memory.retrieved",
         "guardrail.triggered",
+        "approval.required",
         "run.completed",
         "run.failed",
     ]

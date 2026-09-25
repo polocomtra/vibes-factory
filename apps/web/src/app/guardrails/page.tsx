@@ -36,7 +36,7 @@ const baselineRules = [
     ["Secret detection", "Redacts recognizable credentials and token-shaped values."],
     ["PII redaction", "Redacts email, phone, and Luhn-valid payment-card candidates."],
     ["Payload limits", "Blocks input/tool input over 100 KB and output over 256 KB."],
-    ["Tool risk", "Blocks HIGH-risk side-effect tools until approval support ships."],
+    ["Tool risk", "Pauses HIGH-risk side-effect tools until a workspace member approves."],
 ] as const;
 
 function newRule(): GuardrailRule {
@@ -91,7 +91,7 @@ function BaselineCard() {
             </div>
             <div className="guardrail-policy-card-heading">
                 <div><h3>Platform default</h3><p>Balanced protection, managed by VibesFactory.</p></div>
-                <span className="guardrail-version-badge">v1</span>
+                <span className="guardrail-version-badge">v2</span>
             </div>
             <div className="guardrail-baseline-rules">
                 {baselineRules.map(([title, description]) => (
@@ -239,7 +239,7 @@ export default function GuardrailsPage() {
     return (
         <AppShell>
             <div className="guardrails-page">
-                <header className="page-header guardrails-page-header"><div><p className="eyebrow">VibesFactory / Platform</p><h1>Guardrails</h1><p className="page-description">Versioned execution boundaries for untrusted input, model output, and tools.</p></div><div className="guardrails-header-actions"><span className="status-badge success"><span />Platform baseline v1</span><button className="button primary-button" type="button" onClick={() => { setError(null); setDialogOpen(true); }} disabled={!workspace}><Plus size={15} aria-hidden="true" />Create policy</button></div></header>
+                <header className="page-header guardrails-page-header"><div><p className="eyebrow">VibesFactory / Platform</p><h1>Guardrails</h1><p className="page-description">Versioned execution boundaries for untrusted input, model output, and tools.</p></div><div className="guardrails-header-actions"><span className="status-badge success"><span />Platform baseline v2</span><button className="button primary-button" type="button" onClick={() => { setError(null); setDialogOpen(true); }} disabled={!workspace}><Plus size={15} aria-hidden="true" />Create policy</button></div></header>
                 {error ? <div className="form-error agent-alert" role="alert" tabIndex={-1}><AlertCircle size={15} aria-hidden="true" />{error}</div> : null}
                 {message ? <div className="form-success agent-alert" role="status"><Check size={15} aria-hidden="true" />{message}</div> : null}
                 {!loading && !workspace ? <section className="panel guardrails-empty-state"><ShieldCheck size={28} aria-hidden="true" /><h2>Create a workspace first</h2><p className="panel-copy">Guardrail policies are isolated by workspace.</p></section> : null}

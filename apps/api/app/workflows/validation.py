@@ -6,7 +6,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..agents.catalog import find_model
 from ..models import AgentVersion, ToolType, ToolVersion, WorkflowNodeType
 from .schemas import (
     Assignment,
@@ -214,6 +213,18 @@ def validate_graph(definition: WorkflowDefinition) -> list[WorkflowValidationIss
                     )
                 )
 
+        elif node.type == WorkflowNodeType.APPROVAL:
+            handles = {handle for _, handle in outgoing[node.key]}
+            if count != 2 or handles != {"approved", "rejected"}:
+                issues.append(
+                    _issue(
+                        "APPROVAL_BRANCH_INVALID",
+                        "APPROVAL must have exactly approved and rejected "
+                        "outgoing edges.",
+                        node_key=node.key,
+                    )
+                )
+
         config = node.config
         if node.type == WorkflowNodeType.AGENT:
             if _uuid(config.get("agent_version_id")) is None:
@@ -313,6 +324,36 @@ def validate_graph(definition: WorkflowDefinition) -> list[WorkflowValidationIss
                                 node_key=node.key,
                             )
                         )
+        elif node.type == WorkflowNodeType.APPROVAL:
+            message = config.get("message")
+            if not isinstance(message, str) or not message.strip():
+                issues.append(
+                    _issue(
+                        "APPROVAL_MESSAGE_REQUIRED",
+                        "APPROVAL requires a non-empty message.",
+                        node_key=node.key,
+                        field="config.message",
+                    )
+                )
+            ttl = config.get("ttl_seconds")
+            if ttl is not None and (
+                not isinstance(ttl, int) or not 300 <= ttl <= 604800
+            ):
+                issues.append(
+                    _issue(
+                        "APPROVAL_TTL_INVALID",
+                        "APPROVAL ttl_seconds must be between 300 and 604800.",
+                        node_key=node.key,
+                        field="config.ttl_seconds",
+                    )
+                )
+            _validate_expression(
+                config.get("payload", {"kind": "ref", "scope": "input", "path": ""}),
+                set(nodes),
+                issues,
+                node.key,
+                "config.payload",
+            )
         elif node.type == WorkflowNodeType.END and "output" in config:
             _validate_expression(
                 config["output"], set(nodes), issues, node.key, "config.output"
@@ -424,20 +465,10 @@ async def validate_resources(
                         node_key=node.key,
                     )
                 )
-            elif (
-                find_model(
-                    agent_versions[version_id].model_provider,
-                    agent_versions[version_id].model_name,
-                )
-                is None
-            ):
-                issues.append(
-                    _issue(
-                        "MODEL_NOT_FOUND",
-                        "The referenced agent model is not available.",
-                        node_key=node.key,
-                    )
-                )
+            # Workflow nodes pin immutable, already-published AgentVersions.
+            # The active model catalog governs creating/publishing new agent
+            # versions; it must not invalidate workflows that reference an
+            # existing snapshot when the catalog changes later.
         if (
             node.type == WorkflowNodeType.TOOL
             and _uuid(node.config.get("tool_version_id")) not in tool_versions
@@ -448,7 +479,7 @@ async def validate_resources(
                     "The tool version was not found in this workspace.",
                     node_key=node.key,
                 )
-        )
+            )
         if node.type == WorkflowNodeType.TOOL:
             tool_version_id = _uuid(node.config.get("tool_version_id"))
             tool_version = (

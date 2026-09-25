@@ -685,7 +685,11 @@ class HttpToolExecutor:
                 raise HttpToolConfigError(
                     "HTTP body mapping must resolve to an object."
                 )
-            attempts = self.retry_policy.get("max_attempts", 1)
+            # Retry transient provider failures by default only when repeating
+            # the request is safe. Non-idempotent calls remain single-shot.
+            attempts = self.retry_policy.get(
+                "max_attempts", 3 if self.idempotent else 1
+            )
             if (
                 isinstance(attempts, bool)
                 or not isinstance(attempts, int)
