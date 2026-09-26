@@ -194,3 +194,4 @@ reference/
 output/
 tmp/
 !apps/web/src/lib/
+docs/mvp-deployment-status.md

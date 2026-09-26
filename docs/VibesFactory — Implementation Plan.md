@@ -3843,10 +3843,21 @@ vibesfactory-api
 
 vibesfactory-worker
 
+vibesfactory-embedding
+
 vibesfactory-web
 ```
 
 Frontend may remain on Vercel if preferred.
+
+The embedding service is a private Cloud Run service. Set both
+`VF_EMBEDDING_SERVICE_URL` and `VF_EMBEDDING_SERVICE_AUDIENCE` on API and
+worker to its Cloud Run service URL, then grant `roles/run.invoker` on the
+embedding service to the API and worker service accounts. When an audience is
+configured, `HttpEmbeddingProvider` fetches a Google-signed ID token from the
+Cloud Run metadata server and sends it as a bearer token. Leave the audience
+unset for local Docker Compose, where the embedding service is reached by its
+container DNS name.
 
 ---
 
