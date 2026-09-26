@@ -1,5 +1,6 @@
 """HTTP embedding provider contract; the API never loads model weights."""
 
+import asyncio
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Literal
@@ -15,6 +16,15 @@ class EmbeddingUnavailable(Exception):
 
 
 logger = structlog.get_logger(__name__)
+
+
+def _fetch_cloud_run_identity_token(audience: str) -> str:
+    """Fetch an ID token from the Cloud Run service identity metadata server."""
+
+    from google.auth.transport.requests import Request
+    from google.oauth2.id_token import fetch_id_token
+
+    return fetch_id_token(Request(), audience)
 
 
 @dataclass(frozen=True)
@@ -50,6 +60,13 @@ class HttpEmbeddingProvider(EmbeddingProvider):
         }
         logger.info("embedding_request_started", **fields)
         try:
+            headers = None
+            if self._settings.embedding_service_audience:
+                token = await asyncio.to_thread(
+                    _fetch_cloud_run_identity_token,
+                    self._settings.embedding_service_audience,
+                )
+                headers = {"Authorization": f"Bearer {token}"}
             async with httpx.AsyncClient(
                 base_url=self._settings.embedding_service_url,
                 timeout=httpx.Timeout(
@@ -59,10 +76,11 @@ class HttpEmbeddingProvider(EmbeddingProvider):
                 response = await client.post(
                     "/internal/v1/embeddings",
                     json={"texts": texts, "input_type": input_type},
+                    headers=headers,
                 )
                 response.raise_for_status()
                 payload: dict[str, Any] = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except Exception as exc:
             status_code = (
                 exc.response.status_code
                 if isinstance(exc, httpx.HTTPStatusError)

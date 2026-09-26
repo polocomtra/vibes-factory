@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Host-local worker default. Docker Compose overrides this with the
     # service DNS name `http://embedding:8100`.
     embedding_service_url: str = "http://127.0.0.1:8100"
+    # Set to the Cloud Run service URL in production to attach a Google-issued
+    # ID token when calling a private embedding service. Leave unset locally.
+    embedding_service_audience: str | None = None
     embedding_model: str = "intfloat/multilingual-e5-small"
     embedding_revision: str = "614241f622f53c4eeff9890bdc4f31cfecc418b3"
     embedding_timeout_seconds: float = Field(default=90.0, gt=0, le=900)
