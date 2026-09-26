@@ -4060,3 +4060,33 @@ and on-demand JSON detail. SSE connection state is always visible and falls
 back to polling without changing the run contract. Purple/blue active glow,
 green completion, amber conditions, cyan tools, and red failures are semantic
 status accents rather than hard-coded page colors.
+
+## Landing page visual direction
+
+The public landing page (`index.html`) is a separate static marketing surface.
+It uses the Obsidian/Frost palette, Inter, JetBrains Mono, and the official
+VibesFactory mark while keeping its CSS and behavior in `landing/` for
+independent hosting. The hero may use a restrained abstract V-shaped 3D
+artwork, orbital data paths, glass layers, and CSS perspective around product
+previews. Keep body copy on sufficiently opaque surfaces and preserve AA
+contrast in both themes. Product previews use illustrative labels and data;
+do not present invented telemetry as live workspace data.
+
+Feature claims must match product availability. Existing console capabilities
+may be described in the present tense. Evaluation, Deployment, and Monitoring
+are roadmap items and must carry a visible “Planned” label plus future-tense
+copy. Do not show them as active console screens, live statuses, or working
+navigation destinations until those capabilities ship.
+
+Landing interactions must support keyboard navigation and visible focus,
+mobile navigation state, persisted dark/light theme preference, and
+`prefers-reduced-motion`. Keep the console destination in
+`landing/config.js` (`CONSOLE_BASE_URL`) so a separately hosted landing can
+point to the deployed console without changing each CTA.
+
+Keep product showcase rows consistent: copy on the left and an equally sized,
+straight preview frame on the right; stack the copy before the preview on
+small screens. The hero preview should show a Playground conversation beside
+a prominent execution timeline and trace details. Use plain verbs and short
+explanations for marketing copy, and keep interface labels inside illustrative
+previews clearly marked as examples.
