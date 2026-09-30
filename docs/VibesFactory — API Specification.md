@@ -4840,3 +4840,15 @@ and atomically queues an `APPROVAL_RESUME` continuation; a second resolution is
 `409 APPROVAL_ALREADY_RESOLVED`, while an expired request is `422
 APPROVAL_EXPIRED`. Runtime SSE emits `approval.required` and closes cleanly so
 clients can poll the request and run before reconnecting after continuation.
+
+## Phase 15 evaluation contract
+
+Evaluation dataset and case collections use the standard opaque cursor
+pagination contract. Evaluation run creation accepts an optional
+`Idempotency-Key` and snapshots ordered case data and evaluator settings. Each
+case runs in a fresh Session through the ordinary AgentRuntime. Evaluation
+mode does not read or write long-term memory. Runs are rejected when the pinned
+agent or child-agent graph includes a ToolVersion with `side_effect=true`.
+LLM judge and groundedness evaluators require a provider/model from the platform
+catalog. Judge tokens and estimated cost are returned separately from agent
+runtime usage. Results include the trace ID when a runtime Run exists.

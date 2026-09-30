@@ -2638,3 +2638,12 @@ Composite indexes support queue ordering, expiry sweeps and run/workflow
 lookups. Unique constraints prevent duplicate approvals for the same tool call
 or workflow node run. Approval resolution and the `APPROVAL_RESUME` job are
 committed together.
+
+## Phase 15 evaluation additions
+
+`evaluation_runs` stores the ordered evaluator configuration and a `case_snapshot`
+JSONB value so later edits to the dataset do not change historical evaluations.
+It also stores a normalized terminal error and an optional hashed idempotency
+key. Each case/evaluator combination has at most one result in a batch. Result
+`run_id` may be null when runtime execution failed; otherwise it points to the
+ordinary runtime Run for traceability.

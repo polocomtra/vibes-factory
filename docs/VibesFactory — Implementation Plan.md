@@ -5662,6 +5662,27 @@ Before release, run `alembic upgrade head`, `npm run build`, mypy and the
 approval-specific API/runtime/workflow acceptance tests against PostgreSQL.
 
 
+# Phase 15 Implementation Record — Evaluation Platform
+
+Phase 15 adds workspace-owned evaluation datasets and ordered cases, immutable
+case/evaluator snapshots per batch, fixed published AgentVersion targets, and
+durable results linked to ordinary Runs and traces. A leased PostgreSQL job
+executes cases through AgentRuntime in isolated sessions. Evaluation mode skips
+long-term memory reads and writes, including child-agent runs. Preflight checks
+the pinned child-agent graph and blocks ToolVersions marked as side-effecting.
+
+The evaluator registry supports exact match, contains, JSON Schema, tool call,
+latency, LLM judge, and citation-groundedness checks. LLM judge calls use a
+separately configured platform model; their token use and estimated Azure cost
+are reported separately. Missing citations, unavailable judges, and other
+unscorable results remain explicitly unscored. The console provides dataset
+authoring, batch configuration/progress, per-case results and compatible run
+comparison in the existing Obsidian/Frost component system.
+
+Verification: focused evaluator/API tests, the Python suite, Ruff, web lint,
+typecheck and production build. Run `alembic upgrade head` on fresh and existing
+PostgreSQL databases before release.
+
 # Appendix A — Codex Kickoff Instructions
 
 The following instructions can be supplied to the coding agent together with the BRD, System Architecture and this Implementation Plan.
