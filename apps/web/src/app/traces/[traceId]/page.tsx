@@ -303,7 +303,7 @@ export default function TraceDetailPage() {
                     <>
                         <header className="trace-detail-page-header">
                             <div className="trace-detail-title-block">
-                                <p className="eyebrow">VibesFactory / Operate / Traces</p>
+                                <p className="eyebrow">VibesFactory / Observe / Traces</p>
                                 <div className="trace-detail-title-line">
                                     <h1>{trace.agent_name ?? "Workflow trace"}</h1>
                                     <StatusBadge status={trace.status} />

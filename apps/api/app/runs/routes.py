@@ -172,6 +172,8 @@ async def _build_runtime_request(
     agent: Agent,
     user: User,
     session: AsyncSession,
+    *,
+    evaluation_mode: bool = False,
 ) -> AgentRunRequest:
     version = await _load_version(session, agent, payload.agent_version_id)
     conversation = await _load_owned_session(session, agent, payload.session_id, user)
@@ -330,6 +332,7 @@ async def _build_runtime_request(
         ),
         input=payload.input,
         execution_budget=budget,
+        evaluation_mode=evaluation_mode,
     )
 
 

@@ -18,6 +18,7 @@ import {
     // FlaskConical,
     // GitBranch,
     Globe2,
+    FlaskConical,
     // LayoutDashboard,
     Menu,
     Moon,
@@ -61,10 +62,11 @@ const navItems: NavItem[] = [
     { label: "MCP Servers", icon: Network, group: "Connect" },
     { label: "Guardrails", icon: ShieldCheck, group: "Platform" },
     { label: "Approvals", icon: ShieldCheck, group: "Platform" },
-    // { label: "Evaluations", icon: FlaskConical, group: "Operate" },
     // { label: "Deployments", icon: Cloud },
-    { label: "Traces", icon: Radio, group: "Operate" },
-    // { label: "Monitoring", icon: Activity },
+    { label: "Traces", icon: Radio, group: "Observe" },
+    // Planned for the Observe group when the feature is implemented:
+    // { label: "Monitoring", icon: Activity, group: "Observe" },
+    { label: "Evaluations", icon: FlaskConical, group: "Evaluate" },
     { label: "Settings", icon: Settings, group: "Workspace" },
 ];
 
@@ -383,6 +385,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (path === "/playground" || path.includes("/playground"))
             return "Playground";
         if (path === "/traces" || path.includes("/traces")) return "Traces";
+        if (path === "/evaluations" || path.startsWith("/evaluations/"))
+            return "Evaluations";
         if (path.startsWith("/agents")) return "Agents";
         if (path === "/workflows" || path.startsWith("/workflows/")) return "Workflows";
         if (path === "/tools" || path.startsWith("/tools/")) return "Tools";
@@ -459,6 +463,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (label === "MCP Servers") router.push("/mcp-servers");
         if (label === "Playground") router.push("/playground");
         if (label === "Traces") router.push("/traces");
+        if (label === "Evaluations") router.push("/evaluations");
         if (label === "Settings") router.push("/settings");
     };
 

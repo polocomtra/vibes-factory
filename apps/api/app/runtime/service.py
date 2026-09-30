@@ -448,7 +448,10 @@ class AgentRuntime:
                 request = await self._apply_input_guardrail(
                     request, run, root_span, user_message, trace
                 )
-                if request.agent_version.memory is not None:
+                if (
+                    request.agent_version.memory is not None
+                    and not request.evaluation_mode
+                ):
                     request, _memory_span = await self._retrieve_memory(
                         request, run, trace, root_span
                     )
@@ -890,7 +893,7 @@ class AgentRuntime:
                     event="guardrail.triggered",
                     data=self._guardrail_events.pop(0),
                 )
-            if request.agent_version.memory is not None:
+            if request.agent_version.memory is not None and not request.evaluation_mode:
                 request, memory_span = await self._retrieve_memory(
                     request, run, trace, root_span
                 )
@@ -1689,6 +1692,7 @@ class AgentRuntime:
                                 child_agent,
                                 user,
                                 self.session,
+                                evaluation_mode=request.evaluation_mode,
                             )
                             child_context = execution_context.fork(
                                 parent_run_id=run.id,
@@ -2598,6 +2602,7 @@ class AgentRuntime:
         self.session.add(assistant)
         if (
             request.agent_version.memory is not None
+            and not request.evaluation_mode
             and request.agent_version.memory.write_enabled
         ):
             extraction_exists = await self.session.scalar(

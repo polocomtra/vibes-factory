@@ -5,16 +5,19 @@ import os
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from time import monotonic
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import structlog
 from sqlalchemy import and_, delete, or_, select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .app.approvals.service import expire_approvals
 from .app.approvals.worker import process_approval_resume
 from .app.config import get_settings
 from .app.db import SessionFactory, dispose_engine
+from .app.evaluations.worker import process_evaluation_batch
 from .app.knowledge.embedding import EmbeddingUnavailable, HttpEmbeddingProvider
 from .app.knowledge.parsing import DocumentParseError, chunk_segments, parse_document
 from .app.knowledge.storage import blob_store_for_settings
@@ -194,7 +197,7 @@ async def process_ingestion(job: Job, worker_id: str) -> None:
                 )
                 .values(status=DocumentStatus.PROCESSING)
             )
-            if processing.rowcount != 1:
+            if cast(CursorResult[Any], processing).rowcount != 1:
                 await finish_stale_ingestion(session, job)
                 return
             await session.commit()
@@ -315,7 +318,7 @@ async def process_ingestion(job: Job, worker_id: str) -> None:
                     error_message=None,
                 )
             )
-            if document_update.rowcount != 1:
+            if cast(CursorResult[Any], document_update).rowcount != 1:
                 await session.rollback()
                 await finish_stale_ingestion(session, job)
                 return
@@ -661,6 +664,8 @@ async def run_worker() -> None:
                     await process_workflow_execution(job, worker_id)
                 elif job.job_type == JobType.APPROVAL_RESUME:
                     await process_approval_resume(job, worker_id)
+                elif job.job_type == JobType.EVALUATION_BATCH:
+                    await process_evaluation_batch(job, worker_id)
             except Exception:
                 logger.exception(
                     "job_processing_crashed",

@@ -153,6 +153,7 @@ class AgentRunRequest(BaseModel):
     memory_results: tuple[RuntimeMemoryResult, ...] = ()
     resume_run_id: UUID | None = None
     resume_approval_id: UUID | None = None
+    evaluation_mode: bool = False
 
 
 class AgentRunResult(BaseModel):

@@ -150,6 +150,15 @@ class JobType(StrEnum):
     MEMORY_EXTRACTION = "MEMORY_EXTRACTION"
     WORKFLOW_EXECUTION = "WORKFLOW_EXECUTION"
     APPROVAL_RESUME = "APPROVAL_RESUME"
+    EVALUATION_BATCH = "EVALUATION_BATCH"
+
+
+class EvaluationStatus(StrEnum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
 
 
 class JobStatus(StrEnum):
@@ -1852,6 +1861,181 @@ class Run(Base):
         Index("ix_runs_root_run_id", "root_run_id"),
         Index("ix_runs_workflow_run_id", "workflow_run_id"),
         Index("ix_runs_status_created", "status", "created_at"),
+    )
+
+
+class EvaluationDataset(Base):
+    __tablename__ = "evaluation_datasets"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_evaluation_datasets_workspace_created", "workspace_id", "created_at"),
+    )
+
+
+class EvaluationCase(Base):
+    __tablename__ = "evaluation_cases"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    evaluation_dataset_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("evaluation_datasets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+    input: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    expected_output: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    expected_tool: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expected_schema: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    rubric: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_dataset_id", "position", name="uq_evaluation_cases_position"
+        ),
+        Index(
+            "ix_evaluation_cases_dataset_position", "evaluation_dataset_id", "position"
+        ),
+    )
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    evaluation_dataset_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("evaluation_datasets.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    status: Mapped[EvaluationStatus] = mapped_column(
+        Enum(EvaluationStatus, native_enum=False, length=32),
+        default=EvaluationStatus.QUEUED,
+        nullable=False,
+    )
+    evaluators: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    case_snapshot: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    aggregate_metrics: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_evaluation_runs_workspace_created", "workspace_id", "created_at"),
+        Index(
+            "ix_evaluation_runs_dataset_created", "evaluation_dataset_id", "created_at"
+        ),
+        Index("ix_evaluation_runs_version_created", "agent_version_id", "created_at"),
+        UniqueConstraint(
+            "workspace_id",
+            "idempotency_key_hash",
+            name="uq_evaluation_runs_idempotency",
+        ),
+    )
+
+
+class EvaluationResult(Base):
+    __tablename__ = "evaluation_results"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    evaluation_run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    evaluation_case_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("evaluation_cases.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    evaluator_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(8, 5), nullable=True)
+    passed: Mapped[bool | None] = mapped_column(nullable=True)
+    details: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_evaluation_results_run_case", "evaluation_run_id", "evaluation_case_id"
+        ),
+        Index("ix_evaluation_results_run_id", "run_id"),
+        UniqueConstraint(
+            "evaluation_run_id",
+            "evaluation_case_id",
+            "evaluator_type",
+            name="uq_evaluation_results_evaluator",
+        ),
     )
 
 

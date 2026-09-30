@@ -360,7 +360,7 @@ export default function TracesPage() {
             <div className="pagination-page traces-page">
                 <div className="page-header traces-header">
                     <div>
-                        <p className="eyebrow">VibesFactory / Operate</p>
+                        <p className="eyebrow">VibesFactory / Observe</p>
                         <h1>Traces</h1>
                         <p className="page-description">
                             Explore runtime executions across the agents in your
