@@ -56,6 +56,56 @@ class RunStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class ModelPricing(Base):
+    """Versioned operator-supplied model token pricing in USD per million."""
+
+    __tablename__ = "model_pricing"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    input_price_per_million: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False
+    )
+    output_price_per_million: Mapped[Decimal] = mapped_column(
+        Numeric(18, 8), nullable=False
+    )
+    cached_input_price_per_million: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 8)
+    )
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, server_default="{}", nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "provider", "model", "effective_from", name="uq_model_pricing_effective"
+        ),
+        CheckConstraint(
+            "input_price_per_million >= 0", name="ck_model_pricing_input_nonnegative"
+        ),
+        CheckConstraint(
+            "output_price_per_million >= 0", name="ck_model_pricing_output_nonnegative"
+        ),
+        CheckConstraint(
+            "cached_input_price_per_million IS NULL OR "
+            "cached_input_price_per_million >= 0",
+            name="ck_model_pricing_cached_nonnegative",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR effective_to > effective_from",
+            name="ck_model_pricing_interval",
+        ),
+        Index("ix_model_pricing_lookup", "provider", "model", "effective_from"),
+    )
+
+
 class WorkflowStatus(StrEnum):
     ACTIVE = "ACTIVE"
     ARCHIVED = "ARCHIVED"

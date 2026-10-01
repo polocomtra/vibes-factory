@@ -29,6 +29,7 @@ from ..models import (
     Session,
     User,
 )
+from ..monitoring.pricing import pricing_for_call
 from ..runs.routes import _build_runtime_request
 from ..runs.schemas import RunCreateRequest
 from ..runtime.budget import estimate_model_cost
@@ -81,6 +82,7 @@ def _run_text(run: Run) -> str:
 
 
 async def _judge(
+    session,
     run: Run,
     case: dict[str, Any],
     config: dict[str, Any],
@@ -148,6 +150,7 @@ async def _judge(
         metadata={"purpose": "evaluation_judge"},
     )
     try:
+        call_started = datetime.now(UTC)
         response = await registry.resolve(provider_name).generate(
             request, registry.builtin_api_key(provider_name)
         )
@@ -155,15 +158,40 @@ async def _judge(
         score = max(0.0, min(1.0, float(value["score"])))
         reason = str(value.get("reason", ""))[:500]
         threshold = float(config.get("pass_threshold", 0.7))
-        usage = response.usage.model_dump(exclude_none=True) if response.usage else {}
+        from ..runtime.budget import estimate_model_request
+
+        reported_usage = (
+            response.usage.model_dump(exclude_none=True) if response.usage else {}
+        )
+        input_tokens = (
+            response.usage.input_tokens
+            if response.usage and response.usage.input_tokens is not None
+            else estimate_model_request(request)
+        )
+        output_tokens = (
+            response.usage.output_tokens
+            if response.usage and response.usage.output_tokens is not None
+            else max(1, (len(response.content) + 3) // 4)
+        )
+        usage = {
+            **reported_usage,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "input_tokens_estimated": not response.usage
+            or response.usage.input_tokens is None,
+            "output_tokens_estimated": not response.usage
+            or response.usage.output_tokens is None,
+        }
         estimated_cost = None
-        if provider_name == "azure_openai" and response.usage is not None:
-            settings = get_settings()
+        pricing = await pricing_for_call(
+            session, provider_name, model_name, call_started
+        )
+        if pricing is not None:
             estimated_cost = estimate_model_cost(
                 TokenUsage.model_validate(usage),
-                input_price_per_million=settings.azure_openai_input_price_per_million,
-                output_price_per_million=settings.azure_openai_output_price_per_million,
-                cached_input_price_per_million=settings.azure_openai_cached_input_price_per_million,
+                input_price_per_million=pricing.input_price_per_million,
+                output_price_per_million=pricing.output_price_per_million,
+                cached_input_price_per_million=pricing.cached_input_price_per_million,
             )
         return EvaluationScore(
             score,
@@ -226,10 +254,15 @@ async def _score_case(
             result = await LatencyEvaluator().evaluate(case, run, config)
         elif evaluator_type == "LLM_JUDGE":
             result = await _judge(
-                run, case, config, ModelProviderRegistry.from_settings(get_settings())
+                session,
+                run,
+                case,
+                config,
+                ModelProviderRegistry.from_settings(get_settings()),
             )
         elif evaluator_type == "GROUNDEDNESS":
             result = await _judge(
+                session,
                 run,
                 case,
                 config,

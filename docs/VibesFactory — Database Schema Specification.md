@@ -1862,6 +1862,13 @@ limits are counted from these records per API key.
 | cached_input_price_per_million | NUMERIC(18,8) NULL |
 | metadata | JSONB |
 
+The registry is global to the self-hosted installation. `metadata` contains
+`currency: "USD"` and the operator-supplied source. Rates must be finite and
+non-negative; effective intervals must have a positive duration and may not
+overlap for one provider/model. Each call stores its selected pricing ID and
+rate snapshot on its model span so later registry additions do not change past
+estimates.
+
 Constraint:
 
 ```text
@@ -2210,6 +2217,7 @@ Recommended Alembic migration sequence:
 0016 phase15_evaluations
 
 0017 phase16_deployments
+0018 phase17_monitoring
 ```
 
 Binding tables may be created together with their owning domain.

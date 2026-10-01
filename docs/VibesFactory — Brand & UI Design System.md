@@ -2612,6 +2612,14 @@ Cyan
 
 with semantic colors only when meaning demands them.
 
+The Monitoring page sits under Observe and shows manual refresh with a visible
+last-updated time, time-range and workspace-scope filters, four primary metrics,
+supporting reliability/usage values and four time-series cards. Keep SVG charts
+keyboard accessible with focusable points, a visible data-table disclosure and
+clear units. Reuse shared controls and semantic tokens in both themes. Show
+estimated USD cost with coverage and a note that it is not provider billing.
+Loading, confirmed-empty, request-failure and stale-snapshot states stay distinct.
+
 ---
 
 # 67. Chart Palette

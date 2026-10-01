@@ -39,6 +39,7 @@ class RunResponse(BaseModel):
     input: dict[str, Any]
     output: dict[str, Any] | None
     usage: dict[str, Any]
+    budget_usage: dict[str, Any]
     estimated_cost: Decimal | None
     error: RunErrorResponse | None
     started_at: datetime | None

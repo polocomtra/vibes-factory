@@ -3673,6 +3673,10 @@ No agent configuration mutation required.
 
 Turn raw execution traces into operational understanding.
 
+Deliver a dedicated workspace-scoped Monitoring page and cost registry. Query
+PostgreSQL directly; keep analytics in the operational database until measured
+load justifies another storage layer. Exclude evaluation runs and descendants.
+
 ---
 
 # 104. Monitoring Metrics
@@ -3711,7 +3715,14 @@ version
 model
 
 status
+
+provider
 ```
+
+Use completed plus failed runs as the success/failure denominator; report
+cancelled and in-progress runs separately. Run latency includes approval wait
+time, while model latency measures provider calls only. Count child runs once
+each and keep their accounting separate from the shared tree execution budget.
 
 ---
 
@@ -3741,6 +3752,13 @@ estimated
 
 not authoritative billing.
 
+Pricing is operator-supplied in USD and imported through a validated CLI. Store
+an effective-dated pricing snapshot on every completed model-call span. A
+resumed approval continuation adds new calls to the same run. Calls without
+reliable usage/pricing remain unknown rather than zero. Keep historical counts,
+status and latency while excluding unverified legacy usage/cost and reporting
+coverage.
+
 ---
 
 # 106. Usage Aggregation
@@ -3750,6 +3768,26 @@ Initially query operational DB.
 Later introduce aggregate tables only if necessary.
 
 Do not prematurely build separate analytics infrastructure.
+
+Summary and timeseries APIs share workspace, time, agent, version, provider,
+model and status filters. Default to seven days, accept up to 90 days and cap
+responses at 500 UTC-bucketed points. Empty buckets return zero for counts,
+tokens and cost, and null for rates/latency. Partial data returns the known
+subtotal and an explicit completeness indicator. Aggregate runs and spans
+separately to avoid join fan-out.
+
+The `/monitoring` console page lives under Observe. Show four primary metrics,
+supporting usage/reliability measures and SVG trends for runs, success rate, P95
+latency and estimated cost. Provide manual refresh, URL-persisted filters,
+accessible chart data tables, and distinct loading, empty, failure and stale
+states. Reuse shared controls and both Obsidian/Frost tokens; add no chart
+dependency or unsupported real-time/comparison claims.
+
+Acceptance: migrations work from empty DB and Phase 16; pricing imports are
+validated, atomic and idempotent; per-call accounting works across synchronous,
+streaming, failure and approval-resume paths; evaluation traffic is excluded;
+workspace isolation and legacy coverage are verified; both themes and mobile
+layout work; backend and frontend quality gates pass.
 
 ---
 

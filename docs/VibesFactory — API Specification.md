@@ -3038,6 +3038,7 @@ agent_id
 agent_version_id
 provider
 model
+status
 ```
 
 Response:
@@ -3052,7 +3053,10 @@ Response:
         "total": 8291,
         "completed": 8018,
         "failed": 273,
-        "success_rate": 0.967
+        "cancelled": 12,
+        "in_progress": 3,
+        "success_rate": 0.967,
+        "failure_rate": 0.033
     },
     "latency": {
         "average_ms": 2400,
@@ -3063,7 +3067,19 @@ Response:
         "output_tokens": 300000
     },
     "estimated_cost": "12.48",
-    "tool_failure_rate": 0.012
+    "currency": "USD",
+    "model_latency": {"average_ms": 1700},
+    "tool_failures": {"count": 14, "rate": 0.012},
+    "data_quality": {
+        "accounted_runs": 8200,
+        "legacy_runs": 91,
+        "usage_complete_runs": 8190,
+        "cost_complete_runs": 7900,
+        "missing_pricing_or_usage_calls": 300,
+        "estimated_input_calls": 10,
+        "estimated_output_calls": 8,
+        "cost_complete": false
+    }
 }
 ```
 
@@ -3081,6 +3097,10 @@ from
 to
 interval
 agent_id
+agent_version_id
+provider
+model
+status
 ```
 
 Possible metrics:
@@ -3092,6 +3112,11 @@ latency
 tokens
 estimated_cost
 tool_failures
+success_rate
+p95_latency
+model_latency
+input_tokens
+output_tokens
 ```
 
 Response:
@@ -3103,11 +3128,27 @@ Response:
     "points": [
         {
             "timestamp": "...",
-            "value": 14
+            "value": 14,
+            "complete": true
         }
     ]
 }
 ```
+
+---
+
+# 123a. Monitoring Options
+
+## GET `/v1/workspaces/{workspace_id}/monitoring/options`
+
+Returns workspace agents and distinct provider/model pairs from published
+AgentVersions for monitoring filters. Requires workspace membership.
+
+`interval` accepts `auto`, `1h` or `1d`; `auto` selects hourly buckets for
+periods up to 24 hours and daily buckets otherwise. Timeseries responses contain
+at most 500 UTC-bucketed points. Empty buckets are zero for counts, tokens and
+cost, and null for rates/latency. Partial data returns known subtotals with
+`complete: false`.
 
 ---
 

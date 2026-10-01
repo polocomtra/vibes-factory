@@ -117,6 +117,7 @@ def _run_response(run: Run) -> RunResponse:
         input=run.input,
         output=run.output,
         usage=run.usage,
+        budget_usage=run.metadata_json.get("budget_usage", {}),
         estimated_cost=run.estimated_cost,
         error=error,
         started_at=run.started_at,

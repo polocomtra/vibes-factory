@@ -24,6 +24,7 @@ from .mcp.routes import router as mcp_router
 from .memory.routes import router as memory_router
 from .middleware import request_id_middleware
 from .model_providers.routes import router as model_provider_router
+from .monitoring.routes import router as monitoring_router
 from .runs.routes import router as run_router
 from .sessions.routes import router as session_router
 from .telemetry import initialize_telemetry
@@ -77,6 +78,7 @@ app.include_router(guardrail_router)
 app.include_router(workflow_router)
 app.include_router(evaluation_router)
 app.include_router(deployment_router)
+app.include_router(monitoring_router)
 
 
 @app.get("/health", tags=["system"])

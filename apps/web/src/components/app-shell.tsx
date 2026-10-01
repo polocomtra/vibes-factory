@@ -2,11 +2,10 @@
 
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
-    // Temporarily hidden navigation icons; uncomment with their nav item:
-    // Activity,
+    Activity,
     Bot,
     Boxes,
     BrainCircuit,
@@ -38,6 +37,12 @@ import { supabase } from "../lib/supabase";
 
 export type ThemePreference = "system" | "dark" | "light";
 
+const MonitoringWorkspaceContext = createContext<string | null>(null);
+
+export function useSelectedWorkspaceId() {
+    return useContext(MonitoringWorkspaceContext);
+}
+
 type WorkspaceSummary = {
     id: string;
     name: string;
@@ -65,8 +70,7 @@ const navItems: NavItem[] = [
     { label: "Approvals", icon: ShieldCheck, group: "Platform" },
     { label: "Deployments", icon: Cloud, group: "Platform" },
     { label: "Traces", icon: Radio, group: "Observe" },
-    // Planned for the Observe group when the feature is implemented:
-    // { label: "Monitoring", icon: Activity, group: "Observe" },
+    { label: "Monitoring", icon: Activity, group: "Observe" },
     { label: "Evaluations", icon: FlaskConical, group: "Evaluate" },
     { label: "Settings", icon: Settings, group: "Workspace" },
 ];
@@ -386,6 +390,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (path === "/playground" || path.includes("/playground"))
             return "Playground";
         if (path === "/traces" || path.includes("/traces")) return "Traces";
+        if (path === "/monitoring") return "Monitoring";
         if (path === "/evaluations" || path.startsWith("/evaluations/"))
             return "Evaluations";
         if (path.startsWith("/agents")) return "Agents";
@@ -467,6 +472,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         if (label === "MCP Servers") router.push("/mcp-servers");
         if (label === "Playground") router.push("/playground");
         if (label === "Traces") router.push("/traces");
+        if (label === "Monitoring") router.push("/monitoring");
         if (label === "Evaluations") router.push("/evaluations");
         if (label === "Settings") router.push("/settings");
     };
@@ -488,6 +494,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         .join(" ");
 
     return (
+        <MonitoringWorkspaceContext.Provider value={selectedWorkspaceId}>
         <div className={shellClass}>
             <div
                 className={
@@ -564,10 +571,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                         aria-hidden="true"
                                     />
                                     <span>{item.label}</span>
-                                    {item.label === "Monitoring" &&
-                                    !sidebarCollapsed ? (
-                                        <span className="nav-live-dot" />
-                                    ) : null}
                                 </button>
                             </div>
                         );
@@ -650,5 +653,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 </div>
             </main>
         </div>
+        </MonitoringWorkspaceContext.Provider>
     );
 }

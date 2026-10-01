@@ -112,6 +112,32 @@ VF_AZURE_OPENAI_DEPLOYMENT_NAME=gpt-6-luna
 
 The API key is never sent to the browser or stored in AgentDraft/AgentVersion. Agent creation stores only the provider and model configuration; model execution will consume the configured environment credential in the runtime milestone.
 
+### Monitoring pricing registry
+
+Run database migrations before using Monitoring or the pricing CLI:
+
+```bash
+alembic upgrade head
+```
+
+Model rates are operator-supplied USD estimates. Existing `VF_AZURE_OPENAI_*_PRICE_PER_MILLION` settings are only copied when the explicit bootstrap command is run; application startup does not seed prices and runtime calls do not fall back to those settings. The bootstrap requires an effective date:
+
+```bash
+python -m apps.api.app.monitoring.pricing_cli bootstrap-azure --effective-from 2026-10-01T00:00:00Z --dry-run
+python -m apps.api.app.monitoring.pricing_cli bootstrap-azure --effective-from 2026-10-01T00:00:00Z
+```
+
+For other providers or models, supply JSON with `provider`, `model`, timezone-aware `effective_from`, input/output prices per million tokens, optional cached input price, and metadata containing a `source`. Validate without connecting to PostgreSQL, preview or import atomically, then inspect the effective-dated registry:
+
+```bash
+python -m apps.api.app.monitoring.pricing_cli validate ./model-pricing.json
+python -m apps.api.app.monitoring.pricing_cli import ./model-pricing.json --dry-run
+python -m apps.api.app.monitoring.pricing_cli import ./model-pricing.json
+python -m apps.api.app.monitoring.pricing_cli list
+```
+
+Imports are idempotent for unchanged entries. A new effective date closes the preceding open interval; an existing snapshot cannot be edited or overlapped. Each recorded model call keeps its selected rates and estimated cost, so later registry changes do not rewrite historical estimates.
+
 ### Gemini runtime model
 
 The Gemini provider integration remains available in the backend registry, but
