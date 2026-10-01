@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     workflow_default_timeout_seconds: int = Field(default=900, ge=1, le=3_600)
     approval_default_ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
     approval_sweep_seconds: float = Field(default=30.0, ge=5.0, le=300.0)
+    public_api_requests_per_minute: int = Field(default=60, ge=1, le=10_000)
+    public_api_max_concurrent_runs: int = Field(default=5, ge=1, le=100)
     azure_openai_api_key: SecretStr | None = None
     azure_openai_base_url: str | None = None
     azure_openai_deployment_name: str = "gpt-6-luna"

@@ -2779,6 +2779,10 @@ Response:
 
 The raw `key` must appear exactly once.
 
+Only a workspace owner may create keys. A workspace member may list key
+metadata, but never receives the raw key. Expired and revoked keys are rejected
+immediately. The API stores a hash and prefix only.
+
 ---
 
 # 115. List API Keys
@@ -2832,6 +2836,7 @@ Response:
 ```json
 {
     "id": "run_uuid",
+    "session_id": "session_uuid",
     "status": "COMPLETED",
     "output": {
         "type": "text",
@@ -2853,6 +2858,23 @@ agent_version_id
 
 on this endpoint.
 
+The server reads the deployment's current published version when it claims the
+invocation and pins that version to the resulting run. A later deployment
+version change does not alter an existing run.
+
+Clients may send an optional `Idempotency-Key` header. It is scoped to the API
+key and bound to a canonical request hash. A repeated key and identical payload
+returns the original run; a different payload with the same key returns `409`.
+An invocation already in progress returns `409` and includes the run ID when
+the runtime has created one. Per-key request and concurrent-run limits return
+`429`.
+
+When `session_id` is null, the server creates a public session and returns its
+ID. A later call may pass that ID to continue the conversation, but only with
+the API key that created the session. Public sessions do not create internal
+`users` records. They may read agent-global memory and delegate to published
+child agents; they do not read or write user-scoped memory.
+
 ---
 
 # 118. Public Streaming Invocation
@@ -2862,6 +2884,11 @@ on this endpoint.
 Uses API key plus SSE.
 
 Same runtime logic as authenticated streaming endpoint.
+
+The endpoint has the same API-key session scope, version pinning, metadata,
+idempotency, and rate/concurrency behavior as the non-streaming endpoint. It
+returns `text/event-stream`; a completed idempotent retry replays the persisted
+run outcome.
 
 ---
 
@@ -3904,9 +3931,12 @@ Public deployment requests may accept client metadata:
 
 Limits:
 
-- Maximum key count
-- Maximum value size
-- No reserved internal keys
+- At most 16 key/value pairs
+- Keys contain 1–64 characters; values contain at most 256 characters
+- Values must be strings
+- Internal fields such as `workspace_id`, `agent_version_id`, `run_id`,
+  `trace_id`, `session_id`, `api_key_id`, `user_id`, `origin`, and
+  `client_metadata` are reserved
 
 Metadata is untrusted.
 

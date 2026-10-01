@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -155,6 +156,25 @@ class JobType(StrEnum):
 
 class EvaluationStatus(StrEnum):
     QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class DeploymentEnvironment(StrEnum):
+    DEVELOPMENT = "DEVELOPMENT"
+    STAGING = "STAGING"
+    PRODUCTION = "PRODUCTION"
+
+
+class DeploymentStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    DISABLED = "DISABLED"
+
+
+class PublicInvocationStatus(StrEnum):
+    CLAIMED = "CLAIMED"
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -418,6 +438,12 @@ class AgentVersion(Base):
 
     __table_args__ = (
         UniqueConstraint("agent_id", "version_number", name="uq_agent_versions_number"),
+        UniqueConstraint(
+            "workspace_id",
+            "agent_id",
+            "id",
+            name="uq_agent_versions_workspace_agent_id",
+        ),
         Index("ix_agent_versions_agent_id", "agent_id"),
         Index("ix_agent_versions_workspace_agent", "workspace_id", "agent_id"),
     )
@@ -1322,10 +1348,15 @@ class Session(Base):
         ForeignKey("agents.id", ondelete="CASCADE"),
         nullable=False,
     )
-    user_id: Mapped[UUID] = mapped_column(
+    user_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
         ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+    )
+    public_api_key_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("api_keys.id", ondelete="RESTRICT"),
+        nullable=True,
     )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
@@ -1342,6 +1373,11 @@ class Session(Base):
     )
 
     __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND public_api_key_id IS NULL) OR "
+            "(user_id IS NULL AND public_api_key_id IS NOT NULL)",
+            name="ck_sessions_principal",
+        ),
         Index(
             "ix_sessions_workspace_user_activity",
             "workspace_id",
@@ -1349,6 +1385,11 @@ class Session(Base):
             "last_activity_at",
         ),
         Index("ix_sessions_agent_activity", "agent_id", "last_activity_at"),
+        Index(
+            "ix_sessions_public_key_activity",
+            "public_api_key_id",
+            "last_activity_at",
+        ),
     )
 
 
@@ -1798,7 +1839,14 @@ class Run(Base):
         nullable=False,
     )
     deployment_id: Mapped[UUID | None] = mapped_column(
-        PostgreSQLUUID(as_uuid=True), nullable=True
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("deployments.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+    public_invocation_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("public_invocations.id", ondelete="SET NULL"),
+        nullable=True,
     )
     session_id: Mapped[UUID | None] = mapped_column(
         PostgreSQLUUID(as_uuid=True),
@@ -1857,6 +1905,8 @@ class Run(Base):
         Index("ix_runs_version_created", "agent_version_id", "created_at"),
         Index("ix_runs_session_created", "session_id", "created_at"),
         Index("ix_runs_trace_id", "trace_id"),
+        Index("ix_runs_deployment_created", "deployment_id", "created_at"),
+        UniqueConstraint("public_invocation_id", name="uq_runs_public_invocation"),
         Index("ix_runs_parent_run_id", "parent_run_id"),
         Index("ix_runs_root_run_id", "root_run_id"),
         Index("ix_runs_workflow_run_id", "workflow_run_id"),
@@ -2036,6 +2086,169 @@ class EvaluationResult(Base):
             "evaluator_type",
             name="uq_evaluation_results_evaluator",
         ),
+    )
+
+
+class Deployment(Base):
+    __tablename__ = "deployments"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agents.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    agent_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    environment: Mapped[DeploymentEnvironment] = mapped_column(
+        Enum(DeploymentEnvironment, native_enum=False, length=32), nullable=False
+    )
+    status: Mapped[DeploymentStatus] = mapped_column(
+        Enum(DeploymentStatus, native_enum=False, length=32),
+        default=DeploymentStatus.ACTIVE,
+        server_default=DeploymentStatus.ACTIVE.value,
+        nullable=False,
+    )
+    configuration: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "slug", name="uq_deployments_workspace_slug"),
+        ForeignKeyConstraint(
+            ["workspace_id", "agent_id", "agent_version_id"],
+            [
+                "agent_versions.workspace_id",
+                "agent_versions.agent_id",
+                "agent_versions.id",
+            ],
+            name="fk_deployments_version_agent_workspace",
+            ondelete="RESTRICT",
+        ),
+        Index("ix_deployments_workspace_status", "workspace_id", "status"),
+        Index("ix_deployments_agent_created", "agent_id", "created_at"),
+        Index("ix_deployments_version", "agent_version_id"),
+    )
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deployment_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("deployments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(32), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("key_hash", name="uq_api_keys_key_hash"),
+        Index("ix_api_keys_deployment_created", "deployment_id", "created_at"),
+        Index("ix_api_keys_workspace", "workspace_id"),
+        Index("ix_api_keys_prefix", "key_prefix"),
+    )
+
+
+class PublicInvocation(Base):
+    __tablename__ = "public_invocations"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    deployment_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("deployments.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    api_key_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    error_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    error_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[PublicInvocationStatus] = mapped_column(
+        Enum(PublicInvocationStatus, native_enum=False, length=32),
+        default=PublicInvocationStatus.CLAIMED,
+        server_default=PublicInvocationStatus.CLAIMED.value,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_public_invocations_idempotency",
+            "api_key_id",
+            "idempotency_key_hash",
+            unique=True,
+            postgresql_where=(idempotency_key_hash.is_not(None)),
+        ),
+        Index("ix_public_invocations_key_created", "api_key_id", "created_at"),
+        Index("ix_public_invocations_key_status", "api_key_id", "status"),
     )
 
 

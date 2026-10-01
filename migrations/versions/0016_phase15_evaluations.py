@@ -1,4 +1,4 @@
-"""Add evaluation datasets, cases, runs and result records."""
+"""Persist the Phase 15 evaluation domain."""
 
 import sqlalchemy as sa
 from alembic import op
@@ -53,7 +53,7 @@ def upgrade() -> None:
         sa.Column("expected_tool", sa.String(255), nullable=True),
         sa.Column("expected_schema", JSON, nullable=True),
         sa.Column("rubric", sa.Text(), nullable=True),
-        sa.Column("metadata", JSON, nullable=False, server_default="{}"),
+        sa.Column("metadata", JSON, server_default="{}", nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -61,7 +61,9 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.ForeignKeyConstraint(
-            ["evaluation_dataset_id"], ["evaluation_datasets.id"], ondelete="CASCADE"
+            ["evaluation_dataset_id"],
+            ["evaluation_datasets.id"],
+            ondelete="CASCADE",
         ),
         sa.UniqueConstraint(
             "evaluation_dataset_id", "position", name="uq_evaluation_cases_position"
@@ -82,7 +84,7 @@ def upgrade() -> None:
         sa.Column("status", sa.String(32), nullable=False),
         sa.Column("evaluators", JSON, nullable=False),
         sa.Column("case_snapshot", JSON, nullable=False),
-        sa.Column("aggregate_metrics", JSON, nullable=False, server_default="{}"),
+        sa.Column("aggregate_metrics", JSON, server_default="{}", nullable=False),
         sa.Column("error", JSON, nullable=True),
         sa.Column("idempotency_key_hash", sa.String(64), nullable=True),
         sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
@@ -98,7 +100,9 @@ def upgrade() -> None:
             ["workspace_id"], ["workspaces.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(
-            ["evaluation_dataset_id"], ["evaluation_datasets.id"], ondelete="RESTRICT"
+            ["evaluation_dataset_id"],
+            ["evaluation_datasets.id"],
+            ondelete="RESTRICT",
         ),
         sa.ForeignKeyConstraint(["agent_id"], ["agents.id"], ondelete="RESTRICT"),
         sa.ForeignKeyConstraint(
@@ -135,7 +139,7 @@ def upgrade() -> None:
         sa.Column("evaluator_type", sa.String(100), nullable=False),
         sa.Column("score", sa.Numeric(8, 5), nullable=True),
         sa.Column("passed", sa.Boolean(), nullable=True),
-        sa.Column("details", JSON, nullable=False, server_default="{}"),
+        sa.Column("details", JSON, server_default="{}", nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

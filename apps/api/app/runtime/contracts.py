@@ -135,7 +135,8 @@ class RuntimeSession(BaseModel):
     id: UUID
     agent_id: UUID
     workspace_id: UUID
-    user_id: UUID = Field(default_factory=uuid4)
+    user_id: UUID | None = Field(default_factory=uuid4)
+    public_api_key_id: UUID | None = None
     messages: tuple[SessionMessage, ...] = ()
 
 
@@ -153,6 +154,9 @@ class AgentRunRequest(BaseModel):
     memory_results: tuple[RuntimeMemoryResult, ...] = ()
     resume_run_id: UUID | None = None
     resume_approval_id: UUID | None = None
+    deployment_id: UUID | None = None
+    public_invocation_id: UUID | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
     evaluation_mode: bool = False
 
 

@@ -615,7 +615,8 @@ For production reproducibility, published agent versions should preferably pin c
 | id | UUID |
 | workspace_id | UUID |
 | agent_id | UUID |
-| user_id | UUID |
+| user_id | UUID NULL |
+| public_api_key_id | UUID NULL |
 | title | VARCHAR(255) NULL |
 | metadata | JSONB |
 | created_at | TIMESTAMPTZ |
@@ -633,7 +634,11 @@ Indexes:
 ```text
 INDEX(workspace_id, user_id, last_activity_at DESC)
 INDEX(agent_id, last_activity_at DESC)
+INDEX(public_api_key_id, last_activity_at DESC)
 ```
+
+Exactly one principal must be present: an internal user or the API key that
+created a public session. This binds public conversation history to one key.
 
 Session belongs to the logical Agent rather than a specific version.
 
@@ -721,6 +726,7 @@ Every agent execution produces one Run.
 | agent_id | UUID |
 | agent_version_id | UUID |
 | deployment_id | UUID NULL |
+| public_invocation_id | UUID NULL |
 | session_id | UUID NULL |
 | trace_id | UUID |
 | parent_run_id | UUID NULL |
@@ -749,6 +755,14 @@ COMPLETED
 FAILED
 CANCELLED
 ```
+
+`deployment_id` references `deployments.id`. A public root run also references
+its `public_invocations` row. Child runs inherit the deployment reference while
+the invocation reference remains on the root run.
+
+Revision `0017` sets legacy `runs.deployment_id` values to null when they do
+not resolve to a deployment row. This column existed before the deployment
+domain and previously had no foreign key.
 
 Indexes:
 
@@ -1759,6 +1773,10 @@ Constraint:
 UNIQUE(workspace_id, slug)
 ```
 
+The selected `agent_version_id` must belong to the same workspace and agent.
+The database enforces this composite reference in addition to application
+validation.
+
 Deployment rollback is:
 
 ```text
@@ -1778,10 +1796,10 @@ No AgentVersion mutation occurs.
 |---|---|
 | id | UUID |
 | workspace_id | UUID |
-| deployment_id | UUID NULL |
+| deployment_id | UUID |
 | name | VARCHAR(255) |
 | key_prefix | VARCHAR(32) |
-| key_hash | VARCHAR(255) |
+| key_hash | VARCHAR(64) |
 | created_by | UUID |
 | created_at | TIMESTAMPTZ |
 | last_used_at | TIMESTAMPTZ NULL |
@@ -1801,6 +1819,30 @@ hash
 ↓
 store hash
 ```
+
+An API key belongs to exactly one deployment. Expiration and revocation are
+checked on every public request.
+
+## Table: `public_invocations`
+
+| Column | Type |
+|---|---|
+| id | UUID |
+| workspace_id | UUID |
+| deployment_id | UUID |
+| api_key_id | UUID |
+| idempotency_key_hash | VARCHAR(64) NULL |
+| request_hash | VARCHAR(64) |
+| status | VARCHAR(32) |
+| error_json | JSONB NULL |
+| error_status | INTEGER NULL |
+| created_at | TIMESTAMPTZ |
+| updated_at | TIMESTAMPTZ |
+
+Use a unique partial index on `(api_key_id, idempotency_key_hash)` when the
+idempotency hash is not null. Persist the invocation before runtime execution
+so concurrent retries cannot create duplicate runs. Request and active-run
+limits are counted from these records per API key.
 
 ---
 
@@ -2139,41 +2181,35 @@ Production configuration must consider the actual Supabase/PostgreSQL connection
 Recommended Alembic migration sequence:
 
 ```text
-001 extensions
+0001 bootstrap
 
-002 users_workspaces
+0002 identity_workspace
 
-003 agents_agent_drafts_agent_versions
+0003 agent_control_plane
 
-004 sessions_messages
+0004 runtime_vertical_slice
 
-005 traces_runs_spans
+0005 span_usage_breakdown
 
-006 tools_tool_versions
+0006–0008 tool_platform_and_contract_hardening
 
-007 credentials
+0009 credential_vault
 
-008 mcp
+0010 mcp_integration
 
-011 knowledge_documents_chunks
+0011 phase9_knowledge_rag
 
-012 memory
+0012 phase10_memory
 
-013 guardrails
+0013 phase11_guardrails
 
-014 workflows
+0014 phase12_workflows
 
-015 approvals
+0015 phase14_approvals
 
-016 evaluations
+0016 phase15_evaluations
 
-017 deployments_api_keys
-
-016 pricing
-
-017 audit_logs
-
-018 jobs
+0017 phase16_deployments
 ```
 
 Binding tables may be created together with their owning domain.

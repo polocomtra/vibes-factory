@@ -8,6 +8,7 @@ import {
     useState,
 } from "react";
 import {
+    Building2,
     Check,
     Cloud,
     Eye,
@@ -15,7 +16,6 @@ import {
     KeyRound,
     LockKeyhole,
     LoaderCircle,
-    Mail,
     Plus,
     RotateCcw,
     ShieldCheck,
@@ -23,9 +23,12 @@ import {
     UserMinus,
     UsersRound,
     X,
+    type LucideIcon,
 } from "lucide-react";
 
 import { AppShell } from "../../components/app-shell";
+import { PrimarySelect, type PrimarySelectOption } from "../../components/primary-select";
+import { PrimaryTextInput } from "../../components/primary-text-field";
 import { apiFetch, readApiError } from "../../lib/api";
 import {
     createCredential,
@@ -53,6 +56,47 @@ type WorkspaceMember = {
     created_at: string;
 };
 
+type SettingsTab = "workspace" | "members" | "model-test" | "credentials";
+
+const settingsTabs: Array<{
+    id: SettingsTab;
+    label: string;
+    description: string;
+    icon: LucideIcon;
+}> = [
+    {
+        id: "workspace",
+        label: "Workspace",
+        description: "Name and identity",
+        icon: Building2,
+    },
+    {
+        id: "members",
+        label: "Members",
+        description: "People and access",
+        icon: UsersRound,
+    },
+    {
+        id: "model-test",
+        label: "Test model",
+        description: "Provider connection",
+        icon: Cloud,
+    },
+    {
+        id: "credentials",
+        label: "Credentials",
+        description: "Encrypted secrets",
+        icon: LockKeyhole,
+    },
+];
+
+const modelProviderOptions: PrimarySelectOption[] = [
+    { value: "azure_openai", label: "Azure OpenAI" },
+    { value: "openai", label: "OpenAI" },
+    { value: "deepseek", label: "DeepSeek" },
+    { value: "google", label: "Google Gemini" },
+];
+
 function initials(email: string) {
     return email.slice(0, 1).toUpperCase();
 }
@@ -75,9 +119,7 @@ export default function SettingsPage() {
     const [members, setMembers] = useState<WorkspaceMember[]>([]);
     const [credentials, setCredentials] = useState<Credential[]>([]);
     const [memberEmail, setMemberEmail] = useState("");
-    const [activeTab, setActiveTab] = useState<
-        "workspace" | "members" | "model-test" | "credentials"
-    >("workspace");
+    const [activeTab, setActiveTab] = useState<SettingsTab>("workspace");
     const [provider, setProvider] = useState<ModelProviderId>("azure_openai");
     const [modelName, setModelName] = useState("gpt-6-luna");
     const [deploymentName, setDeploymentName] = useState("gpt-6-luna");
@@ -114,13 +156,18 @@ export default function SettingsPage() {
     const [confirmingMemberId, setConfirmingMemberId] = useState<string | null>(
         null,
     );
+    const [isAddMemberModalOpen, setIsAddMemberModalOpen] = useState(false);
+    const [memberModalError, setMemberModalError] = useState<string | null>(
+        null,
+    );
     const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
     const [loading, setLoading] = useState(true);
     const [message, setMessage] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const createWorkspaceButtonRef = useRef<HTMLButtonElement>(null);
-    const createWorkspaceNameRef = useRef<HTMLInputElement>(null);
     const createWorkspaceDialogRef = useRef<HTMLDivElement>(null);
+    const addMemberDialogRef = useRef<HTMLDivElement>(null);
+    const addMemberTriggerRef = useRef<HTMLButtonElement>(null);
     const credentialDialogRef = useRef<HTMLDivElement>(null);
     const credentialSecretRef = useRef<HTMLInputElement>(null);
     const credentialTriggerRef = useRef<HTMLButtonElement>(null);
@@ -208,16 +255,46 @@ export default function SettingsPage() {
         const previousOverflow = document.body.style.overflow;
         const trigger = createWorkspaceButtonRef.current;
         document.body.style.overflow = "hidden";
-        const focusTimer = window.setTimeout(
-            () => createWorkspaceNameRef.current?.focus(),
-            0,
-        );
         return () => {
-            window.clearTimeout(focusTimer);
             document.body.style.overflow = previousOverflow;
             trigger?.focus();
         };
     }, [isCreateModalOpen]);
+
+    useEffect(() => {
+        if (!isAddMemberModalOpen) return;
+        const previousOverflow = document.body.style.overflow;
+        const trigger = addMemberTriggerRef.current;
+        document.body.style.overflow = "hidden";
+        return () => {
+            document.body.style.overflow = previousOverflow;
+            trigger?.focus();
+        };
+    }, [isAddMemberModalOpen]);
+
+    function handleAddMemberModalKeyDown(
+        event: ReactKeyboardEvent<HTMLDivElement>,
+    ) {
+        if (event.key === "Escape" && memberBusyId !== "add-member") {
+            setIsAddMemberModalOpen(false);
+            return;
+        }
+        if (event.key !== "Tab") return;
+        const focusable =
+            addMemberDialogRef.current?.querySelectorAll<HTMLElement>(
+                "button:not(:disabled), input:not(:disabled)",
+            );
+        if (!focusable?.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
 
     function handleCreateModalKeyDown(
         event: ReactKeyboardEvent<HTMLDivElement>,
@@ -248,12 +325,7 @@ export default function SettingsPage() {
         const previousOverflow = document.body.style.overflow;
         const trigger = credentialTriggerRef.current;
         document.body.style.overflow = "hidden";
-        const focusTimer = window.setTimeout(
-            () => credentialSecretRef.current?.focus(),
-            0,
-        );
         return () => {
-            window.clearTimeout(focusTimer);
             document.body.style.overflow = previousOverflow;
             trigger?.focus();
         };
@@ -427,10 +499,41 @@ export default function SettingsPage() {
         window.setTimeout(() => window.location.reload(), 250);
     }
 
+    function handleSettingsTabKeyDown(
+        event: ReactKeyboardEvent<HTMLButtonElement>,
+        currentTab: SettingsTab,
+    ) {
+        const tabButtons = Array.from(
+            event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>(
+                '[role="tab"]:not(:disabled)',
+            ) ?? [],
+        );
+        const currentIndex = tabButtons.findIndex(
+            (button) => button.dataset.settingsTab === currentTab,
+        );
+        let nextIndex = currentIndex;
+        if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+            nextIndex = (currentIndex + 1) % tabButtons.length;
+        } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+            nextIndex = (currentIndex - 1 + tabButtons.length) % tabButtons.length;
+        } else if (event.key === "Home") {
+            nextIndex = 0;
+        } else if (event.key === "End") {
+            nextIndex = tabButtons.length - 1;
+        } else {
+            return;
+        }
+        event.preventDefault();
+        const nextButton = tabButtons[nextIndex];
+        const nextTab = nextButton?.dataset.settingsTab as SettingsTab | undefined;
+        nextButton?.focus();
+        if (nextTab) setActiveTab(nextTab);
+    }
+
     async function addMember(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
         if (!selectedId || !isOwner) return;
-        setError(null);
+        setMemberModalError(null);
         setMessage(null);
         setMemberBusyId("add-member");
         const response = await apiFetch(
@@ -441,13 +544,14 @@ export default function SettingsPage() {
             },
         );
         if (!response.ok) {
-            setError(await readApiError(response));
+            setMemberModalError(await readApiError(response));
             setMemberBusyId(null);
             return;
         }
         const member = (await response.json()) as WorkspaceMember;
         setMembers((current) => [...current, member]);
         setMemberEmail("");
+        setIsAddMemberModalOpen(false);
         setMessage(`${member.email} is now a workspace member.`);
         setMemberBusyId(null);
     }
@@ -526,13 +630,13 @@ export default function SettingsPage() {
 
     return (
         <AppShell>
-            <div className="page-header">
+            <div className="page-header settings-page-header">
                 <div>
                     <p className="eyebrow">VibesFactory / Workspace</p>
                     <h1>Settings</h1>
                     <p className="page-description">
-                        Manage workspace identity, access, and tenant
-                        boundaries.
+                        Manage workspace identity, team access, model testing,
+                        and encrypted credentials.
                     </p>
                 </div>
                 {activeTab === "workspace" ? (
@@ -552,68 +656,6 @@ export default function SettingsPage() {
                 ) : null}
             </div>
 
-            <div
-                className="settings-tabs"
-                role="tablist"
-                aria-label="Workspace settings"
-            >
-                <button
-                    className={`settings-tab${activeTab === "workspace" ? " active" : ""}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "workspace"}
-                    onClick={() => setActiveTab("workspace")}
-                >
-                    Workspace
-                </button>
-                <button
-                    className={`settings-tab${activeTab === "members" ? " active" : ""}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "members"}
-                    disabled={!selectedId}
-                    onClick={() => setActiveTab("members")}
-                >
-                    <UsersRound size={14} aria-hidden="true" />
-                    Members
-                    {selectedId ? (
-                        <span className="tab-count">{members.length}</span>
-                    ) : null}
-                </button>
-                <button
-                    className={`settings-tab${activeTab === "model-test" ? " active" : ""}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "model-test"}
-                    disabled={!selectedId}
-                    onClick={() => setActiveTab("model-test")}
-                >
-                    <KeyRound size={14} aria-hidden="true" />
-                    Test model
-                </button>
-                <button
-                    id="credentials-tab"
-                    className={`settings-tab${activeTab === "credentials" ? " active" : ""}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeTab === "credentials"}
-                    disabled={!selectedId}
-                    onClick={() => setActiveTab("credentials")}
-                >
-                    <LockKeyhole size={14} aria-hidden="true" />
-                    Credentials
-                    {selectedId ? (
-                        <span className="tab-count">
-                            {
-                                credentials.filter(
-                                    (item) => item.status === "ACTIVE",
-                                ).length
-                            }
-                        </span>
-                    ) : null}
-                </button>
-            </div>
-
             {error ? (
                 <p className="form-error" role="alert">
                     {error}
@@ -626,75 +668,144 @@ export default function SettingsPage() {
                 </p>
             ) : null}
 
-            {loading ? (
-                <section className="panel settings-loading" aria-live="polite">
-                    Loading workspace settings…
-                </section>
-            ) : null}
+            <div className="settings-layout">
+                <div
+                    className="settings-tabs"
+                    role="tablist"
+                    aria-label="Workspace settings"
+                    aria-orientation="vertical"
+                >
+                    {settingsTabs.map((tab) => {
+                        const TabIcon = tab.icon;
+                        return (
+                            <button
+                                id={`settings-tab-${tab.id}`}
+                                data-settings-tab={tab.id}
+                                className={`settings-tab${activeTab === tab.id ? " active" : ""}`}
+                                key={tab.id}
+                                type="button"
+                                role="tab"
+                                aria-selected={activeTab === tab.id}
+                                aria-controls={`settings-panel-${tab.id}`}
+                                tabIndex={activeTab === tab.id ? 0 : -1}
+                                disabled={tab.id !== "workspace" && !selectedId}
+                                onClick={() => setActiveTab(tab.id)}
+                                onKeyDown={(event) =>
+                                    handleSettingsTabKeyDown(event, tab.id)
+                                }
+                            >
+                                <span className="settings-tab-icon">
+                                    <TabIcon size={16} aria-hidden="true" />
+                                </span>
+                                <span className="settings-tab-copy">
+                                    <strong>{tab.label}</strong>
+                                    <small>{tab.description}</small>
+                                </span>
+                            </button>
+                        );
+                    })}
+                </div>
+
+                <div className="settings-content">
+                    {loading ? (
+                        <section
+                            className="panel settings-content-state"
+                            aria-live="polite"
+                        >
+                            <LoaderCircle
+                                className="spin"
+                                size={17}
+                                aria-hidden="true"
+                            />
+                            Loading workspace settings…
+                        </section>
+                    ) : null}
 
             {!loading && activeTab === "workspace" ? (
                 <section
-                    className="settings-grid settings-grid-single"
+                    id="settings-panel-workspace"
+                    className="panel settings-section-panel workspace-settings-panel"
                     role="tabpanel"
+                    aria-labelledby="settings-tab-workspace"
+                    tabIndex={0}
                 >
-                    <article className="panel settings-card">
-                        <span className="panel-kicker">Current workspace</span>
-                        <h2>
-                            {selectedId
-                                ? "Workspace details"
-                                : "Create your first workspace"}
-                        </h2>
-                        {selectedId ? (
-                            <form
-                                className="settings-form"
-                                onSubmit={updateWorkspace}
-                            >
-                                <label htmlFor="workspace-name">Name</label>
-                                <input
-                                    id="workspace-name"
-                                    value={name}
-                                    onChange={(event) =>
-                                        setName(event.target.value)
-                                    }
-                                    required
-                                />
-                                <label htmlFor="workspace-slug">Slug</label>
-                                <input
-                                    id="workspace-slug"
-                                    value={slug}
-                                    disabled
-                                />
+                    <div className="settings-section-heading">
+                        <span className="settings-section-icon">
+                            <Building2 size={18} aria-hidden="true" />
+                        </span>
+                        <div className="settings-section-copy">
+                            <span className="panel-kicker">Workspace profile</span>
+                            <h2>{selectedWorkspace?.name ?? "Create your first workspace"}</h2>
+                            <p className="panel-copy">
+                                Update the name used across your workspace. The slug remains fixed after creation.
+                            </p>
+                        </div>
+                        {selectedWorkspace ? (
+                            <span className="member-role owner">
+                                <ShieldCheck size={13} aria-hidden="true" />
+                                {selectedWorkspace.role === "OWNER" ? "Owner" : "Member"}
+                            </span>
+                        ) : null}
+                    </div>
+                    {selectedId ? (
+                        <form
+                            className="settings-form workspace-settings-form"
+                            onSubmit={updateWorkspace}
+                        >
+                            <label htmlFor="workspace-name">Workspace name</label>
+                            <PrimaryTextInput
+                                id="workspace-name"
+                                value={name}
+                                onChange={(event) => setName(event.target.value)}
+                                required
+                                maxLength={255}
+                            />
+                            <div className="settings-readonly-field">
+                                <span>Workspace slug</span>
+                                <code>{slug}</code>
+                                <small>Used in URLs and workspace-scoped resources.</small>
+                            </div>
+                            {isOwner ? (
                                 <button
-                                    className="button primary-button"
+                                    className="button primary-button settings-save-button"
                                     type="submit"
-                                    disabled={
-                                        memberBusyId === "update-workspace"
-                                    }
+                                    disabled={memberBusyId === "update-workspace"}
                                 >
                                     {memberBusyId === "update-workspace" ? (
-                                        <LoaderCircle
-                                            className="spin"
-                                            size={15}
-                                            aria-hidden="true"
-                                        />
+                                        <LoaderCircle className="spin" size={15} aria-hidden="true" />
                                     ) : null}
-                                    Save settings
+                                    Save workspace
                                 </button>
-                            </form>
-                        ) : (
+                            ) : (
+                                <div className="member-readonly-note">
+                                    <ShieldCheck size={16} aria-hidden="true" />
+                                    Only the workspace owner can change workspace details.
+                                </div>
+                            )}
+                        </form>
+                    ) : (
+                        <div className="settings-empty-state">
                             <p className="panel-copy">
-                                Create a workspace to start isolating agents and
-                                platform resources.
+                                Create a workspace to isolate agents, credentials, and other platform resources.
                             </p>
-                        )}
-                    </article>
+                        </div>
+                    )}
                 </section>
             ) : null}
 
             {!loading && activeTab === "members" && selectedId ? (
-                <section className="panel members-panel" role="tabpanel">
-                    <div className="members-heading">
-                        <div>
+                <section
+                    id="settings-panel-members"
+                    className="panel settings-section-panel members-panel"
+                    role="tabpanel"
+                    aria-labelledby="settings-tab-members"
+                    tabIndex={0}
+                >
+                    <div className="settings-section-heading">
+                        <span className="settings-section-icon">
+                            <UsersRound size={18} aria-hidden="true" />
+                        </span>
+                        <div className="settings-section-copy">
                             <span className="panel-kicker">
                                 Workspace access
                             </span>
@@ -704,63 +815,29 @@ export default function SettingsPage() {
                                 {selectedWorkspace?.name ?? "this workspace"}.
                             </p>
                         </div>
-                        <span className="status-badge info">
-                            <span />
-                            {members.length}{" "}
-                            {members.length === 1 ? "member" : "members"}
-                        </span>
-                    </div>
-
-                    {isOwner ? (
-                        <form className="member-add-form" onSubmit={addMember}>
-                            <div className="member-add-copy">
-                                <Mail size={17} aria-hidden="true" />
-                                <div>
-                                    <label htmlFor="member-email">
-                                        Add existing member
-                                    </label>
-                                    <p>
-                                        They must sign in to VibesFactory once
-                                        before you can add them.
-                                    </p>
-                                </div>
-                            </div>
-                            <div className="member-add-controls">
-                                <input
-                                    id="member-email"
-                                    type="email"
-                                    value={memberEmail}
-                                    onChange={(event) =>
-                                        setMemberEmail(event.target.value)
-                                    }
-                                    placeholder="teammate@company.com"
-                                    required
-                                />
+                        <div className="member-heading-actions">
+                            <span className="status-badge info">
+                                <span />
+                                {members.length}{" "}
+                                {members.length === 1 ? "member" : "members"}
+                            </span>
+                            {isOwner ? (
                                 <button
+                                    ref={addMemberTriggerRef}
                                     className="button primary-button"
-                                    type="submit"
-                                    disabled={memberBusyId === "add-member"}
+                                    type="button"
+                                    onClick={() => {
+                                        setMemberEmail("");
+                                        setMemberModalError(null);
+                                        setIsAddMemberModalOpen(true);
+                                    }}
                                 >
-                                    {memberBusyId === "add-member" ? (
-                                        <LoaderCircle
-                                            className="spin"
-                                            size={15}
-                                            aria-hidden="true"
-                                        />
-                                    ) : (
-                                        <Plus size={15} aria-hidden="true" />
-                                    )}
+                                    <Plus size={15} aria-hidden="true" />
                                     Add member
                                 </button>
-                            </div>
-                        </form>
-                    ) : (
-                        <div className="member-readonly-note">
-                            <ShieldCheck size={16} aria-hidden="true" />
-                            You can view members, but only the workspace owner
-                            can change access.
+                            ) : null}
                         </div>
-                    )}
+                    </div>
 
                     <div className="member-list" aria-live="polite">
                         {memberLoading ? (
@@ -773,8 +850,9 @@ export default function SettingsPage() {
                                 <UsersRound size={25} aria-hidden="true" />
                                 <strong>No members yet</strong>
                                 <span>
-                                    Add a teammate by email to start
-                                    collaborating.
+                                    {isOwner
+                                        ? "Add an existing VibesFactory user to start collaborating."
+                                        : "Workspace members will appear here."}
                                 </span>
                             </div>
                         ) : null}
@@ -873,9 +951,18 @@ export default function SettingsPage() {
             ) : null}
 
             {!loading && activeTab === "model-test" && selectedId ? (
-                <section className="panel model-test-panel" role="tabpanel">
-                    <div className="members-heading">
-                        <div>
+                <section
+                    id="settings-panel-model-test"
+                    className="panel settings-section-panel model-test-panel"
+                    role="tabpanel"
+                    aria-labelledby="settings-tab-model-test"
+                    tabIndex={0}
+                >
+                    <div className="settings-section-heading">
+                        <span className="settings-section-icon">
+                            <Cloud size={18} aria-hidden="true" />
+                        </span>
+                        <div className="settings-section-copy">
                             <span className="panel-kicker">
                                 Ephemeral provider probe
                             </span>
@@ -897,31 +984,22 @@ export default function SettingsPage() {
                         onSubmit={submitModelTest}
                     >
                         <div className="model-test-field-grid">
-                            <label htmlFor="model-test-provider">
+                            <label htmlFor="model-test-provider-trigger">
                                 Provider
-                                <select
-                                    id="model-test-provider"
+                                <PrimarySelect
+                                    id="model-test-provider-trigger"
                                     value={provider}
-                                    onChange={(event) =>
-                                        selectProvider(
-                                            event.target
-                                                .value as ModelProviderId,
-                                        )
+                                    options={modelProviderOptions}
+                                    placeholder="Choose provider"
+                                    ariaLabel="Provider"
+                                    onChange={(value) =>
+                                        selectProvider(value as ModelProviderId)
                                     }
-                                >
-                                    <option value="azure_openai">
-                                        Azure OpenAI
-                                    </option>
-                                    <option value="openai">OpenAI</option>
-                                    <option value="deepseek">DeepSeek</option>
-                                    <option value="google">
-                                        Google Gemini
-                                    </option>
-                                </select>
+                                />
                             </label>
                             <label htmlFor="model-test-model">
                                 Model / deployment ID
-                                <input
+                                <PrimaryTextInput
                                     id="model-test-model"
                                     value={modelName}
                                     onChange={(event) =>
@@ -934,7 +1012,7 @@ export default function SettingsPage() {
                             {provider === "azure_openai" ? (
                                 <label htmlFor="model-test-deployment">
                                     Azure deployment name
-                                    <input
+                                    <PrimaryTextInput
                                         id="model-test-deployment"
                                         value={deploymentName}
                                         onChange={(event) =>
@@ -953,7 +1031,7 @@ export default function SettingsPage() {
                                     htmlFor="model-test-base-url"
                                 >
                                     Azure base URL
-                                    <input
+                                    <PrimaryTextInput
                                         id="model-test-base-url"
                                         type="url"
                                         value={baseUrl}
@@ -970,7 +1048,7 @@ export default function SettingsPage() {
                                 htmlFor="model-test-api-key"
                             >
                                 API key
-                                <input
+                                <PrimaryTextInput
                                     id="model-test-api-key"
                                     type="password"
                                     autoComplete="new-password"
@@ -1049,12 +1127,17 @@ export default function SettingsPage() {
 
             {!loading && activeTab === "credentials" && selectedId ? (
                 <section
-                    className="panel credentials-panel"
+                    id="settings-panel-credentials"
+                    className="panel settings-section-panel credentials-panel"
                     role="tabpanel"
-                    aria-labelledby="credentials-tab"
+                    aria-labelledby="settings-tab-credentials"
+                    tabIndex={0}
                 >
-                    <div className="members-heading">
-                        <div>
+                    <div className="settings-section-heading">
+                        <span className="settings-section-icon">
+                            <LockKeyhole size={18} aria-hidden="true" />
+                        </span>
+                        <div className="settings-section-copy">
                             <span className="panel-kicker">
                                 Encrypted workspace vault
                             </span>
@@ -1221,6 +1304,9 @@ export default function SettingsPage() {
                 </section>
             ) : null}
 
+                </div>
+            </div>
+
             {isCreateModalOpen ? (
                 <div
                     className="modal-backdrop"
@@ -1265,8 +1351,7 @@ export default function SettingsPage() {
                             onSubmit={createWorkspace}
                         >
                             <label htmlFor="new-workspace-name">Name</label>
-                            <input
-                                ref={createWorkspaceNameRef}
+                            <PrimaryTextInput
                                 id="new-workspace-name"
                                 value={newWorkspaceName}
                                 onChange={(event) =>
@@ -1276,7 +1361,7 @@ export default function SettingsPage() {
                                 required
                             />
                             <label htmlFor="new-workspace-slug">Slug</label>
-                            <input
+                            <PrimaryTextInput
                                 id="new-workspace-slug"
                                 value={newWorkspaceSlug}
                                 onChange={(event) =>
@@ -1314,6 +1399,111 @@ export default function SettingsPage() {
                                         <Plus size={15} aria-hidden="true" />
                                     )}
                                     Create workspace
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            ) : null}
+
+            {isAddMemberModalOpen ? (
+                <div
+                    className="modal-backdrop"
+                    role="presentation"
+                    onMouseDown={(event) => {
+                        if (
+                            event.target === event.currentTarget &&
+                            memberBusyId !== "add-member"
+                        ) {
+                            setIsAddMemberModalOpen(false);
+                        }
+                    }}
+                >
+                    <div
+                        ref={addMemberDialogRef}
+                        className="modal-dialog"
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="add-member-title"
+                        aria-describedby="add-member-description"
+                        onKeyDown={handleAddMemberModalKeyDown}
+                    >
+                        <div className="modal-heading">
+                            <div>
+                                <span className="panel-kicker">
+                                    Workspace access
+                                </span>
+                                <h2 id="add-member-title">Add member</h2>
+                                <p
+                                    id="add-member-description"
+                                    className="panel-copy"
+                                >
+                                    Enter the email address of a user who has
+                                    signed in to VibesFactory at least once.
+                                </p>
+                            </div>
+                            <button
+                                className="icon-button modal-close"
+                                type="button"
+                                aria-label="Close add member dialog"
+                                disabled={memberBusyId === "add-member"}
+                                onClick={() => setIsAddMemberModalOpen(false)}
+                            >
+                                <X size={17} aria-hidden="true" />
+                            </button>
+                        </div>
+                        <form
+                            className="settings-form modal-form"
+                            onSubmit={addMember}
+                        >
+                            <label htmlFor="member-email">Member email</label>
+                            <PrimaryTextInput
+                                id="member-email"
+                                type="email"
+                                autoComplete="email"
+                                value={memberEmail}
+                                onChange={(event) =>
+                                    setMemberEmail(event.target.value)
+                                }
+                                placeholder="teammate@company.com"
+                                required
+                            />
+                            {memberModalError ? (
+                                <p className="form-error" role="alert">
+                                    {memberModalError}
+                                </p>
+                            ) : null}
+                            <div className="modal-actions">
+                                <button
+                                    className="button secondary-button"
+                                    type="button"
+                                    disabled={memberBusyId === "add-member"}
+                                    onClick={() =>
+                                        setIsAddMemberModalOpen(false)
+                                    }
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    className="button primary-button"
+                                    type="submit"
+                                    disabled={
+                                        memberBusyId === "add-member" ||
+                                        !memberEmail.trim()
+                                    }
+                                >
+                                    {memberBusyId === "add-member" ? (
+                                        <LoaderCircle
+                                            className="spin"
+                                            size={15}
+                                            aria-hidden="true"
+                                        />
+                                    ) : (
+                                        <Plus size={15} aria-hidden="true" />
+                                    )}
+                                    {memberBusyId === "add-member"
+                                        ? "Adding member…"
+                                        : "Add member"}
                                 </button>
                             </div>
                         </form>
@@ -1377,7 +1567,7 @@ export default function SettingsPage() {
                                 <>
                                     <label htmlFor="credential-name">
                                         Name
-                                        <input
+                                        <PrimaryTextInput
                                             id="credential-name"
                                             value={credentialName}
                                             onChange={(event) =>
@@ -1391,7 +1581,7 @@ export default function SettingsPage() {
                                     </label>
                                     <label htmlFor="credential-provider">
                                         Provider
-                                        <input
+                                        <PrimaryTextInput
                                             id="credential-provider"
                                             value={credentialProvider}
                                             onChange={(event) =>
@@ -1414,7 +1604,7 @@ export default function SettingsPage() {
                             )}
                             <label htmlFor="credential-token">
                                 API token
-                                <input
+                                <PrimaryTextInput
                                     ref={credentialSecretRef}
                                     id="credential-token"
                                     type={
