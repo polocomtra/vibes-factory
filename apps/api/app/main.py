@@ -14,6 +14,7 @@ from .approvals.routes import router as approval_router
 from .config import get_settings
 from .credentials.routes import router as credential_router
 from .db import check_database, dispose_engine
+from .deployments.routes import router as deployment_router
 from .errors import error_response, register_exception_handlers
 from .evaluations.routes import router as evaluation_router
 from .guardrails.routes import router as guardrail_router
@@ -75,6 +76,7 @@ app.include_router(memory_router)
 app.include_router(guardrail_router)
 app.include_router(workflow_router)
 app.include_router(evaluation_router)
+app.include_router(deployment_router)
 
 
 @app.get("/health", tags=["system"])

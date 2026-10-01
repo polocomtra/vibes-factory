@@ -170,13 +170,23 @@ async def list_run_children(
 async def _build_runtime_request(
     payload: RunCreateRequest,
     agent: Agent,
-    user: User,
+    user: User | None,
     session: AsyncSession,
     *,
     evaluation_mode: bool = False,
+    public_api_key_id: UUID | None = None,
+    deployment_id: UUID | None = None,
+    public_invocation_id: UUID | None = None,
+    request_metadata: dict[str, str] | None = None,
 ) -> AgentRunRequest:
     version = await _load_version(session, agent, payload.agent_version_id)
-    conversation = await _load_owned_session(session, agent, payload.session_id, user)
+    conversation = await _load_owned_session(
+        session,
+        agent,
+        payload.session_id,
+        user,
+        public_api_key_id=public_api_key_id,
+    )
     messages = await session.scalars(
         select(Message)
         .where(Message.session_id == conversation.id)
@@ -327,12 +337,16 @@ async def _build_runtime_request(
             id=conversation.id,
             agent_id=conversation.agent_id,
             workspace_id=conversation.workspace_id,
-            user_id=user.id,
+            user_id=user.id if user is not None else None,
+            public_api_key_id=public_api_key_id,
             messages=history,
         ),
         input=payload.input,
         execution_budget=budget,
+        deployment_id=deployment_id,
+        public_invocation_id=public_invocation_id,
         evaluation_mode=evaluation_mode,
+        metadata=request_metadata or {},
     )
 
 
@@ -357,16 +371,32 @@ async def _load_version(
 
 
 async def _load_owned_session(
-    session: AsyncSession, agent: Agent, session_id: UUID, user: User
+    session: AsyncSession,
+    agent: Agent,
+    session_id: UUID,
+    user: User | None,
+    *,
+    public_api_key_id: UUID | None = None,
 ) -> Session:
-    conversation = await session.scalar(
-        select(Session).where(
-            Session.id == session_id,
-            Session.agent_id == agent.id,
-            Session.workspace_id == agent.workspace_id,
-            Session.user_id == user.id,
-        )
+    statement = select(Session).where(
+        Session.id == session_id,
+        Session.agent_id == agent.id,
+        Session.workspace_id == agent.workspace_id,
     )
+    if user is not None:
+        statement = statement.where(Session.user_id == user.id)
+    elif public_api_key_id is not None:
+        statement = statement.where(Session.public_api_key_id == public_api_key_id)
+    else:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "code": "AUTHENTICATION_REQUIRED",
+                "message": "A session principal is required.",
+                "details": {},
+            },
+        )
+    conversation = await session.scalar(statement)
     if conversation is None:
         raise _not_found("The session was not found.")
     return conversation

@@ -24,7 +24,13 @@ class MemoryRetrievalResult:
     score: float
 
 
-def memory_scope_clause(user_id: UUID, agent_id: UUID | None) -> ColumnElement[bool]:
+def memory_scope_clause(
+    user_id: UUID | None, agent_id: UUID | None
+) -> ColumnElement[bool]:
+    if user_id is None:
+        if agent_id is not None:
+            return MemoryItem.user_id.is_(None) & (MemoryItem.agent_id == agent_id)
+        return MemoryItem.user_id.is_(None)
     user_scope = and_(
         MemoryItem.user_id == user_id,
         or_(MemoryItem.agent_id.is_(None), MemoryItem.agent_id == agent_id)
@@ -44,7 +50,7 @@ async def search_memory(
     provider: EmbeddingProvider,
     workspace_id: UUID,
     memory_store_id: UUID,
-    user_id: UUID,
+    user_id: UUID | None,
     agent_id: UUID | None,
     query: str,
     top_k: int,

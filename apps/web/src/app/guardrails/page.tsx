@@ -39,6 +39,37 @@ const baselineRules = [
     ["Tool risk", "Pauses HIGH-risk side-effect tools until a workspace member approves."],
 ] as const;
 
+const runtimeCheckpoints: Array<{
+    hook: GuardrailHook;
+    title: string;
+    description: string;
+}> = [
+    {
+        hook: "INPUT",
+        title: "Incoming message",
+        description: "Checked before memory, knowledge retrieval, and model calls.",
+    },
+    {
+        hook: "MODEL_OUTPUT",
+        title: "Model response",
+        description: "Checked before the response is stored, reused, or streamed.",
+    },
+    {
+        hook: "TOOL_INPUT",
+        title: "Tool arguments",
+        description: "Checked before credentials are resolved or a tool executes.",
+    },
+    {
+        hook: "TOOL_OUTPUT",
+        title: "Tool result",
+        description: "Checked before tool output reaches traces or model context.",
+    },
+];
+
+function hookLabel(hook: GuardrailHook) {
+    return hook.replace("_", " ");
+}
+
 function newRule(): GuardrailRule {
     return {
         id: "custom-rule",
@@ -48,10 +79,6 @@ function newRule(): GuardrailRule {
         pattern: "",
         replacement: "[REDACTED]",
     };
-}
-
-function hookLabel(hook: GuardrailHook) {
-    return hook.replace("_", " ");
 }
 
 function PolicyCard({ policy }: { policy: GuardrailPolicy }) {
@@ -70,13 +97,8 @@ function PolicyCard({ policy }: { policy: GuardrailPolicy }) {
                 </div>
                 <span className="guardrail-version-badge">v{policy.latest_version_number || "—"}</span>
             </div>
-            <div className="guardrail-policy-tags">
-                <span>Immutable versions</span>
-                <span>{policy.usage_count} active binding{policy.usage_count === 1 ? "" : "s"}</span>
-            </div>
             <footer className="guardrail-policy-card-footer">
-                <span>Latest version</span>
-                <code>{policy.latest_version_number ? `v${policy.latest_version_number}` : "Not published"}</code>
+                <span>{policy.usage_count} active binding{policy.usage_count === 1 ? "" : "s"}</span>
             </footer>
         </article>
     );
@@ -234,19 +256,37 @@ export default function GuardrailsPage() {
         if (workspace) setPolicies(await fetchGuardrails(workspace.id));
     }
 
-    const activeBindings = policies.reduce((total, policy) => total + policy.usage_count, 0);
-
     return (
         <AppShell>
             <div className="guardrails-page">
-                <header className="page-header guardrails-page-header"><div><p className="eyebrow">VibesFactory / Platform</p><h1>Guardrails</h1><p className="page-description">Versioned execution boundaries for untrusted input, model output, and tools.</p></div><div className="guardrails-header-actions"><span className="status-badge success"><span />Platform baseline v2</span><button className="button primary-button" type="button" onClick={() => { setError(null); setDialogOpen(true); }} disabled={!workspace}><Plus size={15} aria-hidden="true" />Create policy</button></div></header>
+                <header className="page-header guardrails-page-header"><div><p className="eyebrow">VibesFactory / Platform</p><h1>Guardrails</h1><p className="page-description">Protect agent runs by checking input, model output, and tool activity.</p></div><div className="guardrails-header-actions"><span className="status-badge success"><span />Platform baseline v2</span><button className="button primary-button" type="button" onClick={() => { setError(null); setDialogOpen(true); }} disabled={!workspace}><Plus size={15} aria-hidden="true" />Create policy</button></div></header>
                 {error ? <div className="form-error agent-alert" role="alert" tabIndex={-1}><AlertCircle size={15} aria-hidden="true" />{error}</div> : null}
                 {message ? <div className="form-success agent-alert" role="status"><Check size={15} aria-hidden="true" />{message}</div> : null}
                 {!loading && !workspace ? <section className="panel guardrails-empty-state"><ShieldCheck size={28} aria-hidden="true" /><h2>Create a workspace first</h2><p className="panel-copy">Guardrail policies are isolated by workspace.</p></section> : null}
                 {workspace ? <>
-                    <section className="guardrails-metrics" aria-label="Guardrail summary"><article className="metric-card panel metric-purple"><div className="metric-topline"><span className="metric-label">Policies</span><span className="metric-icon"><FileCode2 size={15} aria-hidden="true" /></span></div><strong className="metric-value">{policies.length + 1}</strong><span className="metric-footer">1 platform · {policies.length} custom</span></article><article className="metric-card panel metric-blue"><div className="metric-topline"><span className="metric-label">Active bindings</span><span className="metric-icon"><SlidersHorizontal size={15} aria-hidden="true" /></span></div><strong className="metric-value">{activeBindings}</strong><span className="metric-footer">Across published agents</span></article><article className="metric-card panel metric-green"><div className="metric-topline"><span className="metric-label">Coverage</span><span className="metric-icon"><ShieldCheck size={15} aria-hidden="true" /></span></div><strong className="metric-value">4</strong><span className="metric-footer">Runtime hook points</span></article></section>
+                    <section className="panel guardrails-how-panel" aria-labelledby="guardrails-how-title">
+                        <div className="guardrails-how-heading">
+                            <div>
+                                <p className="panel-kicker">Runtime flow</p>
+                                <h2 id="guardrails-how-title">How guardrails work</h2>
+                                <p className="guardrails-how-summary">When enabled on a published agent version, guardrails check data at four points in a run. Rules can allow it, redact sensitive content, block it, or require approval before it continues.</p>
+                            </div>
+                            <ShieldCheck size={20} aria-hidden="true" />
+                        </div>
+                        <ol className="guardrails-checkpoint-grid" aria-label="Guardrail runtime checkpoints">
+                            {runtimeCheckpoints.map((checkpoint, index) => (
+                                <li className="guardrails-checkpoint-card" key={checkpoint.hook}>
+                                    <div className="guardrails-checkpoint-topline">
+                                        <span className="guardrails-checkpoint-number">{String(index + 1).padStart(2, "0")}</span>
+                                        <code>{checkpoint.hook}</code>
+                                    </div>
+                                    <h3>{checkpoint.title}</h3>
+                                    <p>{checkpoint.description}</p>
+                                </li>
+                            ))}
+                        </ol>
+                    </section>
                     <section className="panel guardrails-catalog-section" aria-labelledby="guardrails-catalog-title"><div className="panel-heading"><div><p className="panel-kicker">Workspace catalog</p><h2 id="guardrails-catalog-title">Policy library</h2></div><span className="code-hint">{workspace.name} · {policies.length + 1} policies</span></div>{loading ? <div className="guardrails-loading"><LoaderCircle className="spin" size={17} aria-hidden="true" />Loading policy library…</div> : <div className="guardrail-policy-grid"><BaselineCard />{policies.map((policy) => <PolicyCard key={policy.id} policy={policy} />)}</div>}</section>
-                    <section className="panel guardrails-coverage-panel" aria-labelledby="guardrails-coverage-title"><div className="panel-heading"><div><p className="panel-kicker">Runtime coverage</p><h2 id="guardrails-coverage-title">Where guardrails run</h2></div><ShieldCheck size={18} aria-hidden="true" /></div><div className="guardrails-hook-grid">{hooks.map((hook, index) => <div className="guardrails-hook-card" key={hook}><span className="guardrail-hook-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{hookLabel(hook)}</strong><small>{hook === "INPUT" ? "Before memory, retrieval, and model calls." : hook === "MODEL_OUTPUT" ? "Before text is persisted, reused, or streamed." : hook === "TOOL_INPUT" ? "Before credentials resolve or tools execute." : "Before tool output reaches traces or model context."}</small></div></div>)}</div></section>
                 </> : null}
             </div>
             <GuardrailPolicyDialog open={dialogOpen} workspace={workspace} onClose={() => setDialogOpen(false)} onCreated={(policy) => void handleCreated(policy)} />

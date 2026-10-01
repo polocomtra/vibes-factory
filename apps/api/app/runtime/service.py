@@ -1646,10 +1646,17 @@ class AgentRuntime:
                         child_agent = await self.session.get(
                             Agent, runtime_tool.child_agent_id
                         )
-                        user = await self.session.get(User, request.session.user_id)
+                        user = (
+                            await self.session.get(User, request.session.user_id)
+                            if request.session.user_id is not None
+                            else None
+                        )
                         if (
                             child_agent is None
-                            or user is None
+                            or (
+                                user is None
+                                and request.session.public_api_key_id is None
+                            )
                             or child_agent.workspace_id != request.workspace_id
                         ):
                             raise RuntimeExecutionError(
@@ -1671,7 +1678,12 @@ class AgentRuntime:
                             child_session = Session(
                                 workspace_id=request.workspace_id,
                                 agent_id=child_agent.id,
-                                user_id=user.id,
+                                user_id=user.id if user is not None else None,
+                                public_api_key_id=(
+                                    request.session.public_api_key_id
+                                    if user is None
+                                    else None
+                                ),
                                 title=f"Child agent for {run.id}",
                                 metadata_json={
                                     "origin": "child_agent",
@@ -1692,6 +1704,12 @@ class AgentRuntime:
                                 child_agent,
                                 user,
                                 self.session,
+                                public_api_key_id=(
+                                    request.session.public_api_key_id
+                                    if user is None
+                                    else None
+                                ),
+                                deployment_id=request.deployment_id,
                                 evaluation_mode=request.evaluation_mode,
                             )
                             child_context = execution_context.fork(
@@ -2292,6 +2310,14 @@ class AgentRuntime:
                 "The session does not belong to this agent.",
                 status_code=404,
             )
+        if (request.session.user_id is None) == (
+            request.session.public_api_key_id is None
+        ):
+            raise RuntimeExecutionError(
+                "AUTHENTICATION_REQUIRED",
+                "A runtime session must have exactly one authenticated principal.",
+                status_code=401,
+            )
 
     async def _start_run(
         self,
@@ -2336,6 +2362,9 @@ class AgentRuntime:
                 Session.id == request.session.id,
                 Session.workspace_id == request.workspace_id,
                 Session.agent_id == request.agent_version.agent_id,
+                Session.user_id == request.session.user_id
+                if request.session.user_id is not None
+                else Session.public_api_key_id == request.session.public_api_key_id,
             )
             .with_for_update()
         )
@@ -2394,6 +2423,8 @@ class AgentRuntime:
             workspace_id=request.workspace_id,
             agent_id=request.agent_version.agent_id,
             agent_version_id=request.agent_version.id,
+            deployment_id=request.deployment_id,
+            public_invocation_id=request.public_invocation_id,
             session_id=conversation.id,
             trace_id=trace.id,
             parent_run_id=execution_context.parent_run_id
@@ -2415,6 +2446,7 @@ class AgentRuntime:
                 "input_type": request.input.type,
                 "input_bytes": len(request.input.text.encode("utf-8")),
                 "guardrail_pending": True,
+                "client_metadata": request.metadata,
             },
             started_at=now,
         )
@@ -2552,7 +2584,10 @@ class AgentRuntime:
             )
         run.estimated_cost = estimated_cost
         safe_provider_metadata = _safe_provider_metadata(response.provider_metadata)
-        run.metadata_json = {"provider_metadata": safe_provider_metadata}
+        run.metadata_json = {
+            **run.metadata_json,
+            "provider_metadata": safe_provider_metadata,
+        }
         run.completed_at = now
         if request.resume_approval_id is not None:
             approval = await self.session.get(
@@ -2604,6 +2639,7 @@ class AgentRuntime:
             request.agent_version.memory is not None
             and not request.evaluation_mode
             and request.agent_version.memory.write_enabled
+            and request.session.user_id is not None
         ):
             extraction_exists = await self.session.scalar(
                 select(Job.id).where(

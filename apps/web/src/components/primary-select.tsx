@@ -10,6 +10,7 @@ export type PrimarySelectOption = {
 };
 
 type PrimarySelectProps = {
+  id?: string;
   value: string;
   options: PrimarySelectOption[];
   placeholder: string;
@@ -23,6 +24,7 @@ type PrimarySelectProps = {
 
 /** Shared themed combobox for app-owned selects. Never fall back to a native select. */
 export function PrimarySelect({
+  id,
   value,
   options,
   placeholder,
@@ -125,6 +127,7 @@ export function PrimarySelect({
   return (
     <div className="model-select primary-select" ref={rootRef}>
       <button
+        id={id}
         className="model-select-trigger"
         type="button"
         aria-label={ariaLabel}
