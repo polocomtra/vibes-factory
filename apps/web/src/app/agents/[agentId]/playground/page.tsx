@@ -2,6 +2,7 @@
 
 import {
     ArrowLeft,
+    ArrowDown,
     BookOpen,
     BrainCircuit,
     Bot,
@@ -1069,6 +1070,7 @@ export default function PlaygroundPage() {
         "READY" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED"
     >("READY");
     const [streamingText, setStreamingText] = useState("");
+    const [showJumpToLatest, setShowJumpToLatest] = useState(false);
     const [streamRunId, setStreamRunId] = useState<string | null>(null);
     const [toolActivity, setToolActivity] = useState<string | null>(null);
     const [approvalRequestId, setApprovalRequestId] = useState<string | null>(null);
@@ -1079,6 +1081,7 @@ export default function PlaygroundPage() {
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const messageListRef = useRef<HTMLDivElement>(null);
+    const autoScrollMessagesRef = useRef(true);
     const abortControllerRef = useRef<AbortController | null>(null);
     const pollingRecoveredRunRef = useRef<string | null>(null);
     const pendingDeltaRef = useRef("");
@@ -1212,7 +1215,7 @@ export default function PlaygroundPage() {
 
     useEffect(() => {
         const element = messageListRef.current;
-        if (!element) return;
+        if (!element || !autoScrollMessagesRef.current) return;
         const reduceMotion = window.matchMedia(
             "(prefers-reduced-motion: reduce)",
         ).matches;
@@ -1221,6 +1224,30 @@ export default function PlaygroundPage() {
             behavior: reduceMotion ? "auto" : "smooth",
         });
     }, [messages.length, busy, streamingText]);
+
+    const handleMessageListScroll = useCallback(() => {
+        const element = messageListRef.current;
+        if (!element) return;
+        const distanceFromLatest =
+            element.scrollHeight - element.scrollTop - element.clientHeight;
+        const nearLatest = distanceFromLatest < 72;
+        autoScrollMessagesRef.current = nearLatest;
+        setShowJumpToLatest(!nearLatest);
+    }, []);
+
+    const jumpToLatest = useCallback(() => {
+        const element = messageListRef.current;
+        if (!element) return;
+        autoScrollMessagesRef.current = true;
+        setShowJumpToLatest(false);
+        const reduceMotion = window.matchMedia(
+            "(prefers-reduced-motion: reduce)",
+        ).matches;
+        element.scrollTo({
+            top: element.scrollHeight,
+            behavior: reduceMotion ? "auto" : "smooth",
+        });
+    }, []);
 
     useEffect(() => {
         if (!busy || !streamRunId) return;
@@ -1818,10 +1845,7 @@ export default function PlaygroundPage() {
                     </section>
                 ) : (
                     <main className="playground-layout">
-                        <section
-                            className="panel playground-chat-panel"
-                            aria-busy={busy}
-                        >
+                        <section className="panel playground-chat-panel">
                             <div className="playground-panel-heading">
                                 <div>
                                     <span className="panel-kicker">
@@ -1882,9 +1906,11 @@ export default function PlaygroundPage() {
                             <div
                                 className="message-list"
                                 ref={messageListRef}
+                                role="region"
                                 aria-label="Conversation messages"
+                                onScroll={handleMessageListScroll}
                             >
-                {messages.length === 0 && !busy ? (
+                                {messages.length === 0 && !busy ? (
                                     <div className="message-empty">
                                         <Bot size={25} aria-hidden="true" />
                                         <strong>Ready when you are</strong>
@@ -1934,6 +1960,7 @@ export default function PlaygroundPage() {
                                     <article
                                         className="playground-message assistant streaming-message"
                                         aria-label="Streaming assistant response"
+                                        aria-live="off"
                                     >
                                         <div className="message-meta">
                                             <span>{agent.name}</span>
@@ -1958,6 +1985,7 @@ export default function PlaygroundPage() {
                                         />
                                     </article>
                                 ) : null}
+                                {showJumpToLatest ? <button className="button subtle-button playground-jump-to-latest" type="button" onClick={jumpToLatest}><ArrowDown size={14} aria-hidden="true" />Jump to latest</button> : null}
                                 {busy && !streamingText && !toolActivity ? (
                                     <article className="playground-message assistant processing-message">
                                         <div className="message-meta">

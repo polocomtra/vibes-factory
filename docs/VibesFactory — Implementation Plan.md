@@ -3862,35 +3862,47 @@ Dashboard
 
 Build
 ├── Agents
+├── Playground
 ├── Workflows
 ├── Tools
 ├── Knowledge
 └── Memory
 
+Platform
+├── MCP Servers
+└── Guardrails
+
 Operate
 ├── Deployments
-├── Runs
+├── Approvals
 ├── Traces
 └── Monitoring
 
 Evaluate
-├── Datasets
-├── Evaluation Runs
-└── Comparisons
+└── Evaluations
 
-Platform
-├── Models
-├── MCP
-├── Credentials
-├── Guardrails
+System
 └── Settings
 ```
+
+Phase 19 consolidates the existing console screens and capabilities. Runs are
+available through Playground, Workflow history, Traces, and Evaluations.
+Models, workspace credentials, evaluation runs, and comparisons remain inside
+their existing Settings/Evaluations surfaces; do not add standalone screens or
+new APIs in this phase. Keep Traces labeled as covering all workspaces the
+signed-in account can access.
+
+Every feature title exposes a keyboard-accessible information button and a
+user-invoked “How it works” dialog. Its static English guide contains only two
+sections: “What it is?” gives a concise, feature-specific explanation in two
+or three sentences; “How it works” gives three or four practical steps. It
+remains available when feature data cannot load.
 
 ---
 
 # 112. Agent Detail UI
 
-Tabs:
+Use grouped, URL-addressable sections:
 
 ```text
 Overview
@@ -3915,6 +3927,52 @@ Versions
 
 Deployments
 ```
+
+General sections are Overview, Instructions, and Model; capability sections
+are Tools, Knowledge, Memory, Guardrails, and Agents; Versions is read-only.
+Playground and Deployments are shortcuts to their existing routes. Draft
+configuration stays in memory while changing sections, and metadata saves stay
+separate from versioned draft saves.
+
+Use the Obsidian/Frost brand system and existing stack. Shared page headers,
+dialogs, fields, buttons, status labels, and catalog patterns should preserve
+the existing API and runtime contracts. Distinguish loading, empty, error, and
+not-found states, and never present mock telemetry as live workspace data.
+
+Before marking Phase 19 complete, verify both themes at mobile and desktop
+widths, keyboard interaction and focus restoration for dialogs/drawers, the
+workspace and error states, and the existing agent, workflow, deployment,
+approval, playground, trace, and evaluation flows. Run web lint, typecheck,
+production build, focused browser checks, and the repository test suite.
+
+### Implementation record — 2026-10-01
+
+Delivered the grouped application navigation, accessible mobile drawer behavior,
+route-aware feature guides, real monitoring-backed Dashboard, grouped Agent
+sections with URL state, a workflow creation dialog, and clearer workspace,
+Knowledge, Memory, trace, and workflow-history states. Deployment invocation
+help now uses the shared native-dialog behavior, and Guardrail checkpoints are
+available as a compact disclosure. No API, database, or runtime contracts
+changed. Standalone Runs, Models, Credentials, Evaluation Runs, and Comparisons
+remain deferred as specified above.
+
+The focused Help-dialog browser checks, web lint/typecheck, production build,
+and repository tests are required gates. A Playwright responsive audit now
+visits all 27 existing route entry points at 375, 390, 768, 1024, and 1440px
+with both Obsidian and Frost theme preferences. The audited routes had no
+page-level horizontal overflow. Workflow canvas alternatives were exercised
+with keyboard navigation: users can open the node list, select a node, add a
+Condition from the palette, choose its output branch and target, and create a
+connection without dragging. Playground streaming content is excluded from
+live announcements while a concise atomic status announces run progress; the
+message region is named, auto-follow respects the user's scroll position, and
+reduced-motion preference is honored.
+
+The browser checks validate keyboard behavior and accessibility semantics, but
+they do not replace a manual VoiceOver/NVDA screen-reader session. Record that
+assistive-technology review separately before claiming full Phase 19 release
+acceptance. The route matrix checks page-level overflow in both themes; it is
+not a pixel-by-pixel visual sign-off for every screen.
 
 ---
 

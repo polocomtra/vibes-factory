@@ -6,6 +6,7 @@ import {
   BookOpen,
   Check,
   ChevronDown,
+  Cloud,
   Clipboard,
   Code2,
   GitBranch,
@@ -113,6 +114,8 @@ function initialDraft(): AgentDraft {
 }
 
 type ToolFilter = "ALL" | "BUILT_IN" | "HTTP" | "MCP";
+const agentTabs = ["overview", "instructions", "model", "tools", "knowledge", "memory", "guardrails", "agents", "versions"] as const;
+type AgentTab = typeof agentTabs[number];
 
 function toolKind(tool: Tool) {
   if (tool.built_in)
@@ -160,9 +163,7 @@ export default function AgentDetailPage() {
   const [selectedVersion, setSelectedVersion] = useState<AgentVersion | null>(
     null,
   );
-  const [tab, setTab] = useState<"configuration" | "versions" | "tools" | "knowledge" | "guardrails" | "delegation">(
-    "configuration",
-  );
+  const [tab, setTab] = useState<AgentTab>("overview");
   const [draftTools, setDraftTools] = useState<DraftTool[]>([]);
   const [pendingToolVersionIds, setPendingToolVersionIds] = useState<
     Set<string>
@@ -187,6 +188,25 @@ export default function AgentDetailPage() {
   const [description, setDescription] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const readTab = () => {
+      const value = new URLSearchParams(window.location.search).get("tab");
+      const normalized = value === "configuration" ? "overview" : value === "delegation" ? "agents" : value;
+      setTab(agentTabs.find((item) => item === normalized) ?? "overview");
+    };
+    readTab();
+    window.addEventListener("popstate", readTab);
+    return () => window.removeEventListener("popstate", readTab);
+  }, []);
+
+  function selectTab(nextTab: AgentTab) {
+    setTab(nextTab);
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", nextTab);
+    window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -686,72 +706,19 @@ export default function AgentDetailPage() {
           </button>
         </div>
       </div>
-      <section className="agent-detail-tabs" role="tablist">
-        <button
-          className={
-            tab === "configuration" ? "agent-detail-tab active" : "agent-detail-tab"
-          }
-          type="button"
-          role="tab"
-          aria-selected={tab === "configuration"}
-          onClick={() => setTab("configuration")}
-        >
-          <Code2 size={15} aria-hidden="true" />
-          Configuration{dirty ? <span className="agent-detail-tab-count">*</span> : null}
-        </button>
-        <button
-          className={tab === "knowledge" ? "agent-detail-tab active" : "agent-detail-tab"}
-          type="button"
-          role="tab"
-          aria-selected={tab === "knowledge"}
-          onClick={() => setTab("knowledge")}
-        >
-          <BookOpen size={15} aria-hidden="true" />
-          Knowledge<span className="agent-detail-tab-count">{knowledgeBindings.length}</span>
-        </button>
-        <button
-          className={tab === "tools" ? "agent-detail-tab active" : "agent-detail-tab"}
-          type="button"
-          role="tab"
-          aria-selected={tab === "tools"}
-          onClick={() => setTab("tools")}
-        >
-          <Zap size={15} aria-hidden="true" />
-          Tools<span className="agent-detail-tab-count">{pendingToolVersionIds.size}</span>
-        </button>
-        <button
-          className={tab === "guardrails" ? "agent-detail-tab active" : "agent-detail-tab"}
-          type="button"
-          role="tab"
-          aria-selected={tab === "guardrails"}
-          onClick={() => setTab("guardrails")}
-        >
-          <ShieldCheck size={15} aria-hidden="true" />
-          Guardrails<span className="agent-detail-tab-count">{draftGuardrails?.bindings.length ?? 0}</span>
-        </button>
-        <button
-          className={tab === "delegation" ? "agent-detail-tab active" : "agent-detail-tab"}
-          type="button"
-          role="tab"
-          aria-selected={tab === "delegation"}
-          onClick={() => setTab("delegation")}
-        >
-          <Users size={15} aria-hidden="true" />
-          Delegation<span className="agent-detail-tab-count">{childBindings.length}</span>
-        </button>
-        <button
-          className={
-            tab === "versions" ? "agent-detail-tab active" : "agent-detail-tab"
-          }
-          type="button"
-          role="tab"
-          aria-selected={tab === "versions"}
-          onClick={() => setTab("versions")}
-        >
-          <GitBranch size={15} aria-hidden="true" />
-          Versions<span className="agent-detail-tab-count">{versions.length}</span>
-        </button>
-      </section>
+      <div className="agent-workspace-shell">
+      <nav className="agent-detail-tabs" aria-label="Agent sections">
+        <span className="agent-nav-group">General</span>
+        {([["overview", "Overview", Code2], ["instructions", "Instructions", BookOpen], ["model", "Model", Sparkles]] as const).map(([value, label, Icon]) => <button className={tab === value ? "agent-detail-tab active" : "agent-detail-tab"} type="button" key={value} aria-current={tab === value ? "page" : undefined} onClick={() => selectTab(value)}><Icon size={15} aria-hidden="true" />{label}{value === "overview" && dirty ? <span className="agent-detail-tab-count">*</span> : null}</button>)}
+        <span className="agent-nav-group">Capabilities</span>
+        {([["tools", "Tools", Zap], ["knowledge", "Knowledge", BookOpen], ["memory", "Memory", BrainCircuit], ["guardrails", "Guardrails", ShieldCheck], ["agents", "Agents", Users]] as const).map(([value, label, Icon]) => <button className={tab === value ? "agent-detail-tab active" : "agent-detail-tab"} type="button" key={value} aria-current={tab === value ? "page" : undefined} onClick={() => selectTab(value)}><Icon size={15} aria-hidden="true" />{label}{value === "knowledge" ? <span className="agent-detail-tab-count">{knowledgeBindings.length}</span> : value === "tools" ? <span className="agent-detail-tab-count">{pendingToolVersionIds.size}</span> : value === "guardrails" ? <span className="agent-detail-tab-count">{draftGuardrails?.bindings.length ?? 0}</span> : value === "agents" ? <span className="agent-detail-tab-count">{childBindings.length}</span> : null}</button>)}
+        <span className="agent-nav-group">Release</span>
+        <button className={tab === "versions" ? "agent-detail-tab active" : "agent-detail-tab"} type="button" aria-current={tab === "versions" ? "page" : undefined} onClick={() => selectTab("versions")}><GitBranch size={15} aria-hidden="true" />Versions<span className="agent-detail-tab-count">{versions.length}</span></button>
+        <span className="agent-nav-group">Shortcuts</span>
+        <a className="agent-detail-tab" href={`/agents/${agentId}/playground`}><Play size={15} aria-hidden="true" />Playground</a>
+        <a className="agent-detail-tab" href={`/deployments?agent_id=${agentId}`}><Cloud size={15} aria-hidden="true" />Deployments</a>
+      </nav>
+      <section className="agent-workspace-content">
       {error ? (
         <div className="form-error agent-alert agent-detail-alert" role="alert">
           {error}
@@ -766,7 +733,7 @@ export default function AgentDetailPage() {
           {message}
         </div>
       ) : null}
-      {tab === "delegation" ? (
+      {tab === "agents" ? (
         <section className="panel agent-tools-panel agent-supervisor-panel">
           <div className="agent-supervisor-header">
             <div className="agent-supervisor-heading">
@@ -1073,9 +1040,9 @@ export default function AgentDetailPage() {
             })}
           </div>
         </section>
-      ) : tab === "configuration" ? (
+      ) : ["overview", "instructions", "model", "memory"].includes(tab) ? (
         <main className="agent-detail-layout">
-          <section className="panel agent-form-panel">
+          <section className="panel agent-form-panel" hidden={tab !== "overview"}>
             <div className="panel-heading">
               <div>
                 <span className="panel-kicker">Identity</span>
@@ -1123,7 +1090,7 @@ export default function AgentDetailPage() {
               </button>
             </div>
           </section>
-          <section className="panel agent-form-panel">
+          <section className="panel agent-form-panel" hidden={tab !== "instructions"}>
             <div className="panel-heading">
               <div>
                 <span className="panel-kicker">Behavior</span>
@@ -1139,7 +1106,7 @@ export default function AgentDetailPage() {
               rows={14}
             />
           </section>
-          <section className="panel agent-form-panel">
+          <section className="panel agent-form-panel" hidden={tab !== "model"}>
             <div className="panel-heading">
               <div>
                 <span className="panel-kicker">Model</span>
@@ -1226,7 +1193,7 @@ export default function AgentDetailPage() {
               </label>
             </div>
           </section>
-          <section className="panel agent-form-panel runtime-panel">
+          <section className="panel agent-form-panel runtime-panel" hidden={tab !== "model"}>
             <button
               className="runtime-accordion-trigger"
               type="button"
@@ -1280,7 +1247,7 @@ export default function AgentDetailPage() {
               </div>
             ) : null}
           </section>
-          <section className="panel agent-form-panel">
+          <section className="panel agent-form-panel" hidden={tab !== "memory"}>
             <div className="panel-heading">
               <div>
                 <span className="panel-kicker">Memory</span>
@@ -1418,6 +1385,8 @@ export default function AgentDetailPage() {
           </section>
         </div>
       )}
+      </section>
+      </div>
       {publishOpen ? (
         <div
           className="modal-backdrop"

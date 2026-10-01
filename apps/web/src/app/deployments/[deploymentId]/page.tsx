@@ -2,7 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { AlertCircle, ArrowLeft, Check, Clipboard, Cloud, Info, KeyRound, LoaderCircle, Plus, Power, RotateCcw, ShieldCheck, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AppShell } from "../../../components/app-shell";
 import { DeleteAction } from "../../../components/delete-action";
@@ -50,6 +50,17 @@ export default function DeploymentDetailPage() {
   const [copyMessage, setCopyMessage] = useState<string | null>(null);
   const [copiedExample, setCopiedExample] = useState(false);
   const [invocationHelpOpen, setInvocationHelpOpen] = useState(false);
+  const invocationDialogRef = useRef<HTMLDialogElement>(null);
+  const invocationHeadingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    const dialog = invocationDialogRef.current;
+    if (!dialog) return;
+    if (invocationHelpOpen && !dialog.open) {
+      dialog.showModal();
+      requestAnimationFrame(() => invocationHeadingRef.current?.focus());
+    } else if (!invocationHelpOpen && dialog.open) dialog.close();
+  }, [invocationHelpOpen]);
 
   useEffect(() => {
     let cancelled = false;
@@ -99,15 +110,6 @@ export default function DeploymentDetailPage() {
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
   }, [keyDialogOpen, closeKeyDialog]);
-
-  useEffect(() => {
-    if (!invocationHelpOpen) return;
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setInvocationHelpOpen(false);
-    }
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [invocationHelpOpen]);
 
   async function saveVersion() {
     if (!deployment || !selectedVersion || selectedVersion === deployment.agent_version_id || savingVersion) return;
@@ -226,6 +228,6 @@ export default function DeploymentDetailPage() {
     {keyDialogOpen ? <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingKey) closeKeyDialog(); }}><section className="modal-dialog deployment-key-dialog" role="dialog" aria-modal="true" aria-labelledby="deployment-key-dialog-title" aria-describedby="deployment-key-dialog-description">
       {createdKey ? <><div className="modal-heading"><div><p className="eyebrow">API key created</p><h2 id="deployment-key-dialog-title">Copy this key now</h2><p className="panel-copy" id="deployment-key-dialog-description">This raw key will not be shown again after closing this dialog.</p></div><button className="icon-button modal-close" type="button" aria-label="Close key dialog" onClick={closeKeyDialog}><X size={17} aria-hidden="true" /></button></div><div className="deployment-secret-value"><code>{createdKey.key}</code><button className="button subtle-button" type="button" onClick={() => void copyText(createdKey.key, "API key copied.")}><Clipboard size={15} aria-hidden="true" />Copy key</button></div><div className="deployment-secret-warning" role="note"><ShieldCheck size={16} aria-hidden="true" /><span>Store this key in your server-side secret manager. The console does not save it.</span></div>{copyMessage ? <p className="field-helper" role="status">{copyMessage}</p> : null}<div className="modal-actions"><button className="button primary-button" type="button" onClick={closeKeyDialog}><Check size={15} aria-hidden="true" />Done</button></div></> : <><div className="modal-heading"><div><p className="eyebrow">Deployment key</p><h2 id="deployment-key-dialog-title">Create API key</h2><p className="panel-copy" id="deployment-key-dialog-description">Choose a recognizable name for the service that will use this key.</p></div><button className="icon-button modal-close" type="button" aria-label="Close key dialog" onClick={closeKeyDialog} disabled={creatingKey}><X size={17} aria-hidden="true" /></button></div><form className="modal-form" onSubmit={(event) => void submitKey(event)}><label htmlFor="deployment-key-name">Key name</label><PrimaryTextInput id="deployment-key-name" value={keyName} onChange={(event) => setKeyName(event.target.value)} required maxLength={255} placeholder="Production web server" />{error ? <div className="form-error" role="alert">{error}</div> : null}<div className="modal-actions"><button className="button subtle-button" type="button" onClick={closeKeyDialog} disabled={creatingKey}>Cancel</button><button className="button primary-button" type="submit" disabled={creatingKey || !keyName.trim()}>{creatingKey ? <LoaderCircle className="spin" size={15} aria-hidden="true" /> : <Plus size={15} aria-hidden="true" />}{creatingKey ? "Creating…" : "Create key"}</button></div></form></>}
     </section></div> : null}
-    {invocationHelpOpen ? <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setInvocationHelpOpen(false); }}><section className="modal-dialog deployment-help-dialog" role="dialog" aria-modal="true" aria-labelledby="deployment-help-title" aria-describedby="deployment-help-description"><div className="modal-heading"><div><p className="eyebrow">Public API guide</p><h2 id="deployment-help-title">Call this deployment</h2><p className="panel-copy" id="deployment-help-description">Use an active API key from your server to start a run, stream its output, or continue a conversation.</p></div><button className="icon-button modal-close" type="button" aria-label="Close API guide" onClick={() => setInvocationHelpOpen(false)}><X size={17} aria-hidden="true" /></button></div><div className="deployment-help-content"><section className="deployment-help-section"><h3>1. Run normally</h3><p>Send a POST request to the runs endpoint. The response includes a run <code>id</code> and a <code>session_id</code>.</p><pre className="deployment-code"><code>{curlExample}</code></pre></section><section className="deployment-help-section"><h3>2. Continue the conversation</h3><p>Pass the returned <code>session_id</code> in the next request body. Continue with the same API key that created the session.</p><pre className="deployment-code"><code>{continueExample}</code></pre></section><section className="deployment-help-section"><h3>3. Stream the response</h3><p>Use the <code>runs:stream</code> endpoint and <code>curl --no-buffer</code> to receive server-sent events as the run progresses. The first event includes the <code>session_id</code>.</p><pre className="deployment-code"><code>{streamExample}</code></pre></section><section className="deployment-help-notes"><h3>Things to know</h3><ul><li>Replace <code>vf_live_REPLACE_WITH_KEY</code> with an active key for this deployment. Keep it on your server; never expose it in browser code.</li><li><code>Idempotency-Key</code> is optional. Reuse the same value only when retrying the same request; use a new value for a different request.</li><li>A session belongs to the API key that created it. A different key cannot continue that session.</li><li>The deployment selects the Agent version. The request body does not accept an <code>agent_version_id</code>.</li></ul></section></div></section></div> : null}
+    <dialog ref={invocationDialogRef} className="modal-dialog deployment-help-dialog" aria-labelledby="deployment-help-title" onClose={() => setInvocationHelpOpen(false)}><div className="modal-heading"><div><p className="eyebrow">Public API guide</p><h2 id="deployment-help-title" ref={invocationHeadingRef} tabIndex={-1}>Call this deployment</h2><p className="panel-copy">Use an active API key from your server to start a run, stream its output, or continue a conversation.</p></div><button className="icon-button modal-close" type="button" aria-label="Close API guide" onClick={() => setInvocationHelpOpen(false)}><X size={17} aria-hidden="true" /></button></div><div className="deployment-help-content"><section className="deployment-help-section"><h3>1. Run normally</h3><p>Send a POST request to the runs endpoint. The response includes a run <code>id</code> and a <code>session_id</code>.</p><pre className="deployment-code"><code>{curlExample}</code></pre></section><section className="deployment-help-section"><h3>2. Continue the conversation</h3><p>Pass the returned <code>session_id</code> in the next request body. Continue with the same API key that created the session.</p><pre className="deployment-code"><code>{continueExample}</code></pre></section><section className="deployment-help-section"><h3>3. Stream the response</h3><p>Use the <code>runs:stream</code> endpoint and <code>curl --no-buffer</code> to receive server-sent events as the run progresses. The first event includes the <code>session_id</code>.</p><pre className="deployment-code"><code>{streamExample}</code></pre></section><section className="deployment-help-notes"><h3>Things to know</h3><ul><li>Replace <code>vf_live_REPLACE_WITH_KEY</code> with an active key for this deployment. Keep it on your server; never expose it in browser code.</li><li><code>Idempotency-Key</code> is optional. Reuse the same value only when retrying the same request; use a new value for a different request.</li><li>A session belongs to the API key that created it. A different key cannot continue that session.</li><li>The deployment selects the Agent version. The request body does not accept an <code>agent_version_id</code>.</li></ul></section></div></dialog>
   </div></AppShell>;
 }

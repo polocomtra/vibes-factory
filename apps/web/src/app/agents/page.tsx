@@ -4,7 +4,7 @@ import { Bot, Filter, LoaderCircle, Plus, Search, Sparkles, UsersRound } from "l
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { AppShell } from "../../components/app-shell";
+import { AppShell, useSelectedWorkspaceId } from "../../components/app-shell";
 import { DeleteAction } from "../../components/delete-action";
 import { PaginationControls } from "../../components/pagination-controls";
 import { apiFetch, readApiError } from "../../lib/api";
@@ -20,8 +20,9 @@ function AgentStatus({ status }: { status: Agent["status"] }) {
   return <span className={`status-badge ${status === "ACTIVE" ? "success" : "muted"}`}><span />{status === "ACTIVE" ? "Active" : "Archived"}</span>;
 }
 
-export default function AgentsPage() {
+function AgentsContent() {
   const router = useRouter();
+  const selectedWorkspaceId = useSelectedWorkspaceId();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [search, setSearch] = useState("");
@@ -29,6 +30,8 @@ export default function AgentsPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(6);
   const [loading, setLoading] = useState(true);
+  const [workspaceLoading, setWorkspaceLoading] = useState(true);
+  const [workspaceRetry, setWorkspaceRetry] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [confirmingAgentId, setConfirmingAgentId] = useState<string | null>(null);
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
@@ -36,23 +39,28 @@ export default function AgentsPage() {
   useEffect(() => {
     let cancelled = false;
     async function loadWorkspace() {
-      const response = await apiFetch("/v1/workspaces");
-      if (!response.ok) {
-        if (!cancelled) setError(await readApiError(response));
-        return;
+      setWorkspaceLoading(true);
+      setError(null);
+      try {
+        const response = await apiFetch("/v1/workspaces");
+        if (!response.ok) throw new Error(await readApiError(response));
+        const body = await response.json() as { data: Workspace[] };
+        const saved = window.localStorage.getItem("vf-workspace-id");
+        const selected = body.data.find((item) => item.id === selectedWorkspaceId) ?? body.data.find((item) => item.id === saved) ?? body.data[0] ?? null;
+        if (!cancelled) setWorkspace(selected);
+      } catch (reason: unknown) {
+        if (!cancelled) setError(reason instanceof Error ? reason.message : "Workspaces could not be loaded.");
+      } finally {
+        if (!cancelled) setWorkspaceLoading(false);
       }
-      const body = await response.json() as { data: Workspace[] };
-      const saved = window.localStorage.getItem("vf-workspace-id");
-      const selected = body.data.find((item) => item.id === saved) ?? body.data[0] ?? null;
-      if (!cancelled) setWorkspace(selected);
     }
     void loadWorkspace();
     return () => { cancelled = true; };
-  }, []);
+  }, [selectedWorkspaceId, workspaceRetry]);
 
   useEffect(() => {
     if (!workspace) {
-      setLoading(false);
+      if (!workspaceLoading) setLoading(false);
       return;
     }
     let cancelled = false;
@@ -62,7 +70,7 @@ export default function AgentsPage() {
       .catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Unable to load agents."); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [workspace, search, status]);
+  }, [workspace, workspaceLoading, search, status]);
 
   useEffect(() => {
     setPage(1);
@@ -90,7 +98,6 @@ export default function AgentsPage() {
   }
 
   return (
-    <AppShell>
       <div className="pagination-page">
         <div className="page-header">
         <div>
@@ -101,7 +108,8 @@ export default function AgentsPage() {
         <button className="button primary-button" type="button" onClick={() => router.push("/agents/new")}><Plus size={16} aria-hidden="true" />New agent</button>
         </div>
 
-      {!workspace && !loading ? (
+      {!workspace && workspaceLoading ? <section className="panel agent-state" role="status"><LoaderCircle className="spin" size={18} aria-hidden="true" />Loading workspace…</section> : null}
+      {!workspace && !workspaceLoading && !error ? (
         <section className="panel agent-empty-state">
           <Bot size={30} aria-hidden="true" />
           <h2>Create a workspace first</h2>
@@ -110,6 +118,7 @@ export default function AgentsPage() {
         </section>
       ) : null}
 
+      {!workspace && !workspaceLoading && error ? <section className="form-error agent-alert" role="alert">{error} <button className="text-button" type="button" onClick={() => { setWorkspaceLoading(true); setWorkspaceRetry((retry) => retry + 1); }}>Retry</button></section> : null}
       {workspace ? <>
         <section className="agent-toolbar" aria-label="Agent filters">
           <label className="agent-search"><Search size={16} aria-hidden="true" /><span className="sr-only">Search agents</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search agents…" /></label>
@@ -166,6 +175,9 @@ export default function AgentsPage() {
         </> : null}
       </> : null}
       </div>
-    </AppShell>
   );
+}
+
+export default function AgentsPage() {
+  return <AppShell><AgentsContent /></AppShell>;
 }

@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
     Activity,
@@ -15,11 +15,8 @@ import {
     CircleHelp,
     Code2,
     GitBranch,
-    // FlaskConical,
-    // GitBranch,
-    Globe2,
     FlaskConical,
-    // LayoutDashboard,
+    LayoutDashboard,
     Menu,
     Moon,
     Network,
@@ -34,13 +31,20 @@ import {
 
 import { apiFetch } from "../lib/api";
 import { supabase } from "../lib/supabase";
+import { RouteFeatureHelp } from "./feature-help";
 
 export type ThemePreference = "system" | "dark" | "light";
 
 const MonitoringWorkspaceContext = createContext<string | null>(null);
+export type WorkspaceLoadStatus = "loading" | "ready" | "error";
+const WorkspaceStatusContext = createContext<WorkspaceLoadStatus>("loading");
 
 export function useSelectedWorkspaceId() {
     return useContext(MonitoringWorkspaceContext);
+}
+
+export function useWorkspaceLoadStatus() {
+    return useContext(WorkspaceStatusContext);
 }
 
 type WorkspaceSummary = {
@@ -54,25 +58,25 @@ type NavItem = {
     label: string;
     icon: LucideIcon;
     group?: string;
+    href: string;
 };
 
 const navItems: NavItem[] = [
-    // Temporarily hidden until the feature is implemented:
-    // { label: "Dashboard", icon: LayoutDashboard },
-    { label: "Agents", icon: Bot, group: "Build" },
-    { label: "Playground", icon: Code2, group: "Build" },
-    { label: "Workflows", icon: GitBranch, group: "Build" },
-    { label: "Knowledge", icon: Boxes, group: "Connect" },
-    { label: "Memory", icon: BrainCircuit, group: "Connect" },
-    { label: "Tools", icon: Zap, group: "Connect" },
-    { label: "MCP Servers", icon: Network, group: "Connect" },
-    { label: "Guardrails", icon: ShieldCheck, group: "Platform" },
-    { label: "Approvals", icon: ShieldCheck, group: "Platform" },
-    { label: "Deployments", icon: Cloud, group: "Platform" },
-    { label: "Traces", icon: Radio, group: "Observe" },
-    { label: "Monitoring", icon: Activity, group: "Observe" },
-    { label: "Evaluations", icon: FlaskConical, group: "Evaluate" },
-    { label: "Settings", icon: Settings, group: "Workspace" },
+    { label: "Dashboard", icon: LayoutDashboard, href: "/" },
+    { label: "Agents", icon: Bot, group: "Build", href: "/agents" },
+    { label: "Playground", icon: Code2, group: "Build", href: "/playground" },
+    { label: "Workflows", icon: GitBranch, group: "Build", href: "/workflows" },
+    { label: "Tools", icon: Zap, group: "Build", href: "/tools" },
+    { label: "Knowledge", icon: Boxes, group: "Build", href: "/knowledge" },
+    { label: "Memory", icon: BrainCircuit, group: "Build", href: "/memory" },
+    { label: "MCP Servers", icon: Network, group: "Platform", href: "/mcp-servers" },
+    { label: "Guardrails", icon: ShieldCheck, group: "Platform", href: "/guardrails" },
+    { label: "Deployments", icon: Cloud, group: "Operate", href: "/deployments" },
+    { label: "Approvals", icon: ShieldCheck, group: "Operate", href: "/approvals" },
+    { label: "Traces", icon: Radio, group: "Operate", href: "/traces" },
+    { label: "Monitoring", icon: Activity, group: "Operate", href: "/monitoring" },
+    { label: "Evaluations", icon: FlaskConical, group: "Evaluate", href: "/evaluations" },
+    { label: "Settings", icon: Settings, group: "System", href: "/settings" },
 ];
 
 export function useTheme() {
@@ -82,15 +86,13 @@ export function useTheme() {
     );
 
     useEffect(() => {
-        const stored = window.localStorage.getItem(
-            "vf-theme",
-        ) as ThemePreference | null;
-        const nextPreference =
-            stored === "light" || stored === "system" ? stored : "dark";
-        setPreference(nextPreference);
-
+        const stored = window.localStorage.getItem("vf-theme") as ThemePreference | null;
+        const initialPreference = stored === "light" || stored === "system" ? stored : "dark";
+        setPreference(initialPreference);
         const media = window.matchMedia("(prefers-color-scheme: light)");
         const syncTheme = () => {
+            const saved = window.localStorage.getItem("vf-theme") as ThemePreference | null;
+            const nextPreference = saved === "light" || saved === "system" ? saved : "dark";
             const nextTheme =
                 nextPreference === "system"
                     ? media.matches
@@ -415,6 +417,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<
         string | null
     >(null);
+    const [workspaceLoadStatus, setWorkspaceLoadStatus] = useState<WorkspaceLoadStatus>("loading");
+    const [workspaceIdentityRetry, setWorkspaceIdentityRetry] = useState(0);
+    const [isMobileViewport, setIsMobileViewport] = useState(false);
+    const mobileTriggerRef = useRef<HTMLButtonElement>(null);
+    const sidebarRef = useRef<HTMLElement>(null);
+    const drawerWasOpenRef = useRef(false);
+
+    useEffect(() => {
+        const media = window.matchMedia("(max-width: 640px)");
+        const sync = () => setIsMobileViewport(media.matches);
+        sync();
+        media.addEventListener("change", sync);
+        return () => media.removeEventListener("change", sync);
+    }, []);
+
+    useEffect(() => {
+        if (!isMobileViewport) { drawerWasOpenRef.current = false; return; }
+        if (mobileOpen) {
+            drawerWasOpenRef.current = true;
+            requestAnimationFrame(() => sidebarRef.current?.querySelector<HTMLElement>(".sidebar-close")?.focus());
+            const onKeyDown = (event: KeyboardEvent) => {
+                if (event.key === "Escape") setMobileOpen(false);
+                if (event.key !== "Tab" || !sidebarRef.current) return;
+                const focusable = Array.from(sidebarRef.current.querySelectorAll<HTMLElement>('a[href], button:not(:disabled)'));
+                if (!focusable.length) return;
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+            };
+            document.addEventListener("keydown", onKeyDown);
+            return () => document.removeEventListener("keydown", onKeyDown);
+        }
+        if (drawerWasOpenRef.current) {
+            drawerWasOpenRef.current = false;
+            mobileTriggerRef.current?.focus({ preventScroll: true });
+        }
+    }, [isMobileViewport, mobileOpen]);
 
     useEffect(() => {
         setActiveItem(getActiveItem(pathname));
@@ -422,66 +462,42 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     useEffect(() => {
         let cancelled = false;
+        setWorkspaceLoadStatus("loading");
         async function loadIdentity() {
             if (!supabase) {
                 router.replace("/login");
                 return;
             }
-            const meResponse = await apiFetch("/v1/me");
-            if (meResponse.status === 401) {
-                router.replace("/login");
-                return;
+            try {
+                const meResponse = await apiFetch("/v1/me");
+                if (meResponse.status === 401) { router.replace("/login"); return; }
+                if (!meResponse.ok) throw new Error("Your account could not be loaded.");
+                const me = (await meResponse.json()) as { email: string };
+                const workspaceResponse = await apiFetch("/v1/workspaces");
+                if (!workspaceResponse.ok) throw new Error("Workspaces could not be loaded.");
+                const body = (await workspaceResponse.json()) as { data: WorkspaceSummary[] };
+                if (cancelled) return;
+                const saved = window.localStorage.getItem("vf-workspace-id");
+                const selected = body.data.some((workspace) => workspace.id === saved) ? saved : (body.data[0]?.id ?? null);
+                setEmail(me.email);
+                setWorkspaces(body.data);
+                setSelectedWorkspaceId(selected);
+                setWorkspaceLoadStatus("ready");
+                if (selected) window.localStorage.setItem("vf-workspace-id", selected);
+            } catch {
+                if (!cancelled) setWorkspaceLoadStatus("error");
             }
-            if (!meResponse.ok) return;
-            const me = (await meResponse.json()) as { email: string };
-            const workspaceResponse = await apiFetch("/v1/workspaces");
-            if (!workspaceResponse.ok || cancelled) return;
-            const body = (await workspaceResponse.json()) as {
-                data: WorkspaceSummary[];
-            };
-            const saved = window.localStorage.getItem("vf-workspace-id");
-            const selected = body.data.some(
-                (workspace) => workspace.id === saved,
-            )
-                ? saved
-                : (body.data[0]?.id ?? null);
-            setEmail(me.email);
-            setWorkspaces(body.data);
-            setSelectedWorkspaceId(selected);
-            if (selected)
-                window.localStorage.setItem("vf-workspace-id", selected);
         }
         void loadIdentity();
         return () => {
             cancelled = true;
         };
-    }, [router]);
+    }, [router, workspaceIdentityRetry]);
 
-    const navigate = (label: string) => {
-        setActiveItem(label);
+    const navigate = (href: string) => {
         setMobileOpen(false);
-        if (label === "Dashboard") router.push("/");
-        if (label === "Agents") router.push("/agents");
-        if (label === "Workflows") router.push("/workflows");
-        if (label === "Tools") router.push("/tools");
-        if (label === "Knowledge") router.push("/knowledge");
-        if (label === "Memory") router.push("/memory");
-        if (label === "Guardrails") router.push("/guardrails");
-        if (label === "Approvals") router.push("/approvals");
-        if (label === "Deployments") router.push("/deployments");
-        if (label === "MCP Servers") router.push("/mcp-servers");
-        if (label === "Playground") router.push("/playground");
-        if (label === "Traces") router.push("/traces");
-        if (label === "Monitoring") router.push("/monitoring");
-        if (label === "Evaluations") router.push("/evaluations");
-        if (label === "Settings") router.push("/settings");
+        router.push(href);
     };
-
-    const activeDescription = useMemo(() => {
-        if (activeItem === "Dashboard")
-            return "Here’s what’s happening in your workspace.";
-        return `${activeItem} is ready for the next milestone.`;
-    }, [activeItem]);
 
     const runtimeLayout = pathname.includes("/playground");
     const workflowLayout = pathname.startsWith("/workflows/") || pathname.startsWith("/workflow-runs/");
@@ -494,6 +510,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         .join(" ");
 
     return (
+        <WorkspaceStatusContext.Provider value={workspaceLoadStatus}>
         <MonitoringWorkspaceContext.Provider value={selectedWorkspaceId}>
         <div className={shellClass}>
             <div
@@ -501,10 +518,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     mobileOpen ? "sidebar-overlay visible" : "sidebar-overlay"
                 }
                 onClick={() => setMobileOpen(false)}
+                aria-hidden="true"
             />
             <aside
+                ref={sidebarRef}
                 className={sidebarCollapsed ? "sidebar collapsed" : "sidebar"}
                 data-mobile-open={mobileOpen}
+                inert={isMobileViewport && !mobileOpen ? true : undefined}
             >
                 <div className="sidebar-topline">
                     <BrandLockup collapsed={sidebarCollapsed} />
@@ -544,7 +564,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                         {sidebarCollapsed ? null : item.group}
                                     </div>
                                 ) : null}
-                                <button
+                                <a
+                                    href={item.href}
                                     className={
                                         activeItem === item.label
                                             ? "nav-item active"
@@ -561,8 +582,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                             ? item.label
                                             : undefined
                                     }
-                                    onClick={() => {
-                                        navigate(item.label);
+                                    onClick={(event) => {
+                                        if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                                        event.preventDefault();
+                                        navigate(item.href);
                                     }}
                                 >
                                     <Icon
@@ -571,19 +594,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                         aria-hidden="true"
                                     />
                                     <span>{item.label}</span>
-                                </button>
+                                </a>
                             </div>
                         );
                     })}
                 </nav>
 
                 <div className="sidebar-footer">
-                    <div className="runtime-status">
-                        <span className="status-pulse" />
-                        <span>
-                            {sidebarCollapsed ? "" : "All systems operational"}
-                        </span>
-                    </div>
                     <button
                         className="collapse-button"
                         type="button"
@@ -611,6 +628,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         className="mobile-only icon-button"
                         type="button"
                         aria-label="Open navigation"
+                        ref={mobileTriggerRef}
                         onClick={() => setMobileOpen(true)}
                     >
                         <Menu size={19} aria-hidden="true" />
@@ -621,9 +639,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         <strong>{activeItem}</strong>
                     </div>
                     <div className="topbar-actions">
-                        <span className="topbar-status">
-                            <span className="status-pulse" /> API online
-                        </span>
                         <ThemeMenu
                             preference={preference}
                             resolvedTheme={resolvedTheme}
@@ -638,6 +653,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         </button>
                     </div>
                 </header>
+                {workspaceLoadStatus === "error" ? <div className="shell-load-notice" role="alert"><span>Workspace information could not be refreshed.</span><button type="button" className="text-button" onClick={() => setWorkspaceIdentityRetry((retry) => retry + 1)}>Retry</button></div> : null}
 
                 <div
                     className={
@@ -648,11 +664,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                 : "content-frame"
                     }
                 >
-                    <div className="sr-only">{activeDescription}</div>
+                    <RouteFeatureHelp />
                     {children}
                 </div>
             </main>
         </div>
         </MonitoringWorkspaceContext.Provider>
+        </WorkspaceStatusContext.Provider>
     );
 }

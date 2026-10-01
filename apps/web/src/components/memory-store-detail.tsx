@@ -22,7 +22,7 @@ import {
     useState,
 } from "react";
 
-import { AppShell } from "./app-shell";
+import { useSelectedWorkspaceId } from "./app-shell";
 import { PaginationControls } from "./pagination-controls";
 import { fetchAgents, type Agent } from "../lib/agents";
 import { apiFetch, readApiError } from "../lib/api";
@@ -116,6 +116,7 @@ export function MemoryStoreDetailView({
 }: {
     memoryStoreId: string;
 }) {
+    const selectedWorkspaceId = useSelectedWorkspaceId();
     const [workspace, setWorkspace] = useState<Workspace | null>(null);
     const [stores, setStores] = useState<MemoryStore[]>([]);
     const [store, setStore] = useState<MemoryStore | null>(null);
@@ -146,6 +147,7 @@ export function MemoryStoreDetailView({
     const [importance, setImportance] = useState("0.7");
     const [confidence, setConfidence] = useState("0.9");
     const [error, setError] = useState<string | null>(null);
+    const [retryKey, setRetryKey] = useState(0);
     const [dialogError, setDialogError] = useState<string | null>(null);
     const [message, setMessage] = useState<string | null>(null);
     const dialogRef = useRef<HTMLElement>(null);
@@ -196,7 +198,7 @@ export function MemoryStoreDetailView({
                 const body = (await workspaceResponse.json()) as {
                     data: Workspace[];
                 };
-                const savedId = window.localStorage.getItem("vf-workspace-id");
+                const savedId = selectedWorkspaceId ?? window.localStorage.getItem("vf-workspace-id");
                 const selectedWorkspace =
                     body.data.find((item) => item.id === savedId) ??
                     body.data[0] ??
@@ -239,7 +241,7 @@ export function MemoryStoreDetailView({
         return () => {
             cancelled = true;
         };
-    }, [memoryStoreId]);
+    }, [memoryStoreId, retryKey, selectedWorkspaceId]);
 
     async function changePage(targetPage: number) {
         if (!store || targetPage < 1 || targetPage === currentPage) return;
@@ -480,7 +482,6 @@ export function MemoryStoreDetailView({
                 : "Delete memory";
 
     return (
-        <AppShell>
             <div className="pagination-page memory-page">
                 <Link className="memory-back-link" href="/memory">
                     <ArrowLeft size={15} aria-hidden="true" />
@@ -614,7 +615,14 @@ export function MemoryStoreDetailView({
                         <div className="memory-skeleton-row short" />
                         <span className="sr-only">Loading memory…</span>
                     </section>
-                ) : !stores.length ? (
+                ) : error && (!store || items.length === 0) ? (
+                    <section className="panel memory-state" role="alert">
+                        <CircleAlert size={19} aria-hidden="true" />
+                        <strong>{store ? "Memories could not be loaded" : "Memory store is unavailable"}</strong>
+                        <span>{error}</span>
+                        <button className="button secondary-button" type="button" onClick={() => { setError(null); if (store) { void loadItems(store, undefined, 1, pageSize).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to load memories.")); } else { setLoading(true); setRetryKey((key) => key + 1); } }}>Retry</button>
+                    </section>
+                ) : !store ? (
                     <EmptyMemoryState
                         hasStore={false}
                         onCreateStore={openStoreDialog}
@@ -1010,7 +1018,6 @@ export function MemoryStoreDetailView({
                     </div>
                 ) : null}
             </div>
-        </AppShell>
     );
 }
 

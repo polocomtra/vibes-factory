@@ -12,7 +12,7 @@ import {
 import Link from "next/link";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
-import { AppShell } from "../../components/app-shell";
+import { AppShell, useSelectedWorkspaceId } from "../../components/app-shell";
 import { PaginationControls } from "../../components/pagination-controls";
 import { apiFetch, readApiError } from "../../lib/api";
 import {
@@ -259,7 +259,8 @@ function MemoryStoreCard({ store }: { store: MemoryStore }) {
     );
 }
 
-export default function MemoryPage() {
+function MemoryContent() {
+    const selectedWorkspaceId = useSelectedWorkspaceId();
     const [workspace, setWorkspace] = useState<Workspace | null>(null);
     const [stores, setStores] = useState<MemoryStore[]>([]);
     const [currentPage, setCurrentPage] = useState(1);
@@ -270,6 +271,7 @@ export default function MemoryPage() {
     >([undefined]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [retryKey, setRetryKey] = useState(0);
     const [dialogOpen, setDialogOpen] = useState(false);
 
     useEffect(() => {
@@ -284,15 +286,15 @@ export default function MemoryPage() {
                 const body = (await response.json()) as {
                     data: Workspace[];
                 };
-                const savedId = window.localStorage.getItem("vf-workspace-id");
+                const savedId = selectedWorkspaceId ?? window.localStorage.getItem("vf-workspace-id");
                 const selectedWorkspace =
                     body.data.find((item) => item.id === savedId) ??
                     body.data[0] ??
                     null;
                 if (!selectedWorkspace) {
-                    throw new Error(
-                        "No workspace is available for this account.",
-                    );
+                    setWorkspace(null);
+                    setStores([]);
+                    return;
                 }
                 const storePage = await listMemoryStores(
                     selectedWorkspace.id,
@@ -322,7 +324,7 @@ export default function MemoryPage() {
         return () => {
             cancelled = true;
         };
-    }, []);
+    }, [retryKey, selectedWorkspaceId]);
 
     async function loadPage(
         cursor: string | undefined,
@@ -372,7 +374,7 @@ export default function MemoryPage() {
     }
 
     return (
-        <AppShell>
+        <>
             <div className="pagination-page memory-page memory-overview-page">
                 <div className="page-header memory-page-header">
                     <div>
@@ -418,6 +420,20 @@ export default function MemoryPage() {
                             </div>
                         ))}
                         <span className="sr-only">Loading memory stores…</span>
+                    </section>
+                ) : error ? (
+                    <section className="panel memory-empty" role="alert">
+                        <span className="memory-empty-icon" aria-hidden="true"><BrainCircuit size={28} /></span>
+                        <h2>Memory stores are unavailable</h2>
+                        <p className="panel-copy">The request failed, so this page cannot confirm whether any stores exist.</p>
+                        <button className="button secondary-button" type="button" onClick={() => { setLoading(true); setRetryKey((key) => key + 1); }}>Retry</button>
+                    </section>
+                ) : !workspace ? (
+                    <section className="panel memory-empty" role="status">
+                        <span className="memory-empty-icon" aria-hidden="true"><BrainCircuit size={28} /></span>
+                        <h2>Create a workspace first</h2>
+                        <p className="panel-copy">Memory stores belong to a workspace. Set one up in Settings to begin.</p>
+                        <Link className="button secondary-button" href="/settings">Open Settings</Link>
                     </section>
                 ) : stores.length ? (
                     <section
@@ -474,6 +490,10 @@ export default function MemoryPage() {
                     setDialogOpen(false);
                 }}
             />
-        </AppShell>
+        </>
     );
+}
+
+export default function MemoryPage() {
+    return <AppShell><MemoryContent /></AppShell>;
 }

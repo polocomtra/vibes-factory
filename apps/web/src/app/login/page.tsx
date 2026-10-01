@@ -8,6 +8,7 @@ import { ArrowRight, Bot, Boxes, GitBranch, LoaderCircle, Network } from "lucide
 import { useTheme } from "../../components/app-shell";
 import { apiFetch, readApiError } from "../../lib/api";
 import { hasSupabaseConfig, supabase } from "../../lib/supabase";
+import { FeatureHelpButton } from "../../components/feature-help";
 
 const features = [
   { label: "Agents", icon: Bot },
@@ -84,7 +85,7 @@ export default function LoginPage() {
         <div className="login-layout">
           <div className="login-intro">
             <p className="eyebrow">AI-native control plane</p>
-            <h1>From idea to impact.</h1>
+            <div className="login-title-row"><h1>From idea to impact.</h1><FeatureHelpButton id="login" /></div>
             <p className="login-lede">Build, run, and scale production-inspired AI agents from one focused workspace.</p>
             <div className="feature-pills">{features.map((feature) => { const Icon = feature.icon; return <span key={feature.label}><Icon size={15} aria-hidden="true" />{feature.label}</span>; })}</div>
           </div>

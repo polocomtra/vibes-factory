@@ -363,13 +363,12 @@ export default function TracesPage() {
                         <p className="eyebrow">VibesFactory / Observe</p>
                         <h1>Traces</h1>
                         <p className="page-description">
-                            Explore runtime executions across the agents in your
-                            workspaces.
+                            Explore runs across all accessible workspaces. This view is not limited to the selected workspace.
                         </p>
                     </div>
                     <div className="traces-header-actions">
-                        <span className="traces-count">
-                            <strong>{summary.total}</strong> traces
+                        <span className="traces-count" aria-live="polite">
+                            {loading && traces.length === 0 ? <strong>Loading…</strong> : error && traces.length === 0 ? <strong>Unavailable</strong> : <><strong>{summary.total}</strong> traces{loading ? " · Updating" : error ? " · Previous results" : ""}</>}
                         </span>
                         <div
                             className="layout-toggle"

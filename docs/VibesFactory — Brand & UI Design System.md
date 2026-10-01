@@ -1,5 +1,29 @@
 # VibesFactory — Brand & UI Design System
 
+## Phase 19 product UI consolidation
+
+Phase 19 preserves the Obsidian and Frost themes and standardizes the console
+around grouped Build, Operate, Evaluate, and Platform navigation. Page titles
+use one contextual help trigger that opens a keyboard-contained native dialog;
+the guide stays available when page data is unavailable. Shared states must
+distinguish loading, refreshing, empty, unavailable, and error, and telemetry
+must come from the existing workspace-scoped API. Traces explicitly cover all
+workspaces the signed-in user can access.
+
+Dialogs focus their heading on open, keep keyboard focus inside, close with
+Escape, and return focus to the trigger. Mobile navigation becomes inert while
+closed and returns focus to its opener. Reduced-motion preferences are honored.
+Agent configuration uses URL-addressable grouped sections and keeps draft
+state while navigating. Creation dialogs collect the minimum identifying
+details before opening an editor.
+
+Keep each help dialog to two sections: “What it is?” explains the specific
+feature in two or three concise sentences; “How it works” gives three or four
+practical steps. Keep examples out of the guide unless they clarify a step.
+Never place real credentials, private payloads, fabricated metrics, or
+unsupported capability claims in guide copy. Full implementation details and
+deferred surfaces are tracked in Phase 19 of the Implementation Plan.
+
 ## Phase 9 Knowledge UI addendum
 
 Knowledge uses the existing Obsidian/Frost semantic tokens and AppShell. The

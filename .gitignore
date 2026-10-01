@@ -184,6 +184,8 @@ node_modules/
 .next/
 out/
 *.tsbuildinfo
+playwright-report/
+test-results/
 
 # Local service data and secrets
 data/

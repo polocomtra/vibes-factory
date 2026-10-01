@@ -213,6 +213,9 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
   const initial = useMemo(() => toCanvas(initialDraft.definition), [initialDraft.definition]);
   const [nodes, setNodes] = useState<CanvasNode[]>(initial.nodes);
   const [edges, setEdges] = useState<Edge[]>(initial.edges);
+  const [connectionSourceId, setConnectionSourceId] = useState(initial.nodes[0]?.id ?? "");
+  const [connectionTargetId, setConnectionTargetId] = useState(initial.nodes[1]?.id ?? "");
+  const [connectionSourceHandle, setConnectionSourceHandle] = useState("");
   const [revision, setRevision] = useState(initialDraft.revision);
   const [selected, setSelected] = useState<string | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -239,6 +242,12 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
     return () => document.removeEventListener("keydown", closeOnEscape);
   }, [busy, runInputOpen]);
   const activeNode = nodes.find((node) => node.id === selected);
+  const connectionSource = nodes.find((node) => node.id === connectionSourceId);
+  const sourceHandles = connectionSource?.data.type === "CONDITION"
+    ? [{ value: "true", label: "True branch" }, { value: "false", label: "False branch" }]
+    : connectionSource?.data.type === "APPROVAL"
+      ? [{ value: "approved", label: "Approved branch" }, { value: "rejected", label: "Rejected branch" }]
+      : [];
   function workflowErrorMessage(reason: unknown, fallback: string) {
     if (!(reason instanceof ApiRequestError)) return reason instanceof Error ? reason.message : fallback;
     const errors = Array.isArray(reason.details.errors) ? reason.details.errors : [];
@@ -422,8 +431,20 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
 
   function addNode(type: DefinitionNode["type"], position?: { x: number; y: number }) { const key = `${type.toLowerCase()}-${Date.now().toString(36)}-${nodes.length + 1}`; const config: Record<string, unknown> = type === "AGENT" ? { input: { kind: "ref", scope: "input", path: "" } } : type === "TOOL" ? { arguments: [] } : type === "CONDITION" ? { expression: { op: "exists", value: { kind: "ref", scope: "input", path: "" } } } : type === "END" ? { output: { kind: "ref", scope: "variables", path: "" } } : {};
     setNodes((current) => [...current, { id: key, type: "workflow", position: position ?? { x: 260 + current.length * 30, y: 120 + current.length * 20 }, data: { label: typeLabels[type], type, config } }]);
+    setConnectionTargetId((current) => current || key);
     setSelected(key);
     setInspectorOpen(true);
+  }
+
+  function connectNodesFromList() {
+    if (!connectionSourceId || !connectionTargetId || connectionSourceId === connectionTargetId) return;
+    onConnect({ source: connectionSourceId, target: connectionTargetId, sourceHandle: connectionSourceHandle || null, targetHandle: null });
+    const target = nodes.find((node) => node.id === connectionTargetId);
+    if (target) {
+      setSelected(target.id);
+      setInspectorOpen(true);
+    }
+    setToast({ kind: "success", message: `Connected ${connectionSource?.data.label ?? "node"} to ${target?.data.label ?? "node"}.` });
   }
 
   function handlePaletteDragStart(event: React.DragEvent<HTMLButtonElement>, type: DefinitionNode["type"]) {
@@ -580,6 +601,22 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
         {inspectorOpen ? <>{activeNode ? <><div className="workflow-inspector-heading"><span className="workflow-inspector-dot" style={{ background: colors[activeNode.data.type] }} /><div><strong>{activeNode.data.label}</strong><small>{typeLabels[activeNode.data.type]} node · key <code>{activeNode.id}</code></small></div></div><label className="form-label">Node name<input value={activeNode.data.label} onChange={(event) => updateNodeLabel(event.target.value)} /></label>{activeNode.data.type === "AGENT" ? renderAgentConfig() : null}{activeNode.data.type === "TOOL" ? renderToolConfig() : null}{activeNode.data.type === "CONDITION" ? renderConditionConfig() : null}{activeNode.data.type === "TRANSFORM" ? renderTransformConfig() : null}{activeNode.data.type === "APPROVAL" ? renderApprovalConfig() : null}{activeNode.data.type === "END" ? renderEndConfig() : null}{activeNode.data.type === "START" ? renderSimpleConfig() : null}<button className="workflow-advanced-toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((current) => !current)}><Settings2 size={14} aria-hidden="true" />{advancedOpen ? "Hide configuration guide" : "Show configuration guide"}<span>{advancedOpen ? "⌃" : "⌄"}</span></button>{advancedOpen ? <div className="workflow-guided-config"><div className="workflow-guided-config-heading"><Info size={15} aria-hidden="true" /><div><strong>Guided configuration</strong><p>Choose values in the fields above. VibesFactory converts them into the safe JSON contract automatically.</p></div></div><div className="workflow-guided-config-list"><span>✓ Human-readable labels and descriptions</span><span>✓ No JSON syntax required</span><span>✓ Validation runs before publish</span></div></div> : null}</> : <div className="workflow-inspector-empty"><Braces size={20} aria-hidden="true" /><strong>Select a node to configure it</strong><p>Choose an Agent, Tool, Condition or Transform and configure it with guided fields.</p></div>}{validation ? <div className={`workflow-validation ${validation.valid ? "valid" : "invalid"}`}><div>{validation.valid ? <Check size={15} /> : <CircleAlert size={15} />} {validation.valid ? "Graph is valid" : `${validation.errors.length} validation issue(s)`}</div>{validation.errors.slice(0, 4).map((issue, index) => <button type="button" key={`${issue.code}-${index}`} onClick={() => { if (issue.node_key) { setSelected(issue.node_key); setInspectorOpen(true); } }}>{issue.node_key ? `${issue.node_key}: ` : ""}{issue.message}</button>)}</div> : null}</> : null}
       </aside>
     </div>
+    <details className="workflow-accessible-controls">
+      <summary>Keyboard-accessible node list and connections</summary>
+      <div className="workflow-accessible-controls-grid">
+        <section aria-labelledby="workflow-node-list-title">
+          <h2 id="workflow-node-list-title">Workflow nodes</h2>
+          {nodes.length ? <ul className="workflow-accessible-node-list">{nodes.map((node) => <li key={node.id}><button type="button" aria-pressed={selected === node.id} onClick={() => { setSelected(node.id); setInspectorOpen(true); }}>{typeLabels[node.data.type]}: {node.data.label}<code>{node.id}</code></button></li>)}</ul> : <p className="panel-copy">Add a node from the palette to begin.</p>}
+        </section>
+        <fieldset className="workflow-accessible-connect">
+          <legend>Connect nodes</legend>
+          <label>From node<select aria-label="Connection source node" value={connectionSourceId} onChange={(event) => { setConnectionSourceId(event.target.value); setConnectionSourceHandle(""); }}><option value="">Choose a source node</option>{nodes.filter((node) => node.data.type !== "END").map((node) => <option key={node.id} value={node.id}>{typeLabels[node.data.type]}: {node.data.label}</option>)}</select></label>
+          {sourceHandles.length ? <label>Output branch<select aria-label="Connection source branch" value={connectionSourceHandle} onChange={(event) => setConnectionSourceHandle(event.target.value)}><option value="">Choose a branch</option>{sourceHandles.map((handle) => <option key={handle.value} value={handle.value}>{handle.label}</option>)}</select></label> : null}
+          <label>To node<select aria-label="Connection target node" value={connectionTargetId} onChange={(event) => setConnectionTargetId(event.target.value)}><option value="">Choose a target node</option>{nodes.filter((node) => node.id !== connectionSourceId && node.data.type !== "START").map((node) => <option key={node.id} value={node.id}>{typeLabels[node.data.type]}: {node.data.label}</option>)}</select></label>
+          <button className="button secondary-button" type="button" onClick={connectNodesFromList} disabled={!connectionSourceId || !connectionTargetId || connectionSourceId === connectionTargetId || (sourceHandles.length > 0 && !connectionSourceHandle)}>Connect nodes</button>
+        </fieldset>
+      </div>
+    </details>
     {runInputOpen ? <div className="modal-backdrop" role="presentation"><section className="modal-dialog workflow-run-input-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-run-input-heading"><div className="modal-heading"><div><span className="eyebrow">Run workflow</span><h2 id="workflow-run-input-heading">Provide workflow input</h2><p className="panel-copy">These fields become the input object available to Start and Agent nodes.</p></div><button className="icon-button modal-close" type="button" onClick={() => setRunInputOpen(false)} aria-label="Close workflow input dialog"><X size={17} aria-hidden="true" /></button></div><form className="modal-form" onSubmit={(event) => { event.preventDefault(); void executeRun(); }}><div className="workflow-input-list">{runInputFields.map((field) => <div className="workflow-input-row" key={field.id}><label className="form-label"><span>Field name</span><input value={field.key} onChange={(event) => updateRunInputField(field.id, { key: event.target.value })} placeholder="topic" autoComplete="off" /></label><label className="form-label"><span>Value type</span><select value={field.type} onChange={(event) => updateRunInputField(field.id, { type: event.target.value as RunInputField["type"] })}><option value="text">Text</option><option value="number">Number</option><option value="boolean">True / false</option></select></label><label className="form-label workflow-input-value"><span>Value</span>{field.type === "boolean" ? <select value={field.value || "false"} onChange={(event) => updateRunInputField(field.id, { value: event.target.value })}><option value="true">True</option><option value="false">False</option></select> : <input type={field.type === "number" ? "number" : "text"} value={field.value} onChange={(event) => updateRunInputField(field.id, { value: event.target.value })} placeholder={field.type === "number" ? "42" : "Research workflow orchestration"} />}</label><button className="icon-button danger workflow-input-remove" type="button" onClick={() => removeRunInputField(field.id)} aria-label={`Remove ${field.key || "input"} field`}><Trash2 size={15} aria-hidden="true" /></button></div>)}</div><button className="text-button workflow-input-add" type="button" onClick={addRunInputField}><Plus size={14} aria-hidden="true" />Add input field</button><small className="workflow-helper">The UI converts these values into JSON before the run starts, so no JSON syntax is required.</small><div className="modal-actions"><button className="button subtle-button" type="button" onClick={() => setRunInputOpen(false)}>Cancel</button><button className="button primary-button" type="submit" disabled={busy}><Play size={15} aria-hidden="true" />Start run</button></div></form></section></div> : null}
   </div></ReactFlowProvider>;
 }

@@ -3,6 +3,7 @@
 import {
     FormEvent,
     KeyboardEvent as ReactKeyboardEvent,
+    useCallback,
     useEffect,
     useRef,
     useState,
@@ -172,12 +173,31 @@ export default function SettingsPage() {
     const credentialSecretRef = useRef<HTMLInputElement>(null);
     const credentialTriggerRef = useRef<HTMLButtonElement>(null);
 
+    useEffect(() => {
+        const readTab = () => {
+            const value = new URLSearchParams(window.location.search).get("tab") as SettingsTab | null;
+            setActiveTab(settingsTabs.some((tab) => tab.id === value) ? value! : "workspace");
+        };
+        readTab();
+        window.addEventListener("popstate", readTab);
+        return () => window.removeEventListener("popstate", readTab);
+    }, []);
+
+    const selectSettingsTab = useCallback((tab: SettingsTab) => {
+        setActiveTab(tab);
+        const url = new URL(window.location.href);
+        if (tab === "workspace") url.searchParams.delete("tab");
+        else url.searchParams.set("tab", tab);
+        window.history.pushState(null, "", `${url.pathname}${url.search}${url.hash}`);
+        window.dispatchEvent(new PopStateEvent("popstate"));
+    }, []);
+
     const selectedWorkspace = workspaces.find(
         (workspace) => workspace.id === selectedId,
     );
     const isOwner = selectedWorkspace?.role === "OWNER";
 
-    async function load() {
+    const load = useCallback(async () => {
         setLoading(true);
         setError(null);
         const response = await apiFetch("/v1/workspaces");
@@ -196,9 +216,9 @@ export default function SettingsPage() {
         setSelectedId(id);
         setName(workspace?.name ?? "");
         setSlug(workspace?.slug ?? "");
-        if (!id) setActiveTab("workspace");
+        if (!id) selectSettingsTab("workspace");
         setLoading(false);
-    }
+    }, [selectSettingsTab]);
 
     async function loadMembers(workspaceId: string) {
         setMemberLoading(true);
@@ -238,7 +258,7 @@ export default function SettingsPage() {
 
     useEffect(() => {
         void load();
-    }, []);
+    }, [load]);
 
     useEffect(() => {
         if (selectedId) void loadMembers(selectedId);
@@ -527,7 +547,7 @@ export default function SettingsPage() {
         const nextButton = tabButtons[nextIndex];
         const nextTab = nextButton?.dataset.settingsTab as SettingsTab | undefined;
         nextButton?.focus();
-        if (nextTab) setActiveTab(nextTab);
+        if (nextTab) selectSettingsTab(nextTab);
     }
 
     async function addMember(event: FormEvent<HTMLFormElement>) {
@@ -689,7 +709,7 @@ export default function SettingsPage() {
                                 aria-controls={`settings-panel-${tab.id}`}
                                 tabIndex={activeTab === tab.id ? 0 : -1}
                                 disabled={tab.id !== "workspace" && !selectedId}
-                                onClick={() => setActiveTab(tab.id)}
+                                onClick={() => selectSettingsTab(tab.id)}
                                 onKeyDown={(event) =>
                                     handleSettingsTabKeyDown(event, tab.id)
                                 }

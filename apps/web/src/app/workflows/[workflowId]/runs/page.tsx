@@ -78,7 +78,7 @@ export default function WorkflowRunsPage() {
                         <h1>{workflow?.name || "Run history"}</h1>
                         <p className="page-description">Review previous executions, outputs and terminal states for this workflow.</p>
                     </div>
-                    <span className="status-badge info"><History size={13} aria-hidden="true" />{runs.length} runs</span>
+                    <span className={`status-badge ${error ? "error" : loading ? "muted" : "info"}`}><History size={13} aria-hidden="true" />{error ? "Unavailable" : loading ? "Loading history" : `${runs.length} runs`}</span>
                 </div>
 
                 {error ? <div className="form-error agent-alert" role="alert">{error}</div> : null}
@@ -91,7 +91,7 @@ export default function WorkflowRunsPage() {
                         <button className="button primary-button" type="button" onClick={() => router.push(`/workflows/${params.workflowId}`)}>Open workflow</button>
                     </section>
                 ) : null}
-                {!loading && runs.length > 0 ? (
+                {!loading && !error && runs.length > 0 ? (
                     <section className="workflow-history-list" aria-label="Workflow runs">
                         {runs.map((run) => (
                             <button key={run.id} type="button" className="workflow-history-row" onClick={() => router.push(`/workflow-runs/${run.id}`)}>

@@ -264,15 +264,15 @@ export default function GuardrailsPage() {
                 {message ? <div className="form-success agent-alert" role="status"><Check size={15} aria-hidden="true" />{message}</div> : null}
                 {!loading && !workspace ? <section className="panel guardrails-empty-state"><ShieldCheck size={28} aria-hidden="true" /><h2>Create a workspace first</h2><p className="panel-copy">Guardrail policies are isolated by workspace.</p></section> : null}
                 {workspace ? <>
-                    <section className="panel guardrails-how-panel" aria-labelledby="guardrails-how-title">
-                        <div className="guardrails-how-heading">
+                    <details className="panel guardrails-how-panel">
+                        <summary className="guardrails-how-heading">
                             <div>
                                 <p className="panel-kicker">Runtime flow</p>
-                                <h2 id="guardrails-how-title">How guardrails work</h2>
-                                <p className="guardrails-how-summary">When enabled on a published agent version, guardrails check data at four points in a run. Rules can allow it, redact sensitive content, block it, or require approval before it continues.</p>
+                                <h2>Guardrail checkpoints</h2>
+                                <p className="guardrails-how-summary">Policies can allow, redact, block, or pause a run for approval at supported points.</p>
                             </div>
                             <ShieldCheck size={20} aria-hidden="true" />
-                        </div>
+                        </summary>
                         <ol className="guardrails-checkpoint-grid" aria-label="Guardrail runtime checkpoints">
                             {runtimeCheckpoints.map((checkpoint, index) => (
                                 <li className="guardrails-checkpoint-card" key={checkpoint.hook}>
@@ -285,7 +285,7 @@ export default function GuardrailsPage() {
                                 </li>
                             ))}
                         </ol>
-                    </section>
+                    </details>
                     <section className="panel guardrails-catalog-section" aria-labelledby="guardrails-catalog-title"><div className="panel-heading"><div><p className="panel-kicker">Workspace catalog</p><h2 id="guardrails-catalog-title">Policy library</h2></div><span className="code-hint">{workspace.name} · {policies.length + 1} policies</span></div>{loading ? <div className="guardrails-loading"><LoaderCircle className="spin" size={17} aria-hidden="true" />Loading policy library…</div> : <div className="guardrail-policy-grid"><BaselineCard />{policies.map((policy) => <PolicyCard key={policy.id} policy={policy} />)}</div>}</section>
                 </> : null}
             </div>
