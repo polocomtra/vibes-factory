@@ -3489,6 +3489,12 @@ Same dataset can be run against two versions and produce a comparison report.
 
 Separate internal testing from stable production invocation.
 
+Phase 15 must have its own Alembic migration before this phase. Evaluation models
+and routes already exist, so revision `0016_phase15_evaluations` creates the four
+evaluation tables. Revision `0017_phase16_deployments` adds the deployment domain
+and its public invocation records. Validate both revisions against an empty
+database and a database already at revision `0015_phase14_approvals`.
+
 ---
 
 # 98. Deployment Entity
@@ -3512,12 +3518,22 @@ agent_version_id
 
 name
 
+slug
+
 environment
 
 status
 
+created_by
+
 created_at
+
+updated_at
 ```
+
+The deployment points to an immutable `AgentVersion`. The database and service
+must enforce that the selected version belongs to the same agent and workspace.
+Changing or rolling back a deployment updates only `agent_version_id`.
 
 Environments:
 
@@ -3549,6 +3565,7 @@ Implement:
 
 ```text
 POST /v1/deployments/{deployment_id}/runs
+POST /v1/deployments/{deployment_id}/runs:stream
 ```
 
 External authentication:
@@ -3556,6 +3573,14 @@ External authentication:
 ```text
 API key
 ```
+
+The deployment selects and pins its current version when a run starts. Public
+request bodies cannot select `agent_version_id`. Return both `id` and
+`session_id`; a later request may continue the conversation by passing the same
+session ID with the same API key. Sessions belong to the key that created them,
+and a different key cannot read or continue them. Public callers do not create
+internal `User` rows. Public runs can delegate to published child agents and can
+read agent-global memory, but they do not read or write user-scoped memory.
 
 ---
 
@@ -3572,7 +3597,11 @@ key_hash
 
 workspace_id
 
-deployment_id nullable
+deployment_id
+
+expires_at
+
+last_used_at
 
 created_at
 
@@ -3580,6 +3609,41 @@ revoked_at
 ```
 
 Never store raw key after creation.
+
+Only workspace owners can create, change, enable, or disable deployments and
+create or revoke keys. Workspace members can view deployments and key metadata.
+Show a newly created `vf_live_` key once; store only its hash and lookup prefix.
+Expiration or revocation must reject the key on the next request.
+
+## Public invocation reliability and limits
+
+Create a public invocation record before starting runtime execution. Store a
+hash of the optional `Idempotency-Key` and a canonical request hash, scoped to
+the API key. Repeating the same key and payload returns the original run;
+reusing the key with a different payload returns `409`. Return `409` while an
+invocation is in progress and include its run ID when one has been created.
+Use the invocation records to enforce per-key request-per-minute and concurrent
+run limits; return `429` when either limit is reached.
+
+Public metadata accepts at most 16 string pairs. Keys may contain at most 64
+characters, values at most 256 characters, and internal field names are
+reserved. Keep metadata separate from server-generated run and trace fields.
+
+## Console and acceptance
+
+Enable the Deployments navigation item. Add a deployment catalog, create dialog,
+and detail page for version promotion or rollback, enable/disable, and API-key
+management. Show the raw key once with a copy action and a reminder to save it;
+never put it in browser storage. Keep loading, empty, and error states distinct
+and preserve keyboard access through shared controls.
+
+Verify migration from empty and revision `0015`, workspace isolation, OWNER and
+MEMBER permissions, published version ownership, rollback, active-run disable,
+key expiration/revocation, public SSE and child agents, global-only memory,
+key-bound sessions, version pinning, and idempotent retries including races.
+Run the API and web lint/type/build checks and smoke test deployment creation,
+key creation, invocation, session continuation, version change, and key
+revocation. Cloud Run automation remains in Phase 20.
 
 ---
 
