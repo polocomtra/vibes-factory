@@ -22,11 +22,13 @@ from ..models import (
     AgentVersionGuardrail,
     AgentVersionKnowledgeBase,
     AgentVersionTool,
+    Credential,
     GuardrailPolicy,
     GuardrailVersion,
     KnowledgeBase,
     KnowledgeBaseStatus,
     MemoryStore,
+    ModelConnection,
     Tool,
     ToolVersion,
 )
@@ -60,7 +62,10 @@ class AgentServiceError(Exception):
 
 def validate_draft(draft: AgentDraft) -> list[DraftValidationIssue]:
     issues: list[DraftValidationIssue] = []
-    if find_model(draft.model_provider, draft.model_name) is None:
+    if (
+        not draft.model_config.get("connection_id")
+        and find_model(draft.model_provider, draft.model_name) is None
+    ):
         issues.append(
             DraftValidationIssue(
                 code="MODEL_NOT_FOUND",
@@ -97,6 +102,76 @@ def validate_draft(draft: AgentDraft) -> list[DraftValidationIssue]:
             )
         )
     return issues
+
+
+async def validate_model_binding(
+    session: AsyncSession,
+    workspace_id: UUID,
+    model: ModelConfiguration | AgentDraft,
+) -> None:
+    provider = (
+        model.provider
+        if isinstance(model, ModelConfiguration)
+        else model.model_provider
+    )
+    options = (
+        model.model_dump(mode="json", exclude={"provider", "name"})
+        if isinstance(model, ModelConfiguration)
+        else model.model_config
+    )
+    connection_id = options.get("connection_id")
+    deployment_name = options.get("deployment_name")
+    if provider == "azure_openai" and connection_id and not deployment_name:
+        raise AgentServiceError(
+            "MODEL_DEPLOYMENT_REQUIRED",
+            "Azure deployment name is required.",
+            422,
+            {"field": "model.deployment_name"},
+        )
+    if provider != "azure_openai" and deployment_name:
+        raise AgentServiceError(
+            "MODEL_REQUEST_INVALID",
+            "Deployment name is only valid for Azure OpenAI.",
+            422,
+            {"field": "model.deployment_name"},
+        )
+    if not connection_id:
+        return
+    try:
+        parsed_id = UUID(str(connection_id))
+    except ValueError as exc:
+        raise AgentServiceError(
+            "MODEL_CONNECTION_NOT_FOUND", "The model connection was not found.", 422
+        ) from exc
+    row = (
+        await session.execute(
+            select(ModelConnection, Credential)
+            .join(Credential, Credential.id == ModelConnection.credential_id)
+            .where(
+                ModelConnection.id == parsed_id,
+                ModelConnection.workspace_id == workspace_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise AgentServiceError(
+            "MODEL_CONNECTION_NOT_FOUND",
+            "The model connection does not belong to this workspace.",
+            422,
+        )
+    connection, credential = row
+    if connection.provider != provider or credential.provider != provider:
+        raise AgentServiceError(
+            "MODEL_PROVIDER_MISMATCH",
+            "The connection provider does not match the selected model.",
+            422,
+        )
+    if credential.revoked_at is not None:
+        raise AgentServiceError(
+            "MODEL_CONNECTION_REVOKED",
+            "The selected model connection has been revoked.",
+            422,
+        )
 
 
 async def validate_memory_configuration(
@@ -137,11 +212,15 @@ def _normalized_model_config(stored_config: dict[str, Any]) -> dict[str, object]
         key in stored_config
         for key in ("config", "reasoning_options", "provider_options")
     ):
-        return {
+        result: dict[str, object] = {
             "config": stored_config.get("config", {}),
             "reasoning_options": stored_config.get("reasoning_options", {}),
             "provider_options": stored_config.get("provider_options", {}),
         }
+        for key in ("connection_id", "deployment_name"):
+            if stored_config.get(key) is not None:
+                result[key] = stored_config[key]
+        return result
     return {
         "config": stored_config,
         "reasoning_options": {},
@@ -162,6 +241,7 @@ def build_snapshot(
     tools: list[dict[str, object]] | None = None,
     knowledge_bases: list[dict[str, object]] | None = None,
     guardrails: list[dict[str, object]] | None = None,
+    model_binding: dict[str, object] | None = None,
 ) -> dict[str, object]:
     guardrail_snapshot: object = []
     if guardrails is not None:
@@ -177,6 +257,7 @@ def build_snapshot(
             "provider": draft.model_provider,
             "name": draft.model_name,
             **_normalized_model_config(draft.model_config),
+            **(model_binding or {}),
         },
         "runtime_config": draft.runtime_config,
         "memory_config": _memory_config_data(draft.memory_config),
@@ -197,7 +278,11 @@ async def create_agent(
         provider=get_default_model().provider,
         name=get_default_model().name,
     )
-    if find_model(selected_model.provider, selected_model.name) is None:
+    await validate_model_binding(session, workspace_id, selected_model)
+    if (
+        selected_model.connection_id is None
+        and find_model(selected_model.provider, selected_model.name) is None
+    ):
         raise AgentServiceError(
             "MODEL_NOT_FOUND",
             "The selected model is not available in the platform catalog.",
@@ -235,7 +320,9 @@ async def create_agent(
             instructions=payload.instructions,
             model_provider=selected_model.provider,
             model_name=selected_model.name,
-            model_config=selected_model.model_dump(exclude={"provider", "name"}),
+            model_config=selected_model.model_dump(
+                mode="json", exclude={"provider", "name"}
+            ),
             runtime_config=payload.runtime_config.model_dump(),
             memory_config=_memory_config_data(memory_config),
             updated_by=user_id,
@@ -288,7 +375,11 @@ async def update_draft(
     if "instructions" in payload.model_fields_set and payload.instructions is not None:
         draft.instructions = payload.instructions
     if "model" in payload.model_fields_set and payload.model is not None:
-        if find_model(payload.model.provider, payload.model.name) is None:
+        await validate_model_binding(session, agent.workspace_id, payload.model)
+        if (
+            payload.model.connection_id is None
+            and find_model(payload.model.provider, payload.model.name) is None
+        ):
             raise AgentServiceError(
                 "MODEL_NOT_FOUND",
                 "The selected model is not available in the platform catalog.",
@@ -297,7 +388,9 @@ async def update_draft(
             )
         draft.model_provider = payload.model.provider
         draft.model_name = payload.model.name
-        draft.model_config = payload.model.model_dump(exclude={"provider", "name"})
+        draft.model_config = payload.model.model_dump(
+            mode="json", exclude={"provider", "name"}
+        )
     if (
         "runtime_config" in payload.model_fields_set
         and payload.runtime_config is not None
@@ -337,6 +430,7 @@ async def publish_version(
     )
     if draft is None:
         raise AgentServiceError("RESOURCE_NOT_FOUND", "Agent draft was not found.", 404)
+    await validate_model_binding(session, locked_agent.workspace_id, draft)
     issues = validate_draft(draft)
     if issues:
         raise AgentServiceError(
@@ -551,6 +645,27 @@ async def publish_version(
             "source": "PLATFORM_DEFAULT",
         },
     )
+    model_binding: dict[str, object] = {}
+    connection_id = draft.model_config.get("connection_id")
+    if connection_id:
+        connection_row = (
+            await session.execute(
+                select(ModelConnection, Credential)
+                .join(Credential, Credential.id == ModelConnection.credential_id)
+                .where(
+                    ModelConnection.id == UUID(str(connection_id)),
+                    ModelConnection.workspace_id == locked_agent.workspace_id,
+                )
+            )
+        ).one()
+        connection, credential = connection_row
+        definition = find_model(draft.model_provider, draft.model_name)
+        model_binding = {
+            "connection_id": str(connection.id),
+            "credential_id": str(credential.id),
+            "provider_endpoint": connection.base_url,
+            "capabilities": definition.capabilities if definition else {},
+        }
     version = AgentVersion(
         workspace_id=locked_agent.workspace_id,
         agent_id=locked_agent.id,
@@ -563,7 +678,11 @@ async def publish_version(
         memory_config=_memory_config_data(draft.memory_config),
         guardrails_enabled=draft.guardrails_enabled,
         snapshot=build_snapshot(
-            draft, tool_snapshots, knowledge_snapshots, guardrail_snapshots
+            draft,
+            tool_snapshots,
+            knowledge_snapshots,
+            guardrail_snapshots,
+            model_binding,
         ),
         workflow_child_bindings=child_snapshots,
         change_note=change_note,

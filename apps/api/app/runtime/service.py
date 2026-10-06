@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 from uuid import UUID, uuid4
 
 import structlog
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..approvals.service import create_approval, mark_tool_run_waiting
 from ..config import get_settings
+from ..credentials.crypto import CredentialCipher, CredentialCryptoError
 from ..credentials.service import DatabaseCredentialResolver
 from ..guardrails.contracts import (
     GuardrailContext,
@@ -32,11 +34,17 @@ from ..knowledge.schemas import RetrievalFilters
 from ..mcp.executor import DatabaseMCPServerResolver
 from ..mcp.manager import MCPManager
 from ..memory.retrieval import search_memory
+from ..model_connections.service import (
+    ModelConnectionError,
+    resolve_connection_endpoint,
+)
 from ..model_providers.contracts import (
     ModelMessage,
+    ModelProvider,
     ModelRequest,
     ModelResponse,
     ModelToolCall,
+    StreamingModelProvider,
 )
 from ..model_providers.errors import ProviderError
 from ..model_providers.registry import ModelProviderRegistry
@@ -45,6 +53,7 @@ from ..models import (
     ApprovalKind,
     ApprovalRequest,
     ApprovalStatus,
+    Credential,
     GuardrailHook,
     Job,
     JobStatus,
@@ -52,6 +61,7 @@ from ..models import (
     MemoryStore,
     Message,
     MessageRole,
+    ModelConnection,
     Run,
     RunStatus,
     Session,
@@ -198,6 +208,135 @@ class AgentRuntime:
         # the provider's original (potentially sensitive) arguments.
         self._safe_tool_calls: tuple[ModelToolCall, ...] = ()
         self._execution_context: ExecutionContext | None = None
+
+    async def _model_provider_and_key(
+        self, request: AgentRunRequest, *, streaming: bool = False
+    ) -> tuple[ModelProvider | StreamingModelProvider, str]:
+        """Resolve the published model connection for one provider call."""
+        options = request.agent_version.model_options
+        connection_id = options.get("connection_id")
+        base_url: str | None = None
+        pinned_addresses: tuple[str, ...] | None = None
+        if connection_id:
+            try:
+                parsed_id = UUID(str(connection_id))
+            except ValueError as exc:
+                raise RuntimeExecutionError(
+                    "MODEL_CONNECTION_INVALID",
+                    "The model connection reference is invalid.",
+                    status_code=422,
+                ) from exc
+            row = (
+                await self.session.execute(
+                    select(ModelConnection, Credential)
+                    .join(Credential, Credential.id == ModelConnection.credential_id)
+                    .where(
+                        ModelConnection.id == parsed_id,
+                        ModelConnection.workspace_id == request.workspace_id,
+                    )
+                )
+            ).one_or_none()
+            if row is None:
+                raise RuntimeExecutionError(
+                    "MODEL_CONNECTION_NOT_FOUND",
+                    "The model connection is unavailable.",
+                    status_code=422,
+                )
+            connection, credential = row
+            if connection.provider != request.agent_version.model_provider:
+                raise RuntimeExecutionError(
+                    "MODEL_PROVIDER_MISMATCH",
+                    "The model connection provider is invalid.",
+                    status_code=422,
+                )
+            snapshot_credential_id = options.get("credential_id")
+            if snapshot_credential_id and str(snapshot_credential_id) != str(
+                credential.id
+            ):
+                raise RuntimeExecutionError(
+                    "MODEL_CONNECTION_INVALID",
+                    "The published model credential reference is invalid.",
+                    status_code=422,
+                )
+            snapshot_endpoint = options.get("provider_endpoint")
+            if (
+                snapshot_endpoint is not None
+                and snapshot_endpoint != connection.base_url
+            ):
+                raise RuntimeExecutionError(
+                    "MODEL_CONNECTION_INVALID",
+                    "The published model endpoint reference is invalid.",
+                    status_code=422,
+                )
+            if credential.revoked_at is not None:
+                raise RuntimeExecutionError(
+                    "MODEL_CONNECTION_REVOKED",
+                    "The model connection was revoked.",
+                    status_code=409,
+                )
+            if (
+                credential.provider != connection.provider
+                or credential.credential_type != "API_KEY"
+            ):
+                raise RuntimeExecutionError(
+                    "MODEL_CONNECTION_INVALID",
+                    "The model connection credential is invalid.",
+                    status_code=422,
+                )
+            try:
+                cipher = CredentialCipher.from_secret(
+                    get_settings().encryption_master_key
+                )
+                values = cipher.decrypt(
+                    credential.ciphertext, key_version=credential.key_version
+                )
+            except CredentialCryptoError as exc:
+                raise RuntimeExecutionError(
+                    "CREDENTIAL_VAULT_UNAVAILABLE",
+                    "The model connection is unavailable.",
+                    status_code=503,
+                ) from exc
+            api_key = values.get("api_key")
+            if not isinstance(api_key, str) or not api_key:
+                raise RuntimeExecutionError(
+                    "PROVIDER_CREDENTIAL_MISSING",
+                    "The model connection has no usable key.",
+                    status_code=409,
+                )
+            base_url = (
+                snapshot_endpoint
+                if isinstance(snapshot_endpoint, str)
+                else connection.base_url
+            )
+            if connection.provider == "azure_openai":
+                try:
+                    base_url, pinned_addresses = await resolve_connection_endpoint(
+                        connection.provider, base_url
+                    )
+                except ModelConnectionError as exc:
+                    raise RuntimeExecutionError(
+                        exc.code, exc.message, status_code=422
+                    ) from exc
+        else:
+            api_key = self.registry.builtin_api_key(
+                request.agent_version.model_provider
+            )
+
+        if streaming:
+            provider: ModelProvider | StreamingModelProvider = (
+                self.registry.resolve_streaming(
+                    request.agent_version.model_provider,
+                    base_url=base_url,
+                    pinned_addresses=pinned_addresses,
+                )
+            )
+        else:
+            provider = self.registry.resolve(
+                request.agent_version.model_provider,
+                base_url=base_url,
+                pinned_addresses=pinned_addresses,
+            )
+        return provider, api_key
 
     def _guardrail_policies(
         self, request: AgentRunRequest, hook: GuardrailHook
@@ -526,10 +665,6 @@ class AgentRuntime:
                         ),
                     },
                 )
-            provider = self.registry.resolve(request.agent_version.model_provider)
-            api_key = self.registry.builtin_api_key(
-                request.agent_version.model_provider
-            )
             response: ModelResponse | None = None
             if request.resume_approval_id is not None:
                 approval = await self.session.get(
@@ -654,6 +789,7 @@ class AgentRuntime:
             while True:
                 remaining = tracker.begin_model_call()
                 self.registry.validate_request(context.request)
+                provider, api_key = await self._model_provider_and_key(request)
                 model_span = Span(
                     id=uuid4(),
                     trace_id=trace.id,
@@ -666,6 +802,14 @@ class AgentRuntime:
                     attributes={
                         "provider": context.request.provider,
                         "model": context.request.model,
+                        "connection_id": str(
+                            request.agent_version.model_options.get("connection_id")
+                        )
+                        if request.agent_version.model_options.get("connection_id")
+                        else None,
+                        "deployment_name": context.request.metadata.get(
+                            "deployment_name"
+                        ),
                         "input_token_estimate": estimate_model_request(context.request),
                         "model_call": True,
                         "accounting_version": 1,
@@ -676,8 +820,10 @@ class AgentRuntime:
                 await self.session.flush()
                 await self.session.commit()
                 response = await asyncio.wait_for(
-                    provider.generate(context.request, api_key), timeout=remaining
+                    cast(ModelProvider, provider).generate(context.request, api_key),
+                    timeout=remaining,
                 )
+                assert response is not None
                 await self._record_model_accounting(
                     run, model_span, response, context.request
                 )
@@ -1002,16 +1148,13 @@ class AgentRuntime:
             if execution_context is not None:
                 execution_context.increment("agent_runs", limit_name="max_agent_runs")
             stream_request = context.request.model_copy(update={"stream": True})
-            provider = self.registry.resolve_streaming(
-                request.agent_version.model_provider
-            )
-            api_key = self.registry.builtin_api_key(
-                request.agent_version.model_provider
-            )
             final_response: ModelResponse | None = None
             final_iteration_text: list[str] = []
             while True:
                 remaining = tracker.begin_model_call()
+                provider, api_key = await self._model_provider_and_key(
+                    request, streaming=True
+                )
                 self.registry.validate_request(stream_request)
                 model_span = Span(
                     id=uuid4(),
@@ -1025,6 +1168,14 @@ class AgentRuntime:
                     attributes={
                         "provider": stream_request.provider,
                         "model": stream_request.model,
+                        "connection_id": str(
+                            request.agent_version.model_options.get("connection_id")
+                        )
+                        if request.agent_version.model_options.get("connection_id")
+                        else None,
+                        "deployment_name": stream_request.metadata.get(
+                            "deployment_name"
+                        ),
                         "input_token_estimate": estimate_model_request(stream_request),
                         "stream": True,
                         "model_call": True,
@@ -1038,7 +1189,9 @@ class AgentRuntime:
                 final_response = None
                 final_iteration_text = []
                 async with asyncio.timeout(remaining):
-                    async for event in provider.stream(stream_request, api_key):
+                    async for event in cast(StreamingModelProvider, provider).stream(
+                        stream_request, api_key
+                    ):
                         if event.type == "text_delta":
                             if event.text:
                                 final_iteration_text.append(event.text)

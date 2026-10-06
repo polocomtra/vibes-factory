@@ -51,6 +51,7 @@ from .service import (
     update_agent,
     update_draft,
     validate_draft,
+    validate_model_binding,
 )
 
 router = APIRouter(prefix="/v1", tags=["agents"])
@@ -93,6 +94,16 @@ def _model_response(
     return ModelConfiguration(
         provider=provider,
         name=name,
+        connection_id=(
+            UUID(str(stored_config["connection_id"]))
+            if stored_config.get("connection_id")
+            else None
+        ),
+        deployment_name=(
+            str(stored_config["deployment_name"])
+            if stored_config.get("deployment_name") is not None
+            else None
+        ),
         config=cast(dict[str, object], stored_config.get("config", {})),
         reasoning_options=cast(
             dict[str, object], stored_config.get("reasoning_options", {})
@@ -379,6 +390,16 @@ async def validate_agent_draft(
             },
         )
     errors = validate_draft(draft)
+    try:
+        await validate_model_binding(session, agent.workspace_id, draft)
+    except AgentServiceError as error:
+        from .schemas import DraftValidationIssue
+
+        errors.append(
+            DraftValidationIssue(
+                code=error.code, field="model.connection_id", message=error.message
+            )
+        )
     return DraftValidationResponse(valid=not errors, errors=errors, warnings=[])
 
 

@@ -10,10 +10,40 @@ import type { Agent, AgentVersionSummary } from "../lib/agents";
 import { ApiRequestError } from "../lib/api";
 import type { Tool } from "../lib/tools";
 import { FeedbackToast, type FeedbackToastState } from "./feedback-toast";
-import { publishWorkflow, runWorkflow, saveWorkflowDraft, validateWorkflowDraft, type WorkflowDefinition, type WorkflowDraft, type WorkflowNode as DefinitionNode } from "../lib/workflows";
+import { publishWorkflow, runWorkflow, saveWorkflowDraft, validateWorkflowDraft, type WorkflowDefinition, type WorkflowDraft, type WorkflowExecutionBudget, type WorkflowNode as DefinitionNode } from "../lib/workflows";
 
 type CanvasNodeData = { label: string; type: DefinitionNode["type"]; config: Record<string, unknown> };
 type CanvasNode = Node<CanvasNodeData>;
+
+const DEFAULT_WORKFLOW_BUDGET: WorkflowExecutionBudget = {
+  max_node_executions: 50,
+  max_agent_runs: 10,
+  max_model_calls: 100,
+  max_tool_calls: 20,
+  max_child_runs: 10,
+  max_agent_depth: 3,
+  max_total_steps: 100,
+  max_total_tokens: 200_000,
+  timeout_seconds: 900,
+};
+
+const WORKFLOW_BUDGET_FIELDS: Array<{
+  key: keyof WorkflowExecutionBudget;
+  label: string;
+  min: number;
+  max: number;
+  help: string;
+}> = [
+  { key: "max_total_tokens", label: "Total tokens", min: 1, max: 10_000_000, help: "Cumulative input and output tokens across the workflow and its agent tree." },
+  { key: "timeout_seconds", label: "Timeout (seconds)", min: 1, max: 3_600, help: "Maximum active execution time for the whole workflow." },
+  { key: "max_model_calls", label: "Model calls", min: 1, max: 1_000, help: "Maximum model requests across all workflow agents." },
+  { key: "max_total_steps", label: "Execution steps", min: 1, max: 1_000, help: "Maximum model and tool steps combined." },
+  { key: "max_agent_runs", label: "Agent runs", min: 1, max: 1_000, help: "Maximum workflow agent runs." },
+  { key: "max_tool_calls", label: "Tool calls", min: 0, max: 1_000, help: "Maximum tool calls across all agents." },
+  { key: "max_node_executions", label: "Node executions", min: 1, max: 1_000, help: "Maximum workflow node executions, including repeated nodes." },
+  { key: "max_child_runs", label: "Child agent runs", min: 0, max: 1_000, help: "Maximum nested agent runs." },
+  { key: "max_agent_depth", label: "Agent depth", min: 0, max: 100, help: "Maximum nested agent depth." },
+];
 
 const colors: Record<DefinitionNode["type"], string> = { START: "var(--success)", END: "var(--error)", AGENT: "var(--brand-primary)", TOOL: "var(--info)", CONDITION: "var(--warning)", TRANSFORM: "var(--focus-ring)", APPROVAL: "var(--brand-primary)" };
 const typeLabels: Record<DefinitionNode["type"], string> = { START: "Start", END: "End", AGENT: "Agent", TOOL: "Tool", CONDITION: "Condition", TRANSFORM: "Transform", APPROVAL: "Approval" };
@@ -36,6 +66,17 @@ function toDefinition(nodes: CanvasNode[], edges: Edge[], base: WorkflowDefiniti
   return { ...base, nodes: nodes.map((node) => ({ key: node.id, type: node.data.type, name: node.data.label, config: normalizeNodeConfig(node.data.type, node.data.config), position: node.position })), edges: edges.map((edge) => ({ source: edge.source, target: edge.target, source_handle: edge.sourceHandle ?? null })) };
 }
 
+function readWorkflowBudget(definition: WorkflowDefinition): WorkflowExecutionBudget {
+  const configured = definition.configuration.budget;
+  const source = configured && typeof configured === "object" && !Array.isArray(configured)
+    ? configured as Record<string, unknown>
+    : {};
+  return Object.fromEntries(Object.entries(DEFAULT_WORKFLOW_BUDGET).map(([key, fallback]) => {
+    const value = source[key];
+    return [key, typeof value === "number" && Number.isFinite(value) ? value : fallback];
+  })) as WorkflowExecutionBudget;
+}
+
 function autoLayout(nodes: CanvasNode[], edges: Edge[]) {
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "LR", nodesep: 70, ranksep: 110 });
@@ -56,6 +97,28 @@ type RunInputField = {
   value: string;
   type: "text" | "number" | "boolean";
 };
+
+function resultOptionsForNode(type?: DefinitionNode["type"]): WorkflowSelectOption[] {
+  const completeResult: WorkflowSelectOption = {
+    value: "",
+    label: "Complete result",
+    secondary: "Pass everything returned by the previous node",
+  };
+  if (type === "AGENT") {
+    return [
+      completeResult,
+      { value: "/text", label: "Response text", secondary: "The written answer from an agent" },
+    ];
+  }
+  if (type === "TOOL") {
+    return [
+      completeResult,
+      { value: "/output/value", label: "Returned value", secondary: "The main value produced by a tool" },
+      { value: "/output", label: "Tool result", secondary: "All data returned by a tool" },
+    ];
+  }
+  return [completeResult];
+}
 
 function readRef(value: unknown, fallback: RefExpression): RefExpression {
   if (!value || typeof value !== "object") return fallback;
@@ -210,6 +273,7 @@ function WorkflowSelect({ value, options, placeholder, ariaLabel, onChange, disa
 
 export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agentsLoading = false, agents = [], agentVersions = [], tools = [] }: { workflowId: string; initialDraft: WorkflowDraft; latestVersionId?: string | null; agentsLoading?: boolean; agents?: Agent[]; agentVersions?: AgentVersionSummary[]; tools?: Tool[] }) {
   const [definition, setDefinition] = useState(initialDraft.definition);
+  const [workflowBudget, setWorkflowBudget] = useState(() => readWorkflowBudget(initialDraft.definition));
   const initial = useMemo(() => toCanvas(initialDraft.definition), [initialDraft.definition]);
   const [nodes, setNodes] = useState<CanvasNode[]>(initial.nodes);
   const [edges, setEdges] = useState<Edge[]>(initial.edges);
@@ -309,7 +373,10 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
       // Build from the latest canvas state instead of waiting for the
       // nodes/edges effect to publish its next definition snapshot. This keeps
       // an immediate Save click from sending the previous config to the API.
-      const currentDefinition = toDefinition(nodes, edges, definition);
+      const currentDefinition = toDefinition(nodes, edges, {
+        ...definition,
+        configuration: { ...definition.configuration, budget: workflowBudget },
+      });
       const result = await saveWorkflowDraft(workflowId, revision, currentDefinition);
       setRevision(result.revision);
       setDefinition(result.definition);
@@ -462,8 +529,11 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
 
   function updateNodeConfig(patch: Record<string, unknown>) { if (!activeNode) return; const nextConfig = { ...activeNode.data.config, ...patch }; setNodes((current) => current.map((node) => node.id === activeNode.id ? { ...node, data: { ...node.data, config: nextConfig } } : node)); }
   function updateNodeLabel(label: string) { if (!activeNode) return; setNodes((current) => current.map((node) => node.id === activeNode.id ? { ...node, data: { ...node.data, label } } : node)); }
+  function updateWorkflowBudget(key: keyof WorkflowExecutionBudget, value: number) {
+    setWorkflowBudget((current) => ({ ...current, [key]: value }));
+  }
 
-  const nodeRefs = nodes.filter((node) => node.id !== activeNode?.id).map((node) => ({ value: node.id, label: node.data.label }));
+  const nodeRefs = nodes.filter((node) => node.id !== activeNode?.id).map((node) => ({ value: node.id, label: node.data.label, type: node.data.type }));
   const renderRefFields = (value: unknown, onChange: (next: ExpressionValue) => void, idPrefix: string, description: string) => {
     return renderExpressionFields(value, onChange, idPrefix, description);
   };
@@ -492,13 +562,9 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
       const current = expression.kind === "literal" ? expression.value : "";
       onChange({ kind: "literal", value: nextType === "number" ? (typeof current === "number" ? current : 0) : nextType === "boolean" ? Boolean(current) : String(current ?? "") });
     };
-    const nodeResultOptions: WorkflowSelectOption[] = [
-      { value: "", label: "Complete result", secondary: "Pass everything returned by the previous node" },
-      { value: "/text", label: "Response text", secondary: "The written answer from an agent" },
-      { value: "/output/value", label: "Returned value", secondary: "The main value produced by a tool" },
-      { value: "/output", label: "Tool result", secondary: "All data returned by a tool" },
-    ];
     const currentNodePath = expression.kind === "ref" ? toPointer(expression.path) : "";
+    const selectedSourceNode = expression.kind === "ref" ? nodeRefs.find((node) => node.value === expression.node_key) : undefined;
+    const nodeResultOptions = resultOptionsForNode(selectedSourceNode?.type);
     const visibleNodeResultOptions = nodeResultOptions.some((option) => option.value === currentNodePath)
       ? nodeResultOptions
       : [...nodeResultOptions, { value: currentNodePath, label: "Custom result field", secondary: "A saved field from this node" }];
@@ -534,12 +600,6 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
       { value: "variables", label: "Workflow variables" },
       { value: "node", label: "Previous node output" },
     ];
-    const nodeResultOptions: WorkflowSelectOption[] = [
-      { value: "", label: "Complete result", secondary: "Pass everything returned by the previous node" },
-      { value: "/text", label: "Response text", secondary: "The written answer from an agent" },
-      { value: "/output/value", label: "Returned value", secondary: "The main value produced by a tool" },
-      { value: "/output", label: "Tool result", secondary: "All data returned by a tool" },
-    ];
     const updateAssignments = (nextAssignments: Array<{ target?: string; value?: unknown }>) => updateNodeConfig({ assignments: nextAssignments });
 
     return <div className="workflow-config-stack">
@@ -552,6 +612,8 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
           ? typeof expression.value === "number" ? "number" : typeof expression.value === "boolean" ? "boolean" : "text"
           : "text";
         const currentNodePath = toPointer(ref.path);
+        const selectedSourceNode = ref.node_key ? nodeRefs.find((node) => node.value === ref.node_key) : undefined;
+        const nodeResultOptions = resultOptionsForNode(selectedSourceNode?.type);
         const visibleNodeResultOptions = nodeResultOptions.some((option) => option.value === currentNodePath)
           ? nodeResultOptions
           : [...nodeResultOptions, { value: currentNodePath, label: "Custom result field", secondary: "A saved field from this node" }];
@@ -586,6 +648,16 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
 
   return <ReactFlowProvider><div className="workflow-editor-shell">
     <div className="workflow-editor-toolbar"><div className="workflow-editor-toolbar-title"><span className="eyebrow">Workflow editor</span><strong>Draft · revision {revision}</strong><small>Build a deterministic flow, then validate before publishing.</small></div><div className="workflow-toolbar-actions"><button className="button subtle-button" type="button" onClick={() => { setNodes((current) => autoLayout(current, edges)); setToast({ kind: "success", message: "Canvas auto-arranged." }); }} disabled={busy}><LayoutGrid size={15} aria-hidden="true" />Auto layout</button><button className="button subtle-button" type="button" onClick={() => void validate()} disabled={busy}><ShieldCheck size={15} aria-hidden="true" />Validate</button><button className="button subtle-button" type="button" onClick={() => void save()} disabled={busy}><Save size={15} aria-hidden="true" />Save</button><button className="button subtle-button" type="button" onClick={() => void publish()} disabled={busy}><Sparkles size={15} aria-hidden="true" />Publish</button><button className="button primary-button" type="button" onClick={openRunDialog} disabled={busy}><Play size={15} aria-hidden="true" />Run</button></div></div>
+    <details className="workflow-budget-settings">
+      <summary><span>Run budget</span><small>Limits for a published workflow run</small></summary>
+      <p>Limits are cumulative across the workflow and its agent tree. Save and publish a new version for these limits to apply; Run uses the latest published version.</p>
+      <div className="workflow-budget-fields">
+        {WORKFLOW_BUDGET_FIELDS.map((field) => <label className="form-label" key={field.key} title={field.help}>
+          <span>{field.label}</span>
+          <input type="number" min={field.min} max={field.max} step={1} value={workflowBudget[field.key]} onChange={(event) => updateWorkflowBudget(field.key, Number(event.target.value || 0))} />
+        </label>)}
+      </div>
+    </details>
     <FeedbackToast toast={toast} onDismiss={() => setToast(null)} />
     <div className={`workflow-editor-body ${inspectorOpen ? "" : "inspector-collapsed"}`}>
       <aside className="workflow-palette">

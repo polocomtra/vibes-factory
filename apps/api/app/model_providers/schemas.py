@@ -15,16 +15,21 @@ from pydantic import (
 class ModelConnectionTestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider: Literal["google", "openai", "azure_openai", "deepseek"]
+    provider: Literal["google", "openai", "azure_openai", "deepseek", "openrouter"]
     model_name: str = Field(min_length=1, max_length=255)
     deployment_name: str | None = Field(default=None, max_length=255)
     base_url: str | None = Field(default=None, max_length=2048)
     api_key: SecretStr = Field(min_length=1, repr=False)
 
-    @field_validator("provider", "model_name", "deployment_name", mode="before")
+    @field_validator("provider", mode="before")
     @classmethod
     def normalize_text(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("model_name", "deployment_name", mode="before")
+    @classmethod
+    def preserve_model_case(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def validate_provider_fields(self) -> "ModelConnectionTestRequest":

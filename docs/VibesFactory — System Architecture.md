@@ -529,19 +529,30 @@ class ModelProvider:
         ...
 ```
 
-Initial adapters:
+Provider adapters:
 
 ```text
 GeminiProvider
 OpenAIProvider
+AzureOpenAIProvider
+DeepSeekProvider
+OpenRouterProvider
 ```
 
-Future:
+Workspace Model Connections use the AES-GCM credential vault. Their metadata
+pins provider and endpoint, while encrypted `api_key` material remains in the
+credential record. AgentVersion snapshots pin connection and credential IDs,
+model/deployment names and known capabilities. A shared runtime boundary
+resolves and decrypts the key for one call, then passes it only to the selected
+provider adapter. Both ordinary generation and SSE use this resolver. Key
+rotation updates the referenced credential in place; revocation blocks the
+next call and never falls back to the system credential. Gemini uses native
+GenerateContent generation/streaming; Azure uses Responses; DeepSeek and
+OpenRouter use normalized Chat Completions.
+
+Potential future adapters:
 
 ```text
-AnthropicProvider
-BedrockProvider
-OpenRouterProvider
 OllamaProvider
 ```
 

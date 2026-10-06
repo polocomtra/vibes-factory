@@ -1377,8 +1377,54 @@ class Credential(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint("workspace_id", "id", name="uq_credentials_workspace_id_id"),
         Index("ix_credentials_workspace_created", "workspace_id", "created_at"),
         Index("ix_credentials_workspace_revoked", "workspace_id", "revoked_at"),
+    )
+
+
+class ModelConnection(Base):
+    """Workspace-owned model endpoint metadata referencing a vault secret."""
+
+    __tablename__ = "model_connections"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider: Mapped[str] = mapped_column(String(64), nullable=False)
+    credential_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), nullable=False, unique=True
+    )
+    base_url: Mapped[str | None] = mapped_column(String(2048))
+    created_by: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["workspace_id", "credential_id"],
+            ["credentials.workspace_id", "credentials.id"],
+            name="fk_model_connections_workspace_credential",
+        ),
+        UniqueConstraint(
+            "workspace_id", "name", name="uq_model_connections_workspace_name"
+        ),
+        Index("ix_model_connections_workspace", "workspace_id", "created_at"),
     )
 
 

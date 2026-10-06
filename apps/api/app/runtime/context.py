@@ -112,6 +112,17 @@ class ContextBuilder:
                 )
                 for tool in request.agent_version.tools
             ),
+            metadata=(
+                {
+                    "deployment_name": request.agent_version.model_options[
+                        "deployment_name"
+                    ]
+                }
+                if isinstance(
+                    request.agent_version.model_options.get("deployment_name"), str
+                )
+                else {}
+            ),
         )
         input_text = (
             request.agent_version.instructions

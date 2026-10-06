@@ -17,6 +17,7 @@ import {
     GitBranch,
     FlaskConical,
     LayoutDashboard,
+    KeyRound,
     Menu,
     Moon,
     Network,
@@ -36,11 +37,16 @@ import { RouteFeatureHelp } from "./feature-help";
 export type ThemePreference = "system" | "dark" | "light";
 
 const MonitoringWorkspaceContext = createContext<string | null>(null);
+const WorkspaceRoleContext = createContext<WorkspaceSummary["role"] | null>(null);
 export type WorkspaceLoadStatus = "loading" | "ready" | "error";
 const WorkspaceStatusContext = createContext<WorkspaceLoadStatus>("loading");
 
 export function useSelectedWorkspaceId() {
     return useContext(MonitoringWorkspaceContext);
+}
+
+export function useSelectedWorkspaceRole() {
+    return useContext(WorkspaceRoleContext);
 }
 
 export function useWorkspaceLoadStatus() {
@@ -76,6 +82,7 @@ const navItems: NavItem[] = [
     { label: "Traces", icon: Radio, group: "Operate", href: "/traces" },
     { label: "Monitoring", icon: Activity, group: "Operate", href: "/monitoring" },
     { label: "Evaluations", icon: FlaskConical, group: "Evaluate", href: "/evaluations" },
+    { label: "Model", icon: KeyRound, group: "System", href: "/settings/model-connections" },
     { label: "Settings", icon: Settings, group: "System", href: "/settings" },
 ];
 
@@ -406,6 +413,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             return "Deployments";
         if (path === "/mcp-servers" || path.startsWith("/mcp-servers/"))
             return "MCP Servers";
+        if (
+            path === "/settings/model-connections" ||
+            path.startsWith("/settings/model-connections/")
+        )
+            return "Model";
         if (path === "/settings") return "Settings";
         return "Dashboard";
     };
@@ -500,6 +512,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     };
 
     const runtimeLayout = pathname.includes("/playground");
+    const selectedWorkspaceRole = workspaces.find((workspace) => workspace.id === selectedWorkspaceId)?.role ?? null;
     const workflowLayout = pathname.startsWith("/workflows/") || pathname.startsWith("/workflow-runs/");
     const shellClass = [
         "app-shell",
@@ -512,6 +525,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return (
         <WorkspaceStatusContext.Provider value={workspaceLoadStatus}>
         <MonitoringWorkspaceContext.Provider value={selectedWorkspaceId}>
+        <WorkspaceRoleContext.Provider value={selectedWorkspaceRole}>
         <div className={shellClass}>
             <div
                 className={
@@ -667,8 +681,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                     <RouteFeatureHelp />
                     {children}
                 </div>
-            </main>
+        </main>
         </div>
+        </WorkspaceRoleContext.Provider>
         </MonitoringWorkspaceContext.Provider>
         </WorkspaceStatusContext.Provider>
     );

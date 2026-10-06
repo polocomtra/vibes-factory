@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import get_settings
-from ..models import Credential, WorkspaceMember, WorkspaceRole
+from ..models import Credential, ModelConnection, WorkspaceMember, WorkspaceRole
 from .crypto import CredentialCipher, CredentialCryptoError
 from .schemas import CredentialCreateRequest, CredentialRotateRequest
 
@@ -231,6 +231,19 @@ async def rotate_credential(
     payload: CredentialRotateRequest,
 ) -> Credential:
     _validate_secret(payload.secret)
+    model_connection = await session.scalar(
+        select(ModelConnection.id).where(ModelConnection.credential_id == credential.id)
+    )
+    if model_connection is not None and (
+        set(payload.secret) != {"api_key"}
+        or not isinstance(payload.secret.get("api_key"), str)
+        or not payload.secret["api_key"].strip()
+    ):
+        raise CredentialServiceError(
+            "MODEL_KEY_ROTATION_INVALID",
+            "Model connection keys must be rotated with an api_key value.",
+            422,
+        )
     if credential.revoked_at is not None:
         raise CredentialServiceError(
             "CREDENTIAL_REVOKED", "A revoked credential cannot be rotated.", 409

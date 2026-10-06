@@ -96,6 +96,7 @@ const modelProviderOptions: PrimarySelectOption[] = [
     { value: "openai", label: "OpenAI" },
     { value: "deepseek", label: "DeepSeek" },
     { value: "google", label: "Google Gemini" },
+    { value: "openrouter", label: "OpenRouter" },
 ];
 
 function initials(email: string) {
@@ -640,7 +641,7 @@ export default function SettingsPage() {
             setModelTestError(
                 testError instanceof Error
                     ? testError.message
-                    : "Connection test failed.",
+                    : "Model test failed.",
             );
         } finally {
             setApiKey("");
@@ -986,7 +987,7 @@ export default function SettingsPage() {
                             <span className="panel-kicker">
                                 Ephemeral provider probe
                             </span>
-                            <h2>Test Model Connection</h2>
+                            <h2>Test Model</h2>
                             <p className="panel-copy">
                                 Verify a provider key with one low-token
                                 request. The key is cleared from this form after
@@ -1101,7 +1102,7 @@ export default function SettingsPage() {
                                 ) : (
                                     <KeyRound size={15} aria-hidden="true" />
                                 )}
-                                {modelTestBusy ? "Testing…" : "Test connection"}
+                                {modelTestBusy ? "Testing…" : "Test model"}
                             </button>
                         </div>
                     </form>
@@ -1122,7 +1123,7 @@ export default function SettingsPage() {
                         >
                             <Check size={16} aria-hidden="true" />
                             <div>
-                                <strong>Connection successful</strong>
+                                <strong>Model test succeeded</strong>
                                 <span>
                                     {modelTestResult.provider} ·{" "}
                                     {modelTestResult.model_name} ·{" "}
@@ -1136,7 +1137,7 @@ export default function SettingsPage() {
                         <div className="model-test-result failed" role="alert">
                             <X size={16} aria-hidden="true" />
                             <div>
-                                <strong>Connection failed</strong>
+                                <strong>Model test failed</strong>
                                 <span>{modelTestResult.error.message}</span>
                                 <small>{modelTestResult.error.code}</small>
                             </div>

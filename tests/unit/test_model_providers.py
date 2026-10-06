@@ -10,6 +10,7 @@ from apps.api.app.model_providers.contracts import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    ModelToolCall,
 )
 from apps.api.app.model_providers.errors import ProviderError
 from apps.api.app.model_providers.fake import FakeModelProvider
@@ -44,8 +45,14 @@ class FakeOpenAIClient:
 
 class FakeGeminiClient:
     def __init__(self, response: object) -> None:
+        async def stream_response():
+            yield response
+
         self.aio = SimpleNamespace(
-            interactions=SimpleNamespace(create=AsyncMock(return_value=response)),
+            models=SimpleNamespace(
+                generate_content=AsyncMock(return_value=response),
+                generate_content_stream=stream_response,
+            ),
             aclose=AsyncMock(),
         )
 
@@ -218,16 +225,106 @@ async def test_deepseek_maps_chat_completion_and_forces_non_streaming() -> None:
 
 
 @pytest.mark.asyncio
+async def test_deepseek_stream_joins_fragmented_tool_arguments_and_history() -> None:
+    async def chunks():
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="call_",
+                                function=SimpleNamespace(
+                                    name="lookup", arguments='{"city":'
+                                ),
+                            )
+                        ]
+                    ),
+                    finish_reason=None,
+                )
+            ]
+        )
+        yield SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        tool_calls=[
+                            SimpleNamespace(
+                                index=0,
+                                id="1",
+                                function=SimpleNamespace(name="", arguments='"Hanoi"}'),
+                            )
+                        ]
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ]
+        )
+        yield SimpleNamespace(
+            choices=[],
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=2, total_tokens=6),
+        )
+
+    client = FakeOpenAIClient(chunks())
+    provider = DeepSeekProvider(
+        client_factory=cast(Callable[..., AsyncOpenAI], lambda **kwargs: client)
+    )
+    stream_request = request("deepseek", "deepseek-v4-pro").model_copy(
+        update={
+            "stream": True,
+            "messages": (
+                ModelMessage(
+                    role="assistant",
+                    content="Searching.",
+                    tool_calls=(
+                        ModelToolCall(
+                            id="call_1", name="lookup", arguments={"city": "Hanoi"}
+                        ),
+                    ),
+                ),
+                ModelMessage(
+                    role="tool",
+                    content="Found it",
+                    tool_call_id="call_1",
+                    name="lookup",
+                ),
+            ),
+        }
+    )
+
+    events = [event async for event in provider.stream(stream_request, "temporary-key")]
+
+    call = events[-1].response.tool_calls[0]
+    assert call.id == "call_1"
+    assert call.name == "lookup"
+    assert call.arguments == {"city": "Hanoi"}
+    sent_messages = client.chat.completions.create.await_args.kwargs["messages"]
+    assert (
+        sent_messages[-2]["tool_calls"][0]["function"]["arguments"]
+        == '{"city": "Hanoi"}'
+    )
+    assert sent_messages[-1]["tool_call_id"] == "call_1"
+
+
+def test_registry_resolves_openrouter_chat_provider() -> None:
+    provider = ModelProviderRegistry().resolve("openrouter")
+
+    assert provider.provider_id == "openrouter"
+    assert provider.base_url == "https://openrouter.ai/api/v1"
+
+
+@pytest.mark.asyncio
 async def test_gemini_normalizes_text_usage_and_model_finish_reason() -> None:
     response = SimpleNamespace(
-        output_text="OK",
-        id="interaction_1",
-        model="gemini-2.5-flash",
-        status="completed",
-        usage=SimpleNamespace(
-            total_input_tokens=2,
-            total_output_tokens=1,
-            total_tokens=3,
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(parts=[SimpleNamespace(text="OK")]),
+                finish_reason="STOP",
+            )
+        ],
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=2, candidates_token_count=1, total_token_count=3
         ),
     )
     client = FakeGeminiClient(response)
@@ -237,26 +334,60 @@ async def test_gemini_normalizes_text_usage_and_model_finish_reason() -> None:
     )
 
     assert result.content == "OK"
-    assert result.finish_reason is None
-    assert result.provider_metadata["interactionId"] == "interaction_1"
+    assert result.finish_reason == "STOP"
     assert result.usage is not None and result.usage.total_tokens == 3
-    client.aio.interactions.create.assert_awaited_once()
-    kwargs = client.aio.interactions.create.await_args.kwargs
+    client.aio.models.generate_content.assert_awaited_once()
+    kwargs = client.aio.models.generate_content.await_args.kwargs
     assert kwargs["model"] == "gemini-2.5-flash"
-    assert kwargs["input"][0] == {
-        "type": "user_input",
-        "content": [{"type": "text", "text": "hello"}],
-    }
-    assert kwargs["generation_config"]["max_output_tokens"] == 8
-    assert kwargs["store"] is False
-    assert kwargs["stream"] is False
+    assert kwargs["contents"] == [{"role": "user", "parts": [{"text": "hello"}]}]
+    assert kwargs["config"]["max_output_tokens"] == 8
     client.aio.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gemini_stream_accepts_usage_only_final_chunk() -> None:
+    async def stream_response(**kwargs: object):
+        del kwargs
+        yield SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(parts=[SimpleNamespace(text="OK")])
+                )
+            ]
+        )
+        yield SimpleNamespace(
+            usage_metadata=SimpleNamespace(
+                prompt_token_count=2,
+                candidates_token_count=1,
+                total_token_count=3,
+            )
+        )
+
+    client = FakeGeminiClient(SimpleNamespace())
+    client.aio.models.generate_content_stream = stream_response
+    provider = GeminiProvider(client_factory=lambda **kwargs: client)
+    stream_request = request("google", "gemini-2.5-flash").model_copy(
+        update={"stream": True}
+    )
+
+    events = [event async for event in provider.stream(stream_request, "temporary-key")]
+
+    assert [event.text for event in events if event.type == "text_delta"] == ["OK"]
+    assert events[-1].response is not None
+    assert events[-1].response.content == "OK"
+    assert events[-1].response.usage is not None
+    assert events[-1].response.usage.total_tokens == 3
 
 
 @pytest.mark.asyncio
 async def test_gemini_3_8_omits_legacy_temperature_parameter() -> None:
     response = SimpleNamespace(
-        output_text="OK",
+        candidates=[
+            SimpleNamespace(
+                content=SimpleNamespace(parts=[SimpleNamespace(text="OK")]),
+                finish_reason="STOP",
+            )
+        ]
     )
     client = FakeGeminiClient(response)
     provider = GeminiProvider(client_factory=lambda **kwargs: client)
@@ -266,9 +397,8 @@ async def test_gemini_3_8_omits_legacy_temperature_parameter() -> None:
 
     await provider.generate(gemini_request, "temporary-key")
 
-    kwargs = client.aio.interactions.create.await_args.kwargs
-    assert "temperature" not in kwargs
-    assert "temperature" not in kwargs["generation_config"]
+    kwargs = client.aio.models.generate_content.await_args.kwargs
+    assert "temperature" not in kwargs["config"]
 
 
 def test_registry_rejects_invalid_azure_base_url() -> None:

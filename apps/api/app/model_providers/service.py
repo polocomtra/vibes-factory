@@ -19,6 +19,8 @@ CONNECTION_TEST_MAX_OUTPUT_TOKENS = 64
 async def test_connection(
     payload: ModelConnectionTestRequest,
     registry: ModelProviderRegistry,
+    *,
+    pinned_addresses: tuple[str, ...] | None = None,
 ) -> ModelConnectionTestResponse:
     model = (
         payload.deployment_name
@@ -38,7 +40,11 @@ async def test_connection(
     )
     try:
         registry.validate_request(request)
-        provider = registry.resolve(payload.provider, base_url=payload.base_url)
+        provider = registry.resolve(
+            payload.provider,
+            base_url=payload.base_url,
+            pinned_addresses=pinned_addresses,
+        )
         started = time.perf_counter()
         await provider.generate(request, payload.api_key.get_secret_value())
         latency_ms = max(0, round((time.perf_counter() - started) * 1000))

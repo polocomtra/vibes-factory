@@ -1,13 +1,19 @@
-"""Gemini adapter using Google's official GenAI Interactions SDK."""
+"""Gemini adapter using Google's official GenerateContent API."""
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 from google import genai
 from google.genai import types
 
-from ..contracts import ModelRequest, ModelResponse, ModelToolCall, ModelUsage
+from ..contracts import (
+    ModelRequest,
+    ModelResponse,
+    ModelStreamEvent,
+    ModelToolCall,
+    ModelUsage,
+)
 from ..errors import ProviderError, normalize_sdk_exception
 
 
@@ -15,178 +21,6 @@ def _value(item: object, key: str, default: Any = None) -> Any:
     if isinstance(item, dict):
         return item.get(key, default)
     return getattr(item, key, default)
-
-
-def _enum_value(value: object) -> object:
-    return getattr(value, "value", value)
-
-
-def _interaction_input(request: ModelRequest) -> list[dict[str, Any]]:
-    """Map platform messages to Interactions user/model input steps."""
-
-    interaction_input: list[dict[str, Any]] = []
-    for message in request.messages:
-        if message.role == "system":
-            continue
-        if message.role == "tool":
-            interaction_input.append(
-                {
-                    "type": "function_result",
-                    "call_id": message.tool_call_id,
-                    "name": message.name,
-                    "result": message.content,
-                }
-            )
-            continue
-        if message.role == "assistant" and message.tool_calls:
-            interaction_input.extend(
-                {
-                    "type": "function_call",
-                    "id": call.id,
-                    "name": call.name,
-                    "arguments": call.arguments,
-                }
-                for call in message.tool_calls
-            )
-            if message.content:
-                interaction_input.append(
-                    {
-                        "type": "model_output",
-                        "content": [{"type": "text", "text": message.content}],
-                    }
-                )
-            continue
-        interaction_input.append(
-            {
-                "type": (
-                    "model_output" if message.role == "assistant" else "user_input"
-                ),
-                "content": [{"type": "text", "text": message.content}],
-            }
-        )
-    if not interaction_input:
-        raise ProviderError(
-            "MODEL_REQUEST_INVALID", "The Gemini request must contain text content."
-        )
-    return interaction_input
-
-
-def _interaction_kwargs(request: ModelRequest) -> dict[str, Any]:
-    """Build an Interactions request without leaking SDK types upstream."""
-
-    kwargs: dict[str, Any] = {
-        "model": request.model,
-        "input": _interaction_input(request),
-        "system_instruction": request.system_instruction,
-        "generation_config": {"max_output_tokens": request.max_output_tokens},
-        # Session history is owned and persisted by VibesFactory, not Google.
-        "store": False,
-        "stream": False,
-    }
-    if request.tools:
-        kwargs["tools"] = [
-            {
-                "type": "function",
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            }
-            for tool in request.tools
-        ]
-    if request.response_schema:
-        kwargs["response_format"] = {
-            "type": "text",
-            "mime_type": "application/json",
-            "schema": cast(dict[str, Any], request.response_schema),
-        }
-    return kwargs
-
-
-def _parse_response(response: object) -> ModelResponse:
-    """Normalize an Interactions response into the platform contract."""
-
-    content = _value(response, "output_text", "")
-    if not isinstance(content, str):
-        content = ""
-    calls: list[ModelToolCall] = []
-
-    # output_text is supplied by the SDK. The step fallback keeps parsing
-    # resilient when a response is constructed by a test double or a future
-    # SDK version does not populate the convenience property.
-    for step in _value(response, "steps", []) or []:
-        step_type = _enum_value(_value(step, "type"))
-        if step_type == "function_call":
-            name = _value(step, "name")
-            arguments = _value(step, "arguments", {})
-            call_id = _value(step, "id")
-            if not isinstance(name, str) or not isinstance(arguments, dict):
-                raise ProviderError(
-                    "PROVIDER_INVALID_RESPONSE",
-                    "The provider returned invalid tool arguments.",
-                )
-            calls.append(
-                ModelToolCall(
-                    id=call_id if isinstance(call_id, str) else None,
-                    name=name,
-                    arguments=arguments,
-                )
-            )
-        elif not content and step_type == "model_output":
-            for block in _value(step, "content", []) or []:
-                block_text = _value(block, "text")
-                if isinstance(block_text, str):
-                    content += block_text
-
-    if not content and not calls:
-        raise ProviderError(
-            "PROVIDER_INVALID_RESPONSE", "The provider returned no text content."
-        )
-
-    usage_data = _value(response, "usage")
-    if usage_data is None:
-        usage_data = _value(response, "usage_metadata")
-    usage = (
-        ModelUsage(
-            input_tokens=_value(
-                usage_data,
-                "total_input_tokens",
-                _value(usage_data, "prompt_token_count"),
-            ),
-            output_tokens=_value(
-                usage_data,
-                "total_output_tokens",
-                _value(usage_data, "candidates_token_count"),
-            ),
-            total_tokens=_value(
-                usage_data,
-                "total_tokens",
-                _value(usage_data, "total_token_count"),
-            ),
-            cached_input_tokens=_value(
-                usage_data,
-                "total_cached_tokens",
-                _value(usage_data, "cached_content_token_count"),
-            ),
-        )
-        if usage_data is not None
-        else None
-    )
-    metadata: dict[str, object] = {}
-    for source_key, output_key in (("id", "interactionId"), ("model", "model")):
-        value = _enum_value(_value(response, source_key))
-        if isinstance(value, (str, int, float, bool)):
-            metadata[output_key] = value
-    status = _enum_value(_value(response, "status"))
-    if isinstance(status, str):
-        metadata["status"] = status
-
-    return ModelResponse(
-        content=content,
-        tool_calls=tuple(calls),
-        usage=usage,
-        finish_reason="TOOL_CALLS" if calls else None,
-        provider_metadata=metadata,
-    )
 
 
 async def _close_client(client: object | None) -> None:
@@ -233,10 +67,14 @@ class GeminiProvider:
                 ),
             )
             response = await asyncio.wait_for(
-                client.aio.interactions.create(**_interaction_kwargs(request)),
+                cast(Any, client.aio.models).generate_content(
+                    model=request.model,
+                    contents=cast(Any, _generate_contents(request)),
+                    config=cast(Any, _generate_config(request)),
+                ),
                 timeout=self.timeout,
             )
-            return _parse_response(response)
+            return _parse_generate_content(response)
         except ProviderError:
             raise
         except TimeoutError:
@@ -247,3 +85,160 @@ class GeminiProvider:
             raise normalize_sdk_exception(error) from None
         finally:
             await _close_client(client)
+
+    async def stream(
+        self, request: ModelRequest, api_key: str
+    ) -> AsyncIterator[ModelStreamEvent]:
+        if not request.stream:
+            raise ProviderError(
+                "MODEL_REQUEST_INVALID", "A streaming request must set stream=true."
+            )
+        client: genai.Client | None = None
+        content: list[str] = []
+        calls: list[ModelToolCall] = []
+        final_usage: ModelUsage | None = None
+        try:
+            client = self.client_factory(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    base_url=self.base_url, timeout=int(self.timeout * 1000)
+                ),
+            )
+            stream = cast(Any, client.aio.models).generate_content_stream(
+                model=request.model,
+                contents=cast(Any, _generate_contents(request)),
+                config=cast(Any, _generate_config(request)),
+            )
+            async for chunk in stream:
+                final_usage = _parse_generate_usage(chunk) or final_usage
+                try:
+                    parsed = _parse_generate_content(chunk)
+                except ProviderError:
+                    # The final Gemini stream chunk can contain usage metadata
+                    # without candidates. Preserve usage and finish normally.
+                    continue
+                if parsed.content:
+                    content.append(parsed.content)
+                    yield ModelStreamEvent(type="text_delta", text=parsed.content)
+                if parsed.tool_calls:
+                    calls = list(parsed.tool_calls)
+            yield ModelStreamEvent(
+                type="completed",
+                response=ModelResponse(
+                    content="".join(content),
+                    tool_calls=tuple(calls),
+                    usage=final_usage,
+                    finish_reason="TOOL_CALLS" if calls else "STOP",
+                ),
+            )
+        except ProviderError:
+            raise
+        except TimeoutError:
+            raise ProviderError(
+                "PROVIDER_TIMEOUT", "The provider request timed out.", retryable=True
+            ) from None
+        except Exception as error:
+            raise normalize_sdk_exception(error) from None
+        finally:
+            await _close_client(client)
+
+
+def _generate_contents(request: ModelRequest) -> list[dict[str, Any]]:
+    contents: list[dict[str, Any]] = []
+    for message in request.messages:
+        if message.role == "tool":
+            contents.append(
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "function_response": {
+                                "name": message.name or "tool",
+                                "response": {"result": message.content},
+                            }
+                        }
+                    ],
+                }
+            )
+            continue
+        role = "model" if message.role == "assistant" else "user"
+        parts: list[dict[str, Any]] = []
+        if message.content:
+            parts.append({"text": message.content})
+        parts.extend(
+            {"function_call": {"name": call.name, "args": call.arguments}}
+            for call in message.tool_calls
+        )
+        contents.append({"role": role, "parts": parts or [{"text": ""}]})
+    return contents
+
+
+def _generate_config(request: ModelRequest) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "system_instruction": request.system_instruction,
+        "max_output_tokens": request.max_output_tokens,
+    }
+    if request.temperature is not None and request.model != "gemini-3.8-flash":
+        config["temperature"] = request.temperature
+    if request.tools:
+        config["tools"] = [
+            {
+                "function_declarations": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": tool.parameters,
+                    }
+                    for tool in request.tools
+                ]
+            }
+        ]
+    if request.response_schema:
+        config["response_mime_type"] = "application/json"
+        config["response_schema"] = request.response_schema
+    return config
+
+
+def _parse_generate_content(response: object) -> ModelResponse:
+    content = ""
+    calls: list[ModelToolCall] = []
+    for candidate in _value(response, "candidates", []) or []:
+        for index, part in enumerate(
+            _value(_value(candidate, "content"), "parts", []) or []
+        ):
+            text = _value(part, "text")
+            if isinstance(text, str):
+                content += text
+            function = _value(part, "function_call")
+            if function is not None:
+                arguments = _value(function, "args", {})
+                calls.append(
+                    ModelToolCall(
+                        id=f"gemini_call_{index}",
+                        name=_value(function, "name", "unknown"),
+                        arguments=arguments if isinstance(arguments, dict) else {},
+                    )
+                )
+    usage = _parse_generate_usage(response)
+    if not content and not calls:
+        raise ProviderError(
+            "PROVIDER_INVALID_RESPONSE", "The provider returned no usable content."
+        )
+    return ModelResponse(
+        content=content,
+        tool_calls=tuple(calls),
+        usage=usage,
+        finish_reason="TOOL_CALLS" if calls else "STOP",
+    )
+
+
+def _parse_generate_usage(response: object) -> ModelUsage | None:
+    usage_data = _value(response, "usage_metadata")
+    if usage_data is None:
+        return None
+    return ModelUsage(
+        input_tokens=_value(usage_data, "prompt_token_count"),
+        output_tokens=_value(usage_data, "candidates_token_count"),
+        total_tokens=_value(usage_data, "total_token_count"),
+        cached_input_tokens=_value(usage_data, "cached_content_token_count"),
+    )

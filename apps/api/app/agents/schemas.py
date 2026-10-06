@@ -23,14 +23,21 @@ class ModelConfiguration(BaseModel):
 
     provider: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=255)
+    connection_id: UUID | None = None
+    deployment_name: str | None = Field(default=None, min_length=1, max_length=255)
     config: dict[str, object] = Field(default_factory=dict)
     reasoning_options: dict[str, object] = Field(default_factory=dict)
     provider_options: dict[str, object] = Field(default_factory=dict)
 
-    @field_validator("provider", "name", mode="before")
+    @field_validator("provider", mode="before")
     @classmethod
     def normalize_identifier(cls, value: object) -> object:
         return value.strip().lower() if isinstance(value, str) else value
+
+    @field_validator("name", "deployment_name", mode="before")
+    @classmethod
+    def trim_model_identifier(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def reject_secret_like_options(self) -> "ModelConfiguration":

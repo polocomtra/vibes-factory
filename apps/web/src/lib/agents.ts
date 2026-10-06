@@ -15,6 +15,8 @@ export type ModelDefinition = {
 export type ModelConfiguration = {
   provider: string;
   name: string;
+  connection_id?: string | null;
+  deployment_name?: string | null;
   config: Record<string, unknown>;
   reasoning_options: Record<string, unknown>;
   provider_options: Record<string, unknown>;

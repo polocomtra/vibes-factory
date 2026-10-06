@@ -4,9 +4,12 @@ import json
 from collections.abc import AsyncIterator, Callable
 from inspect import isawaitable
 from typing import Any
+from urllib.parse import urlparse
 
+import httpx
 from openai import AsyncOpenAI
 
+from ...outbound_network import pin_transport_to_addresses
 from ..contracts import (
     ModelRequest,
     ModelResponse,
@@ -166,10 +169,12 @@ class OpenAIProvider:
         base_url: str | None = None,
         timeout: float = 60.0,
         client_factory: Callable[..., AsyncOpenAI] = AsyncOpenAI,
+        pinned_addresses: tuple[str, ...] | None = None,
     ) -> None:
         self.base_url = base_url
         self.timeout = timeout
         self.client_factory = client_factory
+        self.pinned_addresses = pinned_addresses
 
     def _client(self, api_key: str) -> AsyncOpenAI:
         if not api_key.strip():
@@ -179,12 +184,26 @@ class OpenAIProvider:
         kwargs: dict[str, object] = {"api_key": api_key, "timeout": self.timeout}
         if self.base_url:
             kwargs["base_url"] = self.base_url
+        if self.pinned_addresses and self.base_url:
+            hostname = urlparse(self.base_url).hostname
+            if not hostname:
+                raise ProviderError(
+                    "MODEL_REQUEST_INVALID", "Azure OpenAI endpoint is invalid."
+                )
+            transport = httpx.AsyncHTTPTransport(retries=0, trust_env=False)
+            pin_transport_to_addresses(transport, hostname, self.pinned_addresses)
+            kwargs["http_client"] = httpx.AsyncClient(
+                transport=transport,
+                timeout=self.timeout,
+                follow_redirects=False,
+            )
         return self.client_factory(**kwargs)
 
     @staticmethod
     def _response_kwargs(request: ModelRequest) -> dict[str, object]:
+        request_model = request.metadata.get("deployment_name", request.model)
         kwargs: dict[str, object] = {
-            "model": request.model,
+            "model": request_model,
             "input": _response_input(request),
             "store": False,
             "stream": request.stream,
@@ -309,11 +328,15 @@ class AzureOpenAIProvider(OpenAIProvider):
         base_url: str | None,
         timeout: float = 60.0,
         client_factory: Callable[..., AsyncOpenAI] = AsyncOpenAI,
+        pinned_addresses: tuple[str, ...] | None = None,
     ) -> None:
         if not base_url:
             raise ProviderError(
                 "MODEL_REQUEST_INVALID", "Azure OpenAI base URL is required."
             )
         super().__init__(
-            base_url=base_url, timeout=timeout, client_factory=client_factory
+            base_url=base_url,
+            timeout=timeout,
+            client_factory=client_factory,
+            pinned_addresses=pinned_addresses,
         )

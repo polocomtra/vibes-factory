@@ -12,6 +12,7 @@ from .errors import ProviderError
 from .providers.deepseek import DeepSeekProvider
 from .providers.gemini import GeminiProvider
 from .providers.openai import AzureOpenAIProvider, OpenAIProvider
+from .providers.openrouter import OpenRouterProvider
 
 
 class ModelProviderRegistry:
@@ -37,7 +38,13 @@ class ModelProviderRegistry:
             azure_openai_base_url=settings.azure_openai_base_url,
         )
 
-    def resolve(self, provider: str, *, base_url: str | None = None) -> ModelProvider:
+    def resolve(
+        self,
+        provider: str,
+        *,
+        base_url: str | None = None,
+        pinned_addresses: tuple[str, ...] | None = None,
+    ) -> ModelProvider:
         provider = provider.strip().lower()
         if provider == "google":
             return GeminiProvider(base_url=base_url, timeout=self.timeout)
@@ -47,18 +54,28 @@ class ModelProviderRegistry:
             configured_base_url = base_url or self.azure_openai_base_url
             self.validate_azure_base_url(configured_base_url)
             return AzureOpenAIProvider(
-                base_url=configured_base_url, timeout=self.timeout
+                base_url=configured_base_url,
+                timeout=self.timeout,
+                pinned_addresses=pinned_addresses,
             )
         if provider == "deepseek":
             return DeepSeekProvider(base_url=base_url, timeout=self.timeout)
+        if provider == "openrouter":
+            return OpenRouterProvider(base_url=base_url, timeout=self.timeout)
         raise ProviderError(
             "MODEL_REQUEST_INVALID", "The requested provider is not supported."
         )
 
     def resolve_streaming(
-        self, provider: str, *, base_url: str | None = None
+        self,
+        provider: str,
+        *,
+        base_url: str | None = None,
+        pinned_addresses: tuple[str, ...] | None = None,
     ) -> StreamingModelProvider:
-        resolved = self.resolve(provider, base_url=base_url)
+        resolved = self.resolve(
+            provider, base_url=base_url, pinned_addresses=pinned_addresses
+        )
         stream = getattr(resolved, "stream", None)
         if not callable(stream):
             raise ProviderError(
@@ -70,7 +87,7 @@ class ModelProviderRegistry:
     def builtin_api_key(self, provider: str) -> str:
         """Resolve an environment credential without exposing it to API callers."""
 
-        if provider.strip().lower() == "google" and self.gemini_api_key:
+        if provider.strip().lower() in {"google", "gemini"} and self.gemini_api_key:
             value = self.gemini_api_key.get_secret_value()
             if value.strip():
                 return value

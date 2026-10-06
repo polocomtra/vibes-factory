@@ -259,6 +259,16 @@ async def _build_runtime_request(
         for item in guardrail_items
         if isinstance(item, dict)
     )
+    snapshot_model = version.snapshot.get("model")
+    model_snapshot = snapshot_model if isinstance(snapshot_model, dict) else {}
+    snapshot_provider = model_snapshot.get("provider")
+    snapshot_name = model_snapshot.get("name")
+    model_provider = (
+        snapshot_provider
+        if isinstance(snapshot_provider, str)
+        else version.model_provider
+    )
+    model_name = snapshot_name if isinstance(snapshot_name, str) else version.model_name
     return AgentRunRequest(
         workspace_id=agent.workspace_id,
         agent_version=AgentVersionRuntimeConfig(
@@ -266,9 +276,13 @@ async def _build_runtime_request(
             agent_id=version.agent_id,
             workspace_id=version.workspace_id,
             instructions=version.instructions,
-            model_provider=version.model_provider,
-            model_name=version.model_name,
-            model_options=version.model_config,
+            model_provider=model_provider,
+            model_name=model_name,
+            model_options=(
+                cast(dict[str, object], model_snapshot)
+                if model_snapshot
+                else version.model_config
+            ),
             tools=tuple(
                 RuntimeTool(
                     tool_id=catalog_tool.id,

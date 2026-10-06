@@ -122,3 +122,5 @@ async def rotate_credential_route(
         return _response(await rotate_credential(session, credential, payload))
     except CredentialServiceError as exc:
         raise _error(exc) from exc
+    finally:
+        payload.secret.clear()

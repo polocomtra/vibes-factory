@@ -1,6 +1,6 @@
 import { apiFetch, readApiError } from "./api";
 
-export type ModelProviderId = "google" | "openai" | "azure_openai" | "deepseek";
+export type ModelProviderId = "google" | "openai" | "azure_openai" | "deepseek" | "openrouter";
 
 export type ModelConnectionTestPayload = {
   provider: ModelProviderId;

@@ -48,6 +48,13 @@ error. Child `Run` and `Span` rows are created with parent/root/trace/workflow
 and parent-span relationships before runtime execution; no post-hoc
 re-parenting is used.
 
+Workflow execution limits are configurable in the workflow draft and pinned
+when that draft is published. A run inherits its selected workflow version's
+limits; it does not accept an ad hoc budget override. Definitions without an
+explicit budget retain the defaults in `WorkflowEngine.DEFAULT_BUDGET`. A
+budget-limit error records the specific counter, usage, and limit on the failed
+node run for diagnosis.
+
 Workflow-only traces remain visible in the trace collection even when no root
 agent run exists. Child-agent lifecycle events contain only safe lineage,
 version, status, duration, error-code, and usage metadata. Direct children are

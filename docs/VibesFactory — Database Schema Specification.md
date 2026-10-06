@@ -415,6 +415,8 @@ Example `model_config`:
 
 ```json
 {
+  "connection_id": null,
+  "deployment_name": null,
   "temperature": 0.2,
   "max_output_tokens": 4096
 }
@@ -473,6 +475,11 @@ INDEX(workspace_id, agent_id)
 ```
 
 `agent_versions` must never be updated after creation.
+
+For a BYOK model, `model_config` also snapshots `connection_id`,
+`credential_id`, the provider endpoint and known model capabilities. The key is
+never stored in `model_config` or the version snapshot. Existing versions keep
+their system-default model binding.
 
 The application service must prohibit:
 
@@ -1019,6 +1026,27 @@ Migration `0009_credential_vault` creates this table. `ciphertext` contains the
 nonce-bearing AES-GCM payload; `key_version` identifies the active encryption key
 version. `revoked_at` is a soft-revocation marker and must be checked before
 decryption or executor use.
+
+## Table: `model_connections`
+
+| Column | Type | Constraints |
+|---|---|---|
+| id | UUID | PK |
+| workspace_id | UUID | FK workspaces |
+| name | VARCHAR(255) | NOT NULL |
+| provider | VARCHAR(64) | NOT NULL |
+| credential_id | UUID | FK credentials, UNIQUE |
+| base_url | VARCHAR(2048) | NULL for fixed-endpoint providers |
+| created_by | UUID | FK users |
+| created_at | TIMESTAMPTZ | NOT NULL |
+| updated_at | TIMESTAMPTZ | NOT NULL |
+
+The composite foreign key `(workspace_id, credential_id)` references
+`credentials(workspace_id, id)` to enforce tenant alignment. The provider and
+endpoint are immutable after creation. Revocation is represented by the
+referenced credential's `revoked_at`, preserving connection metadata for
+historical AgentVersion bindings. Migration `0019_model_connections` adds the
+table and workspace/time index.
 
 ---
 

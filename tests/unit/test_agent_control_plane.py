@@ -89,6 +89,46 @@ def test_snapshot_contains_future_binding_slots() -> None:
     assert snapshot["child_agents"] == []
 
 
+def test_snapshot_pins_model_connection_metadata_without_credentials() -> None:
+    payload = valid_create_payload()
+    assert payload.model is not None
+    draft = AgentDraft(
+        agent_id=uuid4(),
+        instructions=payload.instructions,
+        model_provider="openrouter",
+        model_name="Vendor/Model-X",
+        model_config={
+            "connection_id": str(uuid4()),
+            "config": {},
+            "reasoning_options": {},
+            "provider_options": {},
+        },
+        runtime_config=payload.runtime_config.model_dump(),
+        memory_config=payload.memory_config.model_dump(),
+        updated_by=uuid4(),
+        updated_at=datetime.now(UTC),
+    )
+    connection_id = str(uuid4())
+    credential_id = str(uuid4())
+
+    snapshot = build_snapshot(
+        draft,
+        model_binding={
+            "connection_id": connection_id,
+            "credential_id": credential_id,
+            "provider_endpoint": "https://openrouter.ai/api/v1",
+            "capabilities": {"tool_calling": True, "streaming": True},
+        },
+    )
+
+    model_snapshot = snapshot["model"]
+    assert model_snapshot["name"] == "Vendor/Model-X"
+    assert model_snapshot["connection_id"] == connection_id
+    assert model_snapshot["credential_id"] == credential_id
+    assert model_snapshot["provider_endpoint"] == "https://openrouter.ai/api/v1"
+    assert "api_key" not in model_snapshot
+
+
 def test_memory_snapshot_is_json_safe_when_store_id_is_a_uuid() -> None:
     store_id = uuid4()
     payload = valid_create_payload()

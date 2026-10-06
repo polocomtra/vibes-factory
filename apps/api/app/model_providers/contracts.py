@@ -7,7 +7,7 @@ The contracts intentionally contain no credential fields. A key is supplied to
 from collections.abc import AsyncIterator
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 
 class ModelTool(BaseModel):
@@ -52,8 +52,10 @@ class ModelRequest(BaseModel):
 
     @field_validator("provider", "model", mode="before")
     @classmethod
-    def normalize_identifier(cls, value: object) -> object:
-        return value.strip().lower() if isinstance(value, str) else value
+    def normalize_identifier(cls, value: object, info: ValidationInfo) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip().lower() if info.field_name == "provider" else value.strip()
 
     @field_validator("system_instruction")
     @classmethod

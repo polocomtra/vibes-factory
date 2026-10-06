@@ -27,14 +27,13 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { AppShell } from "../../../components/app-shell";
-import { ModelSelect } from "../../../components/model-select";
+import { ModelConnectionPicker } from "../../../components/model-connection-picker";
 import { PrimarySelect } from "../../../components/primary-select";
 import { apiFetch, readApiError } from "../../../lib/api";
 import {
   fetchAgent,
   fetchAgents,
   fetchDraft,
-  fetchModels,
   fetchVersion,
   fetchVersions,
   fetchChildAgentBindings,
@@ -45,7 +44,6 @@ import {
   type AgentVersion,
   type AgentVersionSummary,
   type ChildAgentBinding,
-  type ModelDefinition,
 } from "../../../lib/agents";
 import { listMemoryStores, type MemoryStore, type MemoryType } from "../../../lib/memory";
 import {
@@ -149,7 +147,6 @@ export default function AgentDetailPage() {
   const agentId = params.agentId;
   const [agent, setAgent] = useState<Agent | null>(null);
   const [draft, setDraft] = useState<AgentDraft>(initialDraft);
-  const [models, setModels] = useState<ModelDefinition[]>([]);
   const [versions, setVersions] = useState<AgentVersionSummary[]>([]);
   const [workspaceAgents, setWorkspaceAgents] = useState<Agent[]>([]);
   const [childBindings, setChildBindings] = useState<ChildAgentBinding[]>([]);
@@ -213,10 +210,9 @@ export default function AgentDetailPage() {
     setError(null);
     try {
       const agentData = await fetchAgent(agentId);
-      const [draftData, modelData, versionData, draftToolData, draftKnowledgeData, memoryStoreData, guardrailData, policyData, workspaceAgentData, childBindingData] =
+      const [draftData, versionData, draftToolData, draftKnowledgeData, memoryStoreData, guardrailData, policyData, workspaceAgentData, childBindingData] =
         await Promise.all([
           fetchDraft(agentId),
-          fetchModels(),
           fetchVersions(agentId),
           fetchDraftTools(agentId),
           listDraftKnowledge(agentId),
@@ -239,7 +235,6 @@ export default function AgentDetailPage() {
       setName(agentData.name);
       setDescription(agentData.description ?? "");
       setDraft(draftData);
-      setModels(modelData);
       setVersions(versionData);
       setWorkspaceAgents(workspaceAgentData);
       setChildBindings(childBindingData);
@@ -1113,33 +1108,12 @@ export default function AgentDetailPage() {
                 <h2>Model configuration</h2>
               </div>
             </div>
-            <div className="field-grid">
-              <label>
-                Model
-                <ModelSelect
-                  models={models}
-                  value={`${draft.model.provider}:${draft.model.name}`}
-                  onChange={(value) => {
-                    const model = models.find(
-                      (item) => `${item.provider}:${item.name}` === value,
-                    );
-                    if (model) {
-                      const config = { ...draft.model.config };
-                      if (model.provider === "azure_openai")
-                        delete config.temperature;
-                      updateDraft({
-                        ...draft,
-                        model: {
-                          ...draft.model,
-                          provider: model.provider,
-                          name: model.name,
-                          config,
-                        },
-                      });
-                    }
-                  }}
-                />
-              </label>
+            <div className="field-grid agent-model-field-grid">
+              <ModelConnectionPicker
+                workspaceId={agent?.workspace_id ?? null}
+                value={draft.model}
+                onChange={(model) => updateDraft({ ...draft, model })}
+              />
               <label htmlFor="agent-temperature">
                 <span>Temperature</span>
                 <input

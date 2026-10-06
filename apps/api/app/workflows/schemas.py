@@ -93,6 +93,22 @@ class WorkflowEdgeDefinition(BaseModel):
     priority: int = Field(default=0, ge=0, le=1_000)
 
 
+class WorkflowExecutionBudget(BaseModel):
+    """Optional workflow-wide execution limits stored in the workflow version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_node_executions: int | None = Field(default=None, ge=1, le=1_000)
+    max_agent_runs: int | None = Field(default=None, ge=1, le=1_000)
+    max_model_calls: int | None = Field(default=None, ge=1, le=1_000)
+    max_tool_calls: int | None = Field(default=None, ge=0, le=1_000)
+    max_child_runs: int | None = Field(default=None, ge=0, le=1_000)
+    max_agent_depth: int | None = Field(default=None, ge=0, le=100)
+    max_total_steps: int | None = Field(default=None, ge=1, le=1_000)
+    max_total_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
+    timeout_seconds: int | None = Field(default=None, ge=1, le=3_600)
+
+
 class WorkflowDefinition(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -106,6 +122,8 @@ class WorkflowDefinition(BaseModel):
     def validate_payload_limit(self) -> "WorkflowDefinition":
         if len(self.model_dump_json().encode("utf-8")) > 1_048_576:
             raise ValueError("workflow definition exceeds the 1 MiB payload limit")
+        if "budget" in self.configuration:
+            WorkflowExecutionBudget.model_validate(self.configuration["budget"])
         return self
 
 

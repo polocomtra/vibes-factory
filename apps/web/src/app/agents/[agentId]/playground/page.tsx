@@ -70,6 +70,19 @@ import {
 } from "../../../../lib/agents";
 
 function dateLabel(value: string) {
+    const date = new Date(value);
+    const datePart = new Intl.DateTimeFormat(undefined, {
+        month: "short",
+        day: "numeric",
+    }).format(date);
+    const timePart = new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+    }).format(date);
+    return `${datePart} · ${timePart}`;
+}
+
+function fullDateTimeLabel(value: string) {
     return new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium",
         timeStyle: "short",
@@ -628,7 +641,11 @@ function PlaygroundMessage({
                               ? agentName
                               : message.role}
                     </span>
-                    <time dateTime={message.created_at}>
+                    <time
+                        dateTime={message.created_at}
+                        aria-label={fullDateTimeLabel(message.created_at)}
+                        title={fullDateTimeLabel(message.created_at)}
+                    >
                         {dateLabel(message.created_at)}
                     </time>
                 </div>

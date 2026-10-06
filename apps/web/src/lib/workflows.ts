@@ -27,6 +27,18 @@ export type WorkflowEdge = {
   priority?: number;
 };
 
+export type WorkflowExecutionBudget = {
+  max_node_executions: number;
+  max_agent_runs: number;
+  max_model_calls: number;
+  max_tool_calls: number;
+  max_child_runs: number;
+  max_agent_depth: number;
+  max_total_steps: number;
+  max_total_tokens: number;
+  timeout_seconds: number;
+};
+
 export type WorkflowDefinition = {
   schema_version: 1;
   configuration: Record<string, unknown>;
@@ -55,6 +67,7 @@ export type WorkflowRun = {
   node_outputs: Record<string, unknown>;
   output: Record<string, unknown> | null;
   usage: Record<string, unknown>;
+  execution_budget: Record<string, unknown>;
   error: { code: string; message: string } | null;
   started_at: string | null;
   completed_at: string | null;

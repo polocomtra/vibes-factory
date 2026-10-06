@@ -23,6 +23,7 @@ from .logging import configure_logging
 from .mcp.routes import router as mcp_router
 from .memory.routes import router as memory_router
 from .middleware import request_id_middleware
+from .model_connections.routes import router as model_connection_router
 from .model_providers.routes import router as model_provider_router
 from .monitoring.routes import router as monitoring_router
 from .runs.routes import router as run_router
@@ -66,6 +67,7 @@ app.include_router(workspace_router)
 app.include_router(agent_router)
 app.include_router(approval_router)
 app.include_router(model_provider_router)
+app.include_router(model_connection_router)
 app.include_router(session_router)
 app.include_router(run_router)
 app.include_router(trace_router)

@@ -4923,3 +4923,30 @@ agent or child-agent graph includes a ToolVersion with `side_effect=true`.
 LLM judge and groundedness evaluators require a provider/model from the platform
 catalog. Judge tokens and estimated cost are returned separately from agent
 runtime usage. Results include the trace ID when a runtime Run exists.
+
+## BYOK Model Connections
+
+`POST` and `GET /v1/workspaces/{workspace_id}/model-connections` create and list
+workspace connections. `GET` and `PATCH /v1/model-connections/{id}` read
+metadata and rename a connection; `DELETE` revokes it. Connections support
+`azure_openai`, `google` (Gemini), `deepseek`, and `openrouter`. Creation accepts
+`name`, `provider`, `api_key`, and an Azure `base_url` when applicable. The key
+is encrypted into the credential vault in the same transaction and is never
+returned. Lists use the standard `limit`/opaque cursor envelope.
+
+`GET /v1/model-connections/{id}/models` discovers provider models.
+`POST /v1/model-connections/{id}:test` tests a saved key with a supplied
+`model_name` and, for Azure, `deployment_name`. Azure deployment names are sent
+as the Azure v1 `model`; the separate model ID remains the platform capability
+and accounting identity. DeepSeek uses the managed catalog and Azure requires
+manual model/deployment entry.
+
+Owners alone can create, rename, rotate or revoke model connections. Workspace
+members can list, discover and test them. Rotation uses the existing
+`POST /v1/credentials/{credential_id}:rotate` endpoint with exactly an
+`api_key` field for model credentials. A draft model binding stores
+`connection_id` and optional `deployment_name`; published versions pin the
+connection/credential references and model metadata, never the key. Revoked or
+invalid BYOK bindings fail explicitly without fallback to a system credential.
+Agents without `connection_id` continue using the platform Azure
+`gpt-6-luna` default.

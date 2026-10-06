@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from apps.api.app.workflows.engine import evaluate_condition, resolve_expression
 from apps.api.app.workflows.schemas import Assignment, WorkflowDefinition
 from apps.api.app.workflows.validation import validate_graph
@@ -5,6 +8,36 @@ from apps.api.app.workflows.validation import validate_graph
 
 def definition(*nodes: dict, edges: list[dict]) -> WorkflowDefinition:
     return WorkflowDefinition(nodes=list(nodes), edges=edges)
+
+
+def test_workflow_definition_accepts_bounded_execution_budget() -> None:
+    workflow = WorkflowDefinition(
+        configuration={
+            "budget": {"max_total_tokens": 500_000, "timeout_seconds": 1_200}
+        },
+        nodes=[
+            {"key": "start", "type": "START", "name": "Start"},
+            {"key": "end", "type": "END", "name": "End"},
+        ],
+        edges=[{"source": "start", "target": "end"}],
+    )
+
+    assert workflow.configuration["budget"] == {
+        "max_total_tokens": 500_000,
+        "timeout_seconds": 1_200,
+    }
+
+
+def test_workflow_definition_rejects_invalid_execution_budget() -> None:
+    with pytest.raises(ValidationError):
+        WorkflowDefinition(
+            configuration={"budget": {"max_total_tokens": 0}},
+            nodes=[
+                {"key": "start", "type": "START", "name": "Start"},
+                {"key": "end", "type": "END", "name": "End"},
+            ],
+            edges=[{"source": "start", "target": "end"}],
+        )
 
 
 def test_expression_evaluator_resolves_refs_and_concat_without_code_execution() -> None:

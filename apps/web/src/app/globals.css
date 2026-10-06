@@ -762,6 +762,65 @@
     display: grid;
     gap: 10px;
 }
+.workflow-budget-settings {
+    margin: 0 0 12px;
+    padding: 12px 14px;
+    border: 1px solid var(--border-default);
+    border-radius: 9px;
+    background: var(--surface-secondary);
+}
+.workflow-budget-settings > summary {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    cursor: pointer;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 650;
+}
+.workflow-budget-settings > summary small {
+    color: var(--text-tertiary);
+    font-size: 11px;
+    font-weight: 400;
+}
+.workflow-budget-settings > summary:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 3px;
+    border-radius: 3px;
+}
+.workflow-budget-settings > p {
+    margin: 8px 0 12px;
+    color: var(--text-tertiary);
+    font-size: 11px;
+    line-height: 1.45;
+}
+.workflow-budget-fields {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px 14px;
+}
+.workflow-budget-fields .form-label {
+    display: grid;
+    min-width: 0;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+}
+.workflow-budget-fields input {
+    width: 100%;
+    min-height: 36px;
+    padding: 8px 9px;
+    color: var(--text-primary);
+    background: var(--surface-input);
+    border: 1px solid var(--border-default);
+    border-radius: 7px;
+}
+.workflow-budget-fields input:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
+    border-color: var(--focus-ring);
+}
 .workflow-field-note {
     display: block;
     margin: -2px 0 2px;
@@ -1701,6 +1760,16 @@
     margin: 3px 0 0;
     font-size: 18px;
 }
+.workflow-output-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+.workflow-output-expand {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
+}
 .workflow-output-markdown {
     max-height: 560px;
     overflow: auto;
@@ -1756,6 +1825,158 @@
     padding-left: 14px;
     border-left: 3px solid var(--info);
     color: var(--text-secondary);
+}
+.workflow-output-modal-backdrop {
+    z-index: 110;
+    grid-template-columns: minmax(0, 1fr);
+}
+.workflow-output-modal {
+    display: flex;
+    width: min(1100px, calc(100vw - 48px));
+    max-width: 1100px;
+    min-width: 0;
+    height: min(900px, calc(100dvh - 40px));
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: var(--surface-elevated);
+    box-shadow: 0 22px 55px color-mix(in srgb, var(--background) 64%, transparent);
+    animation: modal-dialog-in 180ms ease-out;
+}
+.workflow-output-modal-header {
+    display: flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 18px 22px;
+    border-bottom: 1px solid var(--border-default);
+}
+.workflow-output-modal-header > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.workflow-output-modal-header .eyebrow {
+    margin-bottom: 4px;
+}
+.workflow-output-modal-header h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 20px;
+}
+.workflow-output-modal-header .icon-button {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 auto;
+}
+.workflow-output-modal-body {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: auto;
+    overscroll-behavior: contain;
+}
+.workflow-output-expanded-markdown {
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    min-width: 0;
+    margin: 0;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    padding: 26px 30px 36px;
+    font-size: 15px;
+}
+.workflow-output-table-scroll {
+    max-width: 100%;
+    min-width: 0;
+    margin: 16px 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    scrollbar-color: var(--border-strong) var(--surface-input);
+}
+.workflow-output-table-scroll:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+.workflow-output-table-scroll table {
+    width: max-content;
+    min-width: 100%;
+    border-collapse: collapse;
+    table-layout: auto;
+}
+.workflow-output-table-scroll th,
+.workflow-output-table-scroll td {
+    min-width: 120px;
+    max-width: 360px;
+    height: auto;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--border-default);
+    border-right: 1px solid var(--border-default);
+    text-align: left;
+    vertical-align: top;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+}
+.workflow-output-table-scroll th:not(:first-child),
+.workflow-output-table-scroll td:not(:first-child) {
+    text-align: left;
+}
+.workflow-output-table-scroll th {
+    color: var(--text-primary);
+    background: var(--surface-secondary);
+    white-space: normal;
+}
+.workflow-output-table-scroll td {
+    color: var(--text-secondary);
+}
+.workflow-output-table-scroll tr:last-child td {
+    border-bottom: 0;
+}
+.workflow-output-table-scroll th:last-child,
+.workflow-output-table-scroll td:last-child {
+    border-right: 0;
+}
+.workflow-child-runs-error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin: 12px 0;
+    padding: 10px;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    color: var(--text-secondary);
+    background: var(--surface-primary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.workflow-child-runs-error .text-button {
+    flex: 0 0 auto;
+}
+@media (max-width: 700px) {
+    .workflow-output-modal-backdrop {
+        padding: 10px;
+    }
+    .workflow-output-modal {
+        width: 100%;
+        max-width: none;
+        height: calc(100dvh - 20px);
+    }
+    .workflow-output-modal-header {
+        padding: 14px;
+    }
+    .workflow-output-expanded-markdown {
+        padding: 18px 16px 24px;
+        font-size: 14px;
+    }
 }
 .workflow-output-empty {
     display: flex;
@@ -6803,6 +7024,21 @@ th:first-child {
 .create-agent-flow .model-field-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
 }
+.agent-form-panel .agent-model-field-grid {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 18px;
+}
+.agent-model-field-grid > label,
+.agent-model-field-grid .model-connection-picker > label {
+    gap: 9px;
+}
+.agent-model-field-grid .model-connection-picker {
+    display: grid;
+    min-width: 0;
+    gap: 18px;
+}
 .section-title-group {
     display: flex;
     align-items: flex-start;
@@ -7024,6 +7260,41 @@ th:first-child {
 }
 .modal-actions .button {
     min-height: 40px;
+}
+.model-connection-dialog .modal-heading {
+    padding-bottom: 20px;
+    border-bottom: 1px solid var(--border-default);
+}
+.model-connection-dialog .modal-heading h2 {
+    margin: 8px 0 7px;
+}
+.model-connection-dialog .modal-heading .panel-copy {
+    max-width: 380px;
+    line-height: 1.5;
+}
+.model-connection-form {
+    display: grid;
+    gap: 18px;
+    margin-top: 22px;
+}
+.model-connection-form > label {
+    display: grid;
+    gap: 8px;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+.model-connection-form .primary-text-input {
+    min-height: 44px;
+}
+.model-connection-form > label > small {
+    color: var(--text-tertiary);
+    font-size: 13px;
+    font-weight: 400;
+    line-height: 1.45;
+}
+.model-connection-form .modal-actions {
+    margin-top: 2px;
+    gap: 10px;
 }
 @keyframes modal-backdrop-in {
     from {
@@ -8123,10 +8394,52 @@ th:first-child {
 }
 
 /* Form controls follow the MUI interaction model while staying on VibesFactory tokens. */
+.model-connection-detail-panel {
+    gap: 18px;
+    padding: 22px;
+}
+.model-connection-detail-panel > .panel-heading {
+    margin-bottom: 0;
+}
+.model-connection-detail-panel > label,
+.model-connection-details-form > label {
+    gap: 9px;
+}
+.model-connection-details-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.model-connection-details-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-top: 2px;
+}
+.model-connection-details-actions .button,
+.model-connection-verification-panel > .button {
+    min-height: 44px;
+    padding-inline: 16px;
+}
 .model-select {
     position: relative;
     width: 100%;
     min-width: 0;
+}
+.model-connection-model-field {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 7px;
+}
+.model-connection-model-field > label {
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 600;
+}
+.model-connection-verification-panel:has(.model-select-menu) {
+    position: relative;
+    z-index: 3;
 }
 .model-select-trigger {
     display: flex;
@@ -8199,6 +8512,10 @@ th:first-child {
     background: var(--surface-elevated);
     box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
 }
+.model-connection-verification-panel .model-select-menu {
+    max-height: min(320px, calc(100vh - 220px));
+    overscroll-behavior: contain;
+}
 .model-select-search {
     display: flex;
     min-height: 38px;
@@ -8210,6 +8527,66 @@ th:first-child {
     border-radius: 6px;
     color: var(--text-tertiary);
     background: var(--surface-input);
+}
+.model-select .model-select-search {
+    display: flex;
+    min-height: 40px;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 4px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-weight: 400;
+    cursor: text;
+}
+.model-select .model-select-search input,
+.model-select .model-select-search input:focus,
+.model-select .model-select-search input:focus-visible {
+    width: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    color: var(--text-primary);
+    background: transparent;
+    box-shadow: none;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 400;
+}
+.model-connection-verification-panel .model-select-search {
+    display: flex;
+    min-height: 40px;
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 4px;
+    color: var(--text-tertiary);
+    font-size: 12px;
+    font-weight: 400;
+    cursor: text;
+}
+.model-connection-verification-panel .model-select-search input,
+.model-connection-verification-panel .model-select-search input:focus,
+.model-connection-verification-panel .model-select-search input:focus-visible {
+    width: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    outline: none;
+    color: var(--text-primary);
+    background: transparent;
+    box-shadow: none;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 400;
 }
 .model-select-search:focus-within {
     border-color: var(--brand-secondary);
@@ -8263,6 +8640,9 @@ th:first-child {
     background: transparent;
     cursor: pointer;
     text-align: left;
+}
+.model-connection-verification-panel .model-select-option {
+    flex: 0 0 auto;
 }
 .model-select-option > span {
     display: flex;
@@ -8596,7 +8976,22 @@ input[type="number"] {
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
 }
-.playground-jump-to-latest { position: sticky; bottom: 8px; z-index: 2; align-self: center; min-height: 40px; box-shadow: 0 4px 18px rgba(0, 0, 0, .24); }
+.playground-jump-to-latest {
+    position: sticky;
+    bottom: 8px;
+    z-index: 2;
+    align-self: center;
+    min-height: 44px;
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+    background: var(--surface-elevated);
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.24);
+}
+.playground-jump-to-latest:hover:not(:disabled) {
+    border-color: var(--brand-secondary);
+    color: var(--text-primary);
+    background: var(--surface-hover);
+}
 .workflow-accessible-controls { margin-top: 12px; border: 1px solid var(--border-default); border-radius: 10px; background: var(--surface-primary); }
 .workflow-accessible-controls > summary { min-height: 44px; padding: 12px 16px; color: var(--link); font-weight: 650; cursor: pointer; }
 .workflow-accessible-controls-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(260px, .8fr); gap: 18px; padding: 0 16px 16px; }
@@ -8696,8 +9091,10 @@ input[type="number"] {
 .message-meta time {
     color: color-mix(in srgb, currentColor 65%, transparent);
     font-family: "JetBrains Mono", monospace;
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 400;
+    line-height: 1.4;
+    white-space: nowrap;
 }
 .message-actions {
     display: flex;
@@ -8735,7 +9132,7 @@ input[type="number"] {
 .message-content {
     min-width: 0;
     overflow-wrap: anywhere;
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1.65;
 }
 .message-content > :first-child {
@@ -8762,10 +9159,10 @@ input[type="number"] {
     font-size: 16px;
 }
 .message-content h3 {
-    font-size: 14px;
+    font-size: 15px;
 }
 .message-content h4 {
-    font-size: 14px;
+    font-size: 15px;
 }
 .message-content ul,
 .message-content ol {
@@ -15739,3 +16136,5 @@ body.trace-modal-open .runtime-shell .playground-side-column > .panel {
 @media (max-width: 640px) {
   .agent-detail-header .header-controls { justify-content: flex-start; }
 }
+@media (max-width: 760px) { .workflow-budget-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .workflow-budget-fields { grid-template-columns: 1fr; } .workflow-budget-settings > summary { align-items: flex-start; flex-direction: column; gap: 3px; } }
