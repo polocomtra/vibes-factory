@@ -6,7 +6,14 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import AgentVersion, ToolType, ToolVersion, WorkflowNodeType
+from ..models import (
+    AgentVersion,
+    Credential,
+    ModelConnection,
+    ToolType,
+    ToolVersion,
+    WorkflowNodeType,
+)
 from .schemas import (
     Assignment,
     ExpressionNode,
@@ -422,6 +429,72 @@ async def validate_resources(
     session: AsyncSession, workspace_id: UUID, definition: WorkflowDefinition
 ) -> list[WorkflowValidationIssue]:
     issues: list[WorkflowValidationIssue] = []
+    chat = definition.configuration.get("chat", {})
+    connection_id = (
+        _uuid(chat.get("connection_id"))
+        if isinstance(chat, dict) and chat.get("enabled")
+        else None
+    )
+    if isinstance(chat, dict) and chat.get("enabled") and chat.get("connection_id"):
+        connection = (
+            await session.execute(
+                select(ModelConnection, Credential)
+                .join(Credential, Credential.id == ModelConnection.credential_id)
+                .where(
+                    ModelConnection.id == connection_id,
+                    ModelConnection.workspace_id == workspace_id,
+                )
+            )
+        ).one_or_none()
+        if connection is None:
+            issues.append(
+                _issue(
+                    "CHAT_MODEL_CONNECTION_NOT_FOUND",
+                    "The chat model connection is unavailable in this workspace.",
+                    field="configuration.chat.connection_id",
+                )
+            )
+        else:
+            model_connection, credential = connection
+            if (
+                chat.get("provider")
+                and model_connection.provider != chat.get("provider")
+            ) or credential.provider != model_connection.provider:
+                issues.append(
+                    _issue(
+                        "CHAT_MODEL_PROVIDER_MISMATCH",
+                        "The chat model provider must match its connection.",
+                        field="configuration.chat.provider",
+                    )
+                )
+            if model_connection.provider == "azure_openai" and not chat.get(
+                "deployment_name"
+            ):
+                issues.append(
+                    _issue(
+                        "CHAT_MODEL_DEPLOYMENT_REQUIRED",
+                        "Azure chat connections require a deployment name.",
+                        field="configuration.chat.deployment_name",
+                    )
+                )
+            if model_connection.provider != "azure_openai" and chat.get(
+                "deployment_name"
+            ):
+                issues.append(
+                    _issue(
+                        "CHAT_MODEL_DEPLOYMENT_UNSUPPORTED",
+                        "Deployment names are only valid for Azure chat connections.",
+                        field="configuration.chat.deployment_name",
+                    )
+                )
+            if credential.revoked_at is not None:
+                issues.append(
+                    _issue(
+                        "CHAT_MODEL_CONNECTION_REVOKED",
+                        "The chat model connection credential has been revoked.",
+                        field="configuration.chat.connection_id",
+                    )
+                )
     agent_version_ids = [
         _uuid(node.config.get("agent_version_id"))
         for node in definition.nodes

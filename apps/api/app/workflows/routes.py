@@ -26,17 +26,9 @@ from ..auth.dependencies import get_current_user
 from ..config import get_settings
 from ..db import SessionFactory, get_session
 from ..models import (
-    ApprovalRequest,
-    ApprovalStatus,
-    Job,
-    JobStatus,
-    JobType,
-    Trace,
-    TraceStatus,
     User,
     Workflow,
     WorkflowEdge,
-    WorkflowEventType,
     WorkflowNode,
     WorkflowNodeRun,
     WorkflowRun,
@@ -45,10 +37,14 @@ from ..models import (
     WorkflowStatus,
     WorkflowVersion,
 )
+from ..tools.validation import SchemaValidationError
+from ..tools.validation import validate as validate_json_schema
 from ..workspaces.authorization import (
     require_workspace_access,
     require_workspace_membership,
 )
+from .input_contract import apply_input_defaults
+from .run_service import queue_workflow_run, request_workflow_cancellation
 from .schemas import (
     WorkflowCreateRequest,
     WorkflowDefinition,
@@ -439,6 +435,26 @@ async def create_workflow_run(
     )
     if version is None:
         raise _not_found("The workflow version was not found.")
+    input_schema = version.configuration.get("input_schema")
+    run_input = (
+        apply_input_defaults(payload.input, input_schema)
+        if isinstance(input_schema, dict)
+        else payload.input
+    )
+    if isinstance(input_schema, dict):
+        try:
+            validate_json_schema(run_input, input_schema)
+        except SchemaValidationError as error:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "WORKFLOW_INPUT_INVALID",
+                    "message": (
+                        "Workflow input does not match the published input contract."
+                    ),
+                    "details": {"path": error.absolute_path, "reason": str(error)},
+                },
+            ) from error
     key_hash = (
         hashlib.sha256(idempotency_key.encode()).hexdigest()
         if idempotency_key
@@ -455,7 +471,7 @@ async def create_workflow_run(
         if existing is not None:
             if (
                 existing.workflow_version_id != version.id
-                or existing.input != payload.input
+                or existing.input != run_input
             ):
                 raise HTTPException(
                     status_code=409,
@@ -470,51 +486,16 @@ async def create_workflow_run(
                 )
             response.headers["X-Workflow-Run-Replayed"] = "true"
             return await _run_response(session, existing)
-    trace = Trace(
-        workspace_id=workflow.workspace_id,
-        status=TraceStatus.RUNNING,
-        attributes={"source": "workflow", "workflow_id": str(workflow.id)},
-    )
-    session.add(trace)
-    await session.flush()
-    run = WorkflowRun(
+    run = await queue_workflow_run(
+        session,
         workspace_id=workflow.workspace_id,
         workflow_id=workflow.id,
-        workflow_version_id=version.id,
-        trace_id=trace.id,
-        status=WorkflowRunStatus.QUEUED,
-        input=payload.input,
-        execution_budget=version.configuration.get("budget", {}),
-        created_by=user.id,
-        idempotency_key_hash=key_hash,
+        version=version,
+        user_id=user.id,
+        run_input=run_input,
+        source="workflow",
+        idempotency_key=idempotency_key,
     )
-    session.add(run)
-    await session.flush()
-    trace.workflow_run_id = run.id
-    session.add(
-        WorkflowRunEvent(
-            workflow_run_id=run.id,
-            sequence=1,
-            event_type=WorkflowEventType.WORKFLOW_QUEUED,
-            data={"workflow_version_id": str(version.id)},
-        )
-    )
-    session.add(
-        Job(
-            workspace_id=workflow.workspace_id,
-            job_type=JobType.WORKFLOW_EXECUTION,
-            status=JobStatus.QUEUED,
-            resource_type="workflow",
-            resource_id=run.id,
-            generation=1,
-            payload={
-                "workflow_run_id": str(run.id),
-                "workflow_version_id": str(version.id),
-                "user_id": str(user.id),
-            },
-        )
-    )
-    run.next_event_sequence = 2
     try:
         await session.commit()
     except IntegrityError as error:
@@ -685,35 +666,6 @@ async def cancel_workflow_run(
     if run is None:
         raise _not_found("The workflow run was not found.")
     await require_workspace_access(session, user.id, run.workspace_id)
-    if run.status in {
-        WorkflowRunStatus.COMPLETED,
-        WorkflowRunStatus.FAILED,
-        WorkflowRunStatus.CANCELLED,
-    }:
-        return await _run_response(session, run)
-    run.cancel_requested_at = datetime.now(UTC)
-    pending = list(
-        (
-            await session.scalars(
-                select(ApprovalRequest)
-                .where(
-                    ApprovalRequest.workflow_run_id == run.id,
-                    ApprovalRequest.status == ApprovalStatus.PENDING,
-                )
-                .with_for_update()
-            )
-        ).all()
-    )
-    now = datetime.now(UTC)
-    for request in pending:
-        request.status = ApprovalStatus.EXPIRED
-        request.resolved_at = now
-        request.metadata_json = {
-            **request.metadata_json,
-            "resolution_reason": "WORKFLOW_CANCELLED",
-        }
-        # A cancelled workflow must never be revived by a stale queue job.
-        request.continuation_status = "COMPLETED"
-        request.continuation_completed_at = now
+    await request_workflow_cancellation(session, run)
     await session.commit()
     return await _run_response(session, run)

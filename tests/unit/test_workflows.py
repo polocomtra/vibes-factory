@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from apps.api.app.workflows.engine import evaluate_condition, resolve_expression
+from apps.api.app.workflows.input_contract import apply_input_defaults
 from apps.api.app.workflows.schemas import Assignment, WorkflowDefinition
 from apps.api.app.workflows.validation import validate_graph
 
@@ -38,6 +39,80 @@ def test_workflow_definition_rejects_invalid_execution_budget() -> None:
             ],
             edges=[{"source": "start", "target": "end"}],
         )
+
+
+def test_workflow_chat_requires_and_accepts_an_explicit_input_contract() -> None:
+    workflow = WorkflowDefinition(
+        configuration={
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Research topic"}
+                },
+                "required": ["topic"],
+                "additionalProperties": False,
+            },
+            "chat": {
+                "enabled": True,
+                "provider": "azure_openai",
+                "model": "gpt-6-luna",
+            },
+        },
+        nodes=[
+            {"key": "start", "type": "START", "name": "Start"},
+            {"key": "end", "type": "END", "name": "End"},
+        ],
+        edges=[{"source": "start", "target": "end"}],
+    )
+
+    assert workflow.configuration["chat"]["enabled"] is True
+    assert workflow.configuration["input_schema"]["required"] == ["topic"]
+
+
+def test_workflow_chat_rejects_missing_or_open_input_contract() -> None:
+    with pytest.raises(ValidationError):
+        WorkflowDefinition(
+            configuration={"chat": {"enabled": True}},
+            nodes=[
+                {"key": "start", "type": "START", "name": "Start"},
+                {"key": "end", "type": "END", "name": "End"},
+            ],
+            edges=[{"source": "start", "target": "end"}],
+        )
+    with pytest.raises(ValidationError):
+        WorkflowDefinition(
+            configuration={
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": True,
+                },
+                "chat": {"enabled": True},
+            },
+            nodes=[
+                {"key": "start", "type": "START", "name": "Start"},
+                {"key": "end", "type": "END", "name": "End"},
+            ],
+            edges=[{"source": "start", "target": "end"}],
+        )
+
+
+def test_workflow_input_defaults_are_applied_without_mutating_original_input() -> None:
+    original = {"topic": "AI workflow runtimes"}
+    schema = {
+        "type": "object",
+        "properties": {
+            "topic": {"type": "string"},
+            "depth": {"type": "integer", "default": 3},
+        },
+        "required": ["topic"],
+        "additionalProperties": False,
+    }
+
+    normalized = apply_input_defaults(original, schema)
+
+    assert normalized == {"topic": "AI workflow runtimes", "depth": 3}
+    assert original == {"topic": "AI workflow runtimes"}
 
 
 def test_expression_evaluator_resolves_refs_and_concat_without_code_execution() -> None:

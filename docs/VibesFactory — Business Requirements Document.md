@@ -2557,3 +2557,21 @@ This BRD is considered the baseline when the following remain accepted:
 - PostgreSQL is the primary system of record.
 - pgvector is the initial vector solution.
 - Low-cost self-hosting remains an initial constraint.
+
+---
+
+## Workflow chat capability
+
+A workflow may publish an explicit input contract and enable a private
+conversational entry point. Users describe the work in natural language; the
+assistant asks for missing required values, validates all candidate input, and
+queues a run only when execution intent and valid input are both present. The
+conversation shows the run's durable activity and final output and supports
+follow-up questions and subsequent runs. Existing manual execution remains
+available. Chat does not route across workflows, publish workflows, change
+workflow graphs, or bypass approval decisions.
+
+Chat sessions pin an immutable workflow version and belong to one user in a
+workspace. Input contracts are shared by chat and manual runs. Existing versions
+remain compatible; enabling chat requires a newly published version. Chat model
+usage is accounted separately from workflow execution.

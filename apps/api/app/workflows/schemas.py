@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from ..model_providers.catalog import find_model
 from ..models import (
     WorkflowEventType,
     WorkflowNodeStatus,
@@ -14,6 +15,7 @@ from ..models import (
     WorkflowRunStatus,
     WorkflowStatus,
 )
+from ..tools.validation import SchemaDefinitionError, check_schema
 
 
 class ExpressionNode(BaseModel):
@@ -124,6 +126,78 @@ class WorkflowDefinition(BaseModel):
             raise ValueError("workflow definition exceeds the 1 MiB payload limit")
         if "budget" in self.configuration:
             WorkflowExecutionBudget.model_validate(self.configuration["budget"])
+        input_schema = self.configuration.get("input_schema")
+        if input_schema is not None:
+            if (
+                not isinstance(input_schema, dict)
+                or input_schema.get("type") != "object"
+            ):
+                raise ValueError("input_schema must describe an object")
+            try:
+                check_schema(input_schema)
+            except SchemaDefinitionError as exc:
+                raise ValueError("input_schema is invalid") from exc
+            properties = input_schema.get("properties", {})
+            if input_schema.get("additionalProperties", False) is not False:
+                raise ValueError("input_schema must reject undeclared fields")
+            if isinstance(properties, dict):
+                allowed = {"string", "integer", "number", "boolean", "object", "array"}
+                for name, definition in properties.items():
+                    if (
+                        not isinstance(definition, dict)
+                        or definition.get("type") not in allowed
+                    ):
+                        raise ValueError(
+                            f"input_schema field {name} has an unsupported type"
+                        )
+                    if "$ref" in definition:
+                        raise ValueError(
+                            "input_schema fields must use inline definitions"
+                        )
+        chat = self.configuration.get("chat")
+        if chat is not None:
+            if not isinstance(chat, dict) or not isinstance(
+                chat.get("enabled", False), bool
+            ):
+                raise ValueError("chat configuration must include an enabled flag")
+            if chat.get("enabled") and input_schema is None:
+                raise ValueError("chat requires an explicit input_schema")
+            connection_id = chat.get("connection_id")
+            provider = str(chat.get("provider") or "")
+            model = str(chat.get("model") or "gpt-6-luna")
+            if connection_id is not None:
+                try:
+                    UUID(str(connection_id))
+                except ValueError as exc:
+                    raise ValueError("chat connection_id must be a UUID") from exc
+                if not isinstance(chat.get("model"), str) or not chat["model"].strip():
+                    raise ValueError(
+                        "chat model is required when a connection is selected"
+                    )
+                if provider == "azure_openai" and not chat.get("deployment_name"):
+                    raise ValueError("Azure chat connections require a deployment name")
+                if provider != "azure_openai" and chat.get("deployment_name"):
+                    raise ValueError(
+                        "chat deployment_name is only valid for Azure OpenAI"
+                    )
+            elif chat.get("enabled"):
+                definition = find_model(provider or "azure_openai", model)
+                if definition is None or not definition.capabilities.get(
+                    "structured_output", False
+                ):
+                    raise ValueError(
+                        "the selected system chat model must support structured output"
+                    )
+            forbidden = {
+                "api_key",
+                "apikey",
+                "authorization",
+                "password",
+                "secret",
+                "token",
+            }
+            if any(str(key).lower() in forbidden for key in chat):
+                raise ValueError("chat configuration must not contain credentials")
         return self
 
 

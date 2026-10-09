@@ -200,6 +200,7 @@ class JobType(StrEnum):
     DOCUMENT_CLEANUP = "DOCUMENT_CLEANUP"
     MEMORY_EXTRACTION = "MEMORY_EXTRACTION"
     WORKFLOW_EXECUTION = "WORKFLOW_EXECUTION"
+    WORKFLOW_CHAT_TURN = "WORKFLOW_CHAT_TURN"
     APPROVAL_RESUME = "APPROVAL_RESUME"
     EVALUATION_BATCH = "EVALUATION_BATCH"
 
@@ -1631,6 +1632,151 @@ class WorkflowVersion(Base):
             "workflow_id", "version_number", name="uq_workflow_versions_number"
         ),
         Index("ix_workflow_versions_workspace_workflow", "workspace_id", "workflow_id"),
+    )
+
+
+class WorkflowChatSession(Base):
+    __tablename__ = "workflow_chat_sessions"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    workflow_version_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_versions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    title: Mapped[str | None] = mapped_column(String(255))
+    collected_input: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    active_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+    )
+    next_sequence: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_workflow_chat_owner_activity",
+            "workspace_id",
+            "user_id",
+            "workflow_id",
+            "updated_at",
+        ),
+    )
+
+
+class WorkflowChatTurn(Base):
+    __tablename__ = "workflow_chat_turns"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), default="QUEUED", server_default="QUEUED", nullable=False
+    )
+    decision: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    trace_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), ForeignKey("traces.id", ondelete="SET NULL")
+    )
+    model_usage: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+    )
+    idempotency_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_session_id", "idempotency_key_hash", name="uq_workflow_chat_turn_key"
+        ),
+        Index("ix_workflow_chat_turn_session_created", "chat_session_id", "created_at"),
+    )
+
+
+class WorkflowChatMessage(Base):
+    __tablename__ = "workflow_chat_messages"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_session_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_chat_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    turn_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_chat_turns.id", ondelete="CASCADE"),
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    workflow_run_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workflow_runs.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "chat_session_id", "sequence_no", name="uq_workflow_chat_message_sequence"
+        ),
+        Index("ix_workflow_chat_messages_session", "chat_session_id", "sequence_no"),
     )
 
 

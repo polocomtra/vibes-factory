@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { ArrowLeft, Check, History, LoaderCircle, Pencil, X } from "lucide-react";
+import { ArrowLeft, Check, History, LoaderCircle, MessageSquare, Pencil, X } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -45,6 +45,7 @@ export default function WorkflowDetailPage() {
     const [workflow, setWorkflow] = useState<Workflow | null>(null);
     const [draft, setDraft] = useState<WorkflowDraft | null>(null);
     const [latestVersionId, setLatestVersionId] = useState<string | null>(null);
+    const [chatEnabled, setChatEnabled] = useState(false);
     const [agents, setAgents] = useState<Agent[]>([]);
     const [agentsLoading, setAgentsLoading] = useState(true);
     const [agentVersions, setAgentVersions] = useState<AgentVersionSummary[]>(
@@ -112,6 +113,7 @@ export default function WorkflowDetailPage() {
                     setWorkflow(nextWorkflow);
                     setDraft(nextDraft);
                     setLatestVersionId(versions[0]?.id ?? null);
+                    setChatEnabled((versions[0]?.configuration?.chat as Record<string, unknown> | undefined)?.enabled === true);
                 }
                 const [nextAgents, nextTools] = await Promise.all([
                     fetchAgents(nextWorkflow.workspace_id),
@@ -187,6 +189,7 @@ export default function WorkflowDetailPage() {
                                 </p>
                             </div>
                             <div className="workflow-detail-header-actions">
+                                <button className="button primary-button" type="button" title={chatEnabled ? "Open workflow chat" : "Configure and publish Chat assistant to start a conversation"} onClick={() => router.push(`/workflows/${workflow.id}/chat`)}><MessageSquare size={15} aria-hidden="true" />Chat</button>
                                 <button className="button subtle-button" type="button" onClick={() => router.push(`/workflows/${workflow.id}/runs`)}>
                                     <History size={15} aria-hidden="true" />Run history
                                 </button>
@@ -201,6 +204,7 @@ export default function WorkflowDetailPage() {
                         <FeedbackToast toast={toast} onDismiss={() => setToast(null)} />
                         <WorkflowEditor
                             workflowId={workflow.id}
+                            workspaceId={workflow.workspace_id}
                             initialDraft={draft}
                             latestVersionId={latestVersionId}
                             agentsLoading={agentsLoading}

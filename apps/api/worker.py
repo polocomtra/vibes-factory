@@ -39,6 +39,7 @@ from .app.models import (
     Run,
     RunStatus,
 )
+from .app.workflows.chat import process_chat_turn
 from .app.workflows.engine import process_workflow_execution
 
 LEASE_SECONDS = 120
@@ -662,6 +663,8 @@ async def run_worker() -> None:
                     await process_memory_extraction(job, worker_id)
                 elif job.job_type == JobType.WORKFLOW_EXECUTION:
                     await process_workflow_execution(job, worker_id)
+                elif job.job_type == JobType.WORKFLOW_CHAT_TURN:
+                    await process_chat_turn(job, worker_id)
                 elif job.job_type == JobType.APPROVAL_RESUME:
                     await process_approval_resume(job, worker_id)
                 elif job.job_type == JobType.EVALUATION_BATCH:

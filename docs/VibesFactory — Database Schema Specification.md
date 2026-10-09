@@ -2719,3 +2719,30 @@ It also stores a normalized terminal error and an optional hashed idempotency
 key. Each case/evaluator combination has at most one result in a batch. Result
 `run_id` may be null when runtime execution failed; otherwise it points to the
 ordinary runtime Run for traceability.
+
+
+---
+
+# 47. Workflow Chat Sessions
+
+`workflow_chat_sessions` stores the workspace, workflow, immutable version and
+user owner of a conversation. `collected_input` holds validated conversation
+candidates, `active_run_id` points to its latest execution, and `next_sequence`
+serializes transcript ordering.
+
+# 48. Workflow Chat Turns
+
+`workflow_chat_turns` stores each request's status, structured decision,
+normalized error, separate model usage, chat trace, optional workflow run and
+hashed idempotency key/request fingerprint. The unique session/key constraint
+makes retried submissions replayable.
+
+# 49. Workflow Chat Messages
+
+`workflow_chat_messages` stores ordered user/assistant text and run-card
+references. A run card references `workflow_runs`; it does not copy execution
+state or output. Clients hydrate terminal output from the linked run after reload.
+
+All three tables include `workspace_id`; session reads also enforce the creating
+user. Migration `0020_workflow_chat` adds these tables and their owner/activity,
+turn creation and transcript sequence indexes.

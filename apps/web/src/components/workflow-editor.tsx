@@ -2,7 +2,7 @@
 
 import { addEdge, Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, Handle, Position, applyEdgeChanges, applyNodeChanges, type Connection, type Edge, type Node, type NodeProps, type OnEdgesChange, type OnNodesChange, type ReactFlowInstance } from "@xyflow/react";
 import dagre from "@dagrejs/dagre";
-import { Braces, Check, ChevronDown, CircleAlert, Database, GitBranch, Info, LayoutGrid, LoaderCircle, PanelRightClose, PanelRightOpen, Play, Plus, Save, Search, Settings2, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
+import { Braces, Check, ChevronDown, CircleAlert, Database, GitBranch, Info, LayoutGrid, LoaderCircle, Maximize2, Minimize2, PanelRightClose, PanelRightOpen, Play, Plus, Save, Search, Settings2, ShieldCheck, Sparkles, Trash2, X } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
@@ -10,7 +10,10 @@ import type { Agent, AgentVersionSummary } from "../lib/agents";
 import { ApiRequestError } from "../lib/api";
 import type { Tool } from "../lib/tools";
 import { FeedbackToast, type FeedbackToastState } from "./feedback-toast";
-import { publishWorkflow, runWorkflow, saveWorkflowDraft, validateWorkflowDraft, type WorkflowDefinition, type WorkflowDraft, type WorkflowExecutionBudget, type WorkflowNode as DefinitionNode } from "../lib/workflows";
+import { PrimaryTextArea, PrimaryTextInput } from "./primary-text-field";
+import { ModelConnectionPicker } from "./model-connection-picker";
+import type { ModelConfiguration } from "../lib/agents";
+import { fetchWorkflowVersion, publishWorkflow, runWorkflow, saveWorkflowDraft, validateWorkflowDraft, type WorkflowDefinition, type WorkflowDraft, type WorkflowExecutionBudget, type WorkflowNode as DefinitionNode } from "../lib/workflows";
 
 type CanvasNodeData = { label: string; type: DefinitionNode["type"]; config: Record<string, unknown> };
 type CanvasNode = Node<CanvasNodeData>;
@@ -77,6 +80,13 @@ function readWorkflowBudget(definition: WorkflowDefinition): WorkflowExecutionBu
   })) as WorkflowExecutionBudget;
 }
 
+type InputFieldDraft = { name: string; type: string; description: string; required: boolean; defaultValue: string; enumValues: string };
+
+function readWorkflowInputFields(definition: WorkflowDefinition): InputFieldDraft[] {
+  const inputContract = (definition.configuration.input_schema as { properties?: Record<string, Record<string, unknown>>; required?: string[] } | undefined) ?? { properties: {}, required: [] };
+  return Object.entries(inputContract.properties ?? {}).map(([name, field]) => ({ name, type: String(field.type ?? "string"), description: String(field.description ?? ""), required: (inputContract.required ?? []).includes(name), defaultValue: field.default == null ? "" : String(field.default), enumValues: Array.isArray(field.enum) ? field.enum.join(", ") : "" }));
+}
+
 function autoLayout(nodes: CanvasNode[], edges: Edge[]) {
   const graph = new dagre.graphlib.Graph().setDefaultEdgeLabel(() => ({}));
   graph.setGraph({ rankdir: "LR", nodesep: 70, ranksep: 110 });
@@ -95,7 +105,10 @@ type RunInputField = {
   id: string;
   key: string;
   value: string;
-  type: "text" | "number" | "boolean";
+  type: "text" | "number" | "boolean" | "object" | "array";
+  required?: boolean;
+  description?: string;
+  enum?: unknown[];
 };
 
 function resultOptionsForNode(type?: DefinitionNode["type"]): WorkflowSelectOption[] {
@@ -271,9 +284,18 @@ function WorkflowSelect({ value, options, placeholder, ariaLabel, onChange, disa
   return <div className="model-select workflow-select" ref={rootRef}><button className="model-select-trigger" type="button" aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open} aria-controls={listboxId} disabled={disabled || options.length === 0} onClick={() => { setOpen((current) => !current); if (open) setQuery(""); }} onKeyDown={handleKeyDown}><span className={selectedOption ? "model-select-value" : "model-select-placeholder"}>{selectedOption?.label || placeholder}</span><ChevronDown className={open ? "model-select-chevron open" : "model-select-chevron"} size={17} aria-hidden="true" /></button>{open ? <div className="model-select-menu" id={listboxId} role="listbox" aria-label={ariaLabel}>{pickerSearchEnabled ? <label className="model-select-search"><Search size={15} aria-hidden="true" /><span className="sr-only">Search {ariaLabel.toLowerCase()}</span><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={handleSearchKeyDown} placeholder={`Search ${ariaLabel.toLowerCase()}…`} autoComplete="off" /></label> : null}{visibleOptions.length > 0 ? visibleOptions.map((option, index) => <button className={index === highlightedIndex ? "model-select-option highlighted" : "model-select-option"} key={option.value} type="button" role="option" aria-selected={option.value === value} onMouseEnter={() => setHighlightedIndex(index)} onClick={() => chooseOption(option)}><span><strong>{option.label}</strong>{!pickerSecondaryHidden && option.secondary ? <small>{option.secondary}</small> : null}</span>{option.value === value ? <Check size={16} aria-hidden="true" /> : null}</button>) : <div className="model-select-empty">No matching {ariaLabel.toLowerCase()} found.</div>}</div> : null}</div>;
 }
 
-export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agentsLoading = false, agents = [], agentVersions = [], tools = [] }: { workflowId: string; initialDraft: WorkflowDraft; latestVersionId?: string | null; agentsLoading?: boolean; agents?: Agent[]; agentVersions?: AgentVersionSummary[]; tools?: Tool[] }) {
+export function WorkflowEditor({ workflowId, workspaceId, initialDraft, latestVersionId, agentsLoading = false, agents = [], agentVersions = [], tools = [] }: { workflowId: string; workspaceId: string; initialDraft: WorkflowDraft; latestVersionId?: string | null; agentsLoading?: boolean; agents?: Agent[]; agentVersions?: AgentVersionSummary[]; tools?: Tool[] }) {
   const [definition, setDefinition] = useState(initialDraft.definition);
+  const [inputFields, setInputFields] = useState(() => readWorkflowInputFields(initialDraft.definition));
   const [workflowBudget, setWorkflowBudget] = useState(() => readWorkflowBudget(initialDraft.definition));
+  const [runSettingsExpanded, setRunSettingsExpanded] = useState(false);
+  const [diagramFullscreen, setDiagramFullscreen] = useState(false);
+  const workflowEditorBodyRef = useRef<HTMLDivElement>(null);
+  const runSettingsPanelId = useId();
+  const [chatModel, setChatModel] = useState<ModelConfiguration>(() => {
+    const chat = initialDraft.definition.configuration.chat as Record<string, unknown> | undefined;
+    return { provider: String(chat?.provider ?? "azure_openai"), name: String(chat?.model ?? "gpt-6-luna"), connection_id: typeof chat?.connection_id === "string" ? chat.connection_id : null, deployment_name: null, config: {}, reasoning_options: {}, provider_options: {} };
+  });
   const initial = useMemo(() => toCanvas(initialDraft.definition), [initialDraft.definition]);
   const [nodes, setNodes] = useState<CanvasNode[]>(initial.nodes);
   const [edges, setEdges] = useState<Edge[]>(initial.edges);
@@ -292,9 +314,17 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [agentSelectionByNode, setAgentSelectionByNode] = useState<Record<string, string>>({});
   const [runInputOpen, setRunInputOpen] = useState(false);
+  const [runInputSchemaDefined, setRunInputSchemaDefined] = useState(false);
+  const [runInputError, setRunInputError] = useState<string | null>(null);
   const [runInputFields, setRunInputFields] = useState<RunInputField[]>([
     { id: "input-field-1", key: "topic", value: "", type: "text" },
   ]);
+
+  useEffect(() => {
+    const syncFullscreenState = () => setDiagramFullscreen(document.fullscreenElement === workflowEditorBodyRef.current);
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    return () => document.removeEventListener("fullscreenchange", syncFullscreenState);
+  }, []);
 
   useEffect(() => setDefinition((current) => toDefinition(nodes, edges, current)), [nodes, edges]);
   useEffect(() => {
@@ -375,7 +405,17 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
       // an immediate Save click from sending the previous config to the API.
       const currentDefinition = toDefinition(nodes, edges, {
         ...definition,
-        configuration: { ...definition.configuration, budget: workflowBudget },
+        configuration: {
+          ...definition.configuration,
+          budget: workflowBudget,
+          chat: {
+            ...((definition.configuration.chat as Record<string, unknown> | undefined) ?? {}),
+            provider: chatModel.provider,
+            model: chatModel.name,
+            connection_id: chatModel.connection_id,
+            deployment_name: chatModel.deployment_name,
+          },
+        },
       });
       const result = await saveWorkflowDraft(workflowId, revision, currentDefinition);
       setRevision(result.revision);
@@ -431,12 +471,28 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
     }
   }
 
-  function openRunDialog() {
+  async function openRunDialog() {
     if (!publishedVersionId) {
       setToast({ kind: "error", message: "Publish a version before running the workflow." });
       return;
     }
-    setRunInputOpen(true);
+    setBusy(true);
+    try {
+      const version = await fetchWorkflowVersion(publishedVersionId);
+      const schema = version.configuration.input_schema as { properties?: Record<string, Record<string, unknown>>; required?: string[] } | undefined;
+      if (schema?.properties) {
+        const required = new Set(schema.required ?? []);
+        setRunInputSchemaDefined(true);
+        setRunInputFields(Object.entries(schema.properties).map(([key, field], index) => ({ id: `input-field-${index}-${key}`, key, type: field.type === "integer" || field.type === "number" ? "number" : field.type === "boolean" ? "boolean" : field.type === "object" ? "object" : field.type === "array" ? "array" : "text", value: field.default == null ? "" : typeof field.default === "object" ? JSON.stringify(field.default, null, 2) : String(field.default), required: required.has(key), description: typeof field.description === "string" ? field.description : undefined, enum: Array.isArray(field.enum) ? field.enum : undefined })));
+      } else {
+        setRunInputSchemaDefined(false);
+        setRunInputFields([{ id: `input-field-${Date.now()}`, key: "topic", value: "", type: "text" }]);
+      }
+      setRunInputOpen(true);
+    } catch (reason) {
+      setToast({ kind: "error", message: workflowErrorMessage(reason, "Unable to load workflow inputs.") });
+    } finally { setBusy(false); }
+    setRunInputError(null);
     setToast(null);
   }
 
@@ -457,26 +513,39 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
     for (const field of runInputFields) {
       const key = field.key.trim();
       if (!key) {
-        setToast({ kind: "error", message: "Every workflow input needs a field name." });
+        setRunInputError("Every workflow input needs a field name.");
         return null;
       }
       if (Object.prototype.hasOwnProperty.call(input, key)) {
-        setToast({ kind: "error", message: `The input field “${key}” is duplicated.` });
+        setRunInputError(`The input field “${key}” is duplicated.`);
         return null;
       }
+      if (field.required && !field.value.trim()) {
+        setRunInputError(`Enter a value for “${key}”.`);
+        return null;
+      }
+      if (runInputSchemaDefined && !field.value.trim()) continue;
       if (field.type === "number") {
         const numberValue = Number(field.value);
         if (!field.value.trim() || Number.isNaN(numberValue)) {
-          setToast({ kind: "error", message: `Enter a valid number for “${key}”.` });
+          setRunInputError(`Enter a valid number for “${key}”.`);
           return null;
         }
         input[key] = numberValue;
       } else if (field.type === "boolean") {
         input[key] = field.value === "true";
+      } else if (field.type === "object" || field.type === "array") {
+        try { input[key] = JSON.parse(field.value); }
+        catch { setRunInputError(`Enter valid JSON for “${key}”.`); return null; }
       } else {
         input[key] = field.value;
       }
+      if (field.enum?.length && !field.enum.some((option) => option === input[key])) {
+        setRunInputError(`Choose an allowed value for “${key}”.`);
+        return null;
+      }
     }
+    setRunInputError(null);
     return input;
   }
 
@@ -646,26 +715,106 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
   const renderSimpleConfig = () => <div className="workflow-empty-config workflow-simple-config"><Info size={15} aria-hidden="true" /><span>{activeNode?.data.type === "START" ? "This node receives the input object supplied when the workflow run starts." : "This node has no basic fields to configure. Use advanced configuration only when you need a custom expression."}</span></div>;
   const renderApprovalConfig = () => { if (!activeNode) return null; const config = activeNode.data.config; return <div className="workflow-config-stack"><label className="form-label"><span>Approval message</span><textarea rows={3} value={String(config.message ?? "") } onChange={(event) => updateNodeConfig({ message: event.target.value })} placeholder="Approve sending this customer notification?" /><small>Explain the action and consequence to the reviewer.</small></label><label className="form-label"><span>Approval TTL (seconds)</span><input type="number" min={300} max={604800} value={String(config.ttl_seconds ?? 86400)} onChange={(event) => updateNodeConfig({ ttl_seconds: Number(event.target.value) })} /><small>Default 24 hours. Allowed range: 5 minutes to 7 days.</small></label><div className="workflow-empty-config"><ShieldCheck size={15} aria-hidden="true" /><span>Connect the approved and rejected handles to make the decision explicit.</span></div></div>; };
 
+  function updateInputFields(next: InputFieldDraft[]) {
+    setInputFields(next);
+    const properties: Record<string, Record<string, unknown>> = {};
+    const required: string[] = [];
+    for (const field of next) {
+      const name = field.name.trim();
+      if (!name) continue;
+      const value: Record<string, unknown> = { type: field.type };
+      if (field.description.trim()) value.description = field.description;
+      if (field.defaultValue.trim()) value.default = ["integer", "number"].includes(field.type) ? Number(field.defaultValue) : field.type === "boolean" ? field.defaultValue === "true" : field.defaultValue;
+      if (field.enumValues.trim()) {
+        value.enum = field.enumValues.split(",").map((item) => {
+          const candidate = item.trim();
+          if (["integer", "number"].includes(field.type)) return Number(candidate);
+          if (field.type === "boolean") return candidate.toLowerCase() === "true";
+          return candidate;
+        }).filter((item) => item !== "");
+      }
+      properties[name] = value;
+      if (field.required) required.push(name);
+    }
+    setDefinition((current) => ({ ...current, configuration: { ...current.configuration, input_schema: { type: "object", properties, required, additionalProperties: false } } }));
+  }
+  function addWorkflowInputField() {
+    const names = new Set(inputFields.map((field) => field.name));
+    let index = inputFields.length + 1;
+    while (names.has(`input_${index}`)) index += 1;
+    updateInputFields([...inputFields, { name: `input_${index}`, type: "string", description: "", required: true, defaultValue: "", enumValues: "" }]);
+  }
+  const chatConfig = (definition.configuration.chat as Record<string, unknown> | undefined) ?? {};
+  function setChatEnabled(enabled: boolean) { setDefinition((current) => ({ ...current, configuration: { ...current.configuration, input_schema: current.configuration.input_schema ?? { type: "object", properties: {}, required: [], additionalProperties: false }, chat: { ...((current.configuration.chat as Record<string, unknown> | undefined) ?? {}), enabled } } })); }
+  async function toggleDiagramFullscreen() {
+    const editorBody = workflowEditorBodyRef.current;
+    if (!editorBody?.requestFullscreen) {
+      setToast({ kind: "error", message: "Full screen is not supported by this browser." });
+      return;
+    }
+    try {
+      if (document.fullscreenElement === editorBody) await document.exitFullscreen();
+      else await editorBody.requestFullscreen();
+    } catch (reason) {
+      setToast({ kind: "error", message: reason instanceof Error ? reason.message : "Unable to open the workflow diagram in full screen." });
+    }
+  }
+
   return <ReactFlowProvider><div className="workflow-editor-shell">
     <div className="workflow-editor-toolbar"><div className="workflow-editor-toolbar-title"><span className="eyebrow">Workflow editor</span><strong>Draft · revision {revision}</strong><small>Build a deterministic flow, then validate before publishing.</small></div><div className="workflow-toolbar-actions"><button className="button subtle-button" type="button" onClick={() => { setNodes((current) => autoLayout(current, edges)); setToast({ kind: "success", message: "Canvas auto-arranged." }); }} disabled={busy}><LayoutGrid size={15} aria-hidden="true" />Auto layout</button><button className="button subtle-button" type="button" onClick={() => void validate()} disabled={busy}><ShieldCheck size={15} aria-hidden="true" />Validate</button><button className="button subtle-button" type="button" onClick={() => void save()} disabled={busy}><Save size={15} aria-hidden="true" />Save</button><button className="button subtle-button" type="button" onClick={() => void publish()} disabled={busy}><Sparkles size={15} aria-hidden="true" />Publish</button><button className="button primary-button" type="button" onClick={openRunDialog} disabled={busy}><Play size={15} aria-hidden="true" />Run</button></div></div>
+    <div className="workflow-editor-settings-grid">
     <details className="workflow-budget-settings">
-      <summary><span>Run budget</span><small>Limits for a published workflow run</small></summary>
-      <p>Limits are cumulative across the workflow and its agent tree. Save and publish a new version for these limits to apply; Run uses the latest published version.</p>
-      <div className="workflow-budget-fields">
-        {WORKFLOW_BUDGET_FIELDS.map((field) => <label className="form-label" key={field.key} title={field.help}>
-          <span>{field.label}</span>
-          <input type="number" min={field.min} max={field.max} step={1} value={workflowBudget[field.key]} onChange={(event) => updateWorkflowBudget(field.key, Number(event.target.value || 0))} />
-        </label>)}
+      <summary><span>Workflow Inputs</span><small>Schema shared by manual runs and chat</small><ChevronDown className="workflow-panel-chevron" size={16} aria-hidden="true" /></summary>
+      <p>Declare the values the workflow accepts. Chat only starts after it has gathered and validated these inputs.</p>
+      <div className="workflow-chat-input-fields">{inputFields.map((field, index) => <div className="workflow-chat-input-row" key={index}>
+        <label className="form-label"><span>Field name</span><PrimaryTextInput aria-label={`Field ${index + 1} name`} value={field.name} onChange={(event) => updateInputFields(inputFields.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} placeholder="topic" /></label>
+        <label className="form-label"><span>Value type</span><WorkflowSelect value={field.type} options={["string", "integer", "number", "boolean", "object", "array"].map((value) => ({ value, label: value }))} placeholder="Type" ariaLabel={`Field ${index + 1} type`} onChange={(value) => updateInputFields(inputFields.map((item, itemIndex) => itemIndex === index ? { ...item, type: value } : item))} /></label>
+        <label className="form-label"><span>Description</span><PrimaryTextInput aria-label={`Field ${index + 1} description`} value={field.description} onChange={(event) => updateInputFields(inputFields.map((item, itemIndex) => itemIndex === index ? { ...item, description: event.target.value } : item))} placeholder="What the workflow needs" /></label>
+        <label className="form-label"><span>Required</span><WorkflowSelect value={String(field.required)} options={[{ value: "true", label: "Required" }, { value: "false", label: "Optional" }]} placeholder="Required" ariaLabel={`Field ${index + 1} required`} onChange={(value) => updateInputFields(inputFields.map((item, itemIndex) => itemIndex === index ? { ...item, required: value === "true" } : item))} /></label>
+        <label className="form-label"><span>Default</span><PrimaryTextInput aria-label={`Field ${index + 1} default value`} value={field.defaultValue} onChange={(event) => updateInputFields(inputFields.map((item, itemIndex) => itemIndex === index ? { ...item, defaultValue: event.target.value } : item))} /></label>
+        <label className="form-label"><span>Allowed values</span><PrimaryTextInput aria-label={`Field ${index + 1} allowed values`} value={field.enumValues} onChange={(event) => updateInputFields(inputFields.map((item, itemIndex) => itemIndex === index ? { ...item, enumValues: event.target.value } : item))} placeholder="research, compare" /></label>
+        <button className="icon-button danger" type="button" aria-label={`Remove input ${field.name || index + 1}`} onClick={() => updateInputFields(inputFields.filter((_, itemIndex) => itemIndex !== index))}><Trash2 size={15} aria-hidden="true" /></button>
+      </div>)}
+      <button className="button secondary-button" type="button" onClick={addWorkflowInputField}><Plus size={15} aria-hidden="true" />Add input</button>
       </div>
     </details>
+    <details className="workflow-budget-settings">
+      <summary><span>Chat assistant</span><small>Collect inputs and explain workflow results</small><ChevronDown className="workflow-panel-chevron" size={16} aria-hidden="true" /></summary>
+      <div className="workflow-config-stack workflow-chat-assistant-fields">
+        <label className="form-label"><span>Enable chat for the next published version</span><WorkflowSelect value={String(Boolean(chatConfig.enabled))} options={[{ value: "false", label: "Disabled" }, { value: "true", label: "Enabled" }]} placeholder="Disabled" ariaLabel="Workflow chat enabled" onChange={(value) => setChatEnabled(value === "true")} /></label>
+        <p className="panel-copy workflow-chat-assistant-copy">When enabled, the assistant asks for missing required inputs, then starts the workflow when you request it.</p>
+        {chatConfig.enabled ? <><label className="form-label"><span>Assistant instructions</span><textarea className="primary-textarea" rows={3} value={String(chatConfig.description ?? "")} onChange={(event) => setDefinition((current) => ({ ...current, configuration: { ...current.configuration, chat: { ...((current.configuration.chat as Record<string, unknown> | undefined) ?? {}), description: event.target.value } } }))} placeholder="Explain when this workflow is useful and what information it needs." /></label><ModelConnectionPicker workspaceId={workspaceId} value={chatModel} onChange={(value) => { setChatModel(value); setDefinition((current) => ({ ...current, configuration: { ...current.configuration, chat: { ...((current.configuration.chat as Record<string, unknown> | undefined) ?? {}), provider: value.provider, model: value.name, connection_id: value.connection_id } } })); }} /></> : null}
+      </div>
+    </details>
+    </div>
+    <section className="workflow-budget-settings workflow-run-settings">
+      <div className="workflow-run-settings-heading">
+        <div className="workflow-run-settings-title"><span>Run Settings</span><small>Limits for a published workflow run</small></div>
+        <button className="workflow-run-settings-toggle" type="button" aria-label={runSettingsExpanded ? "Collapse Run Settings" : "Expand Run Settings"} aria-expanded={runSettingsExpanded} aria-controls={runSettingsPanelId} onClick={() => setRunSettingsExpanded((current) => !current)}>
+          <ChevronDown className={runSettingsExpanded ? "workflow-run-settings-chevron expanded" : "workflow-run-settings-chevron"} size={16} aria-hidden="true" />
+        </button>
+      </div>
+      <div className="workflow-run-settings-panel" id={runSettingsPanelId} hidden={!runSettingsExpanded}>
+        <p>Limits are cumulative across the workflow and its agent tree. Save and publish a new version for these limits to apply; Run uses the latest published version.</p>
+        <div className="workflow-budget-fields">
+          {WORKFLOW_BUDGET_FIELDS.map((field) => <label className="form-label" key={field.key} title={field.help}>
+            <span>{field.label}</span>
+            <input type="number" min={field.min} max={field.max} step={1} value={workflowBudget[field.key]} onChange={(event) => updateWorkflowBudget(field.key, Number(event.target.value || 0))} />
+          </label>)}
+        </div>
+      </div>
+    </section>
     <FeedbackToast toast={toast} onDismiss={() => setToast(null)} />
-    <div className={`workflow-editor-body ${inspectorOpen ? "" : "inspector-collapsed"}`}>
+    <div className={`workflow-editor-body ${inspectorOpen ? "" : "inspector-collapsed"}`} ref={workflowEditorBodyRef}>
       <aside className="workflow-palette">
         <div className="workflow-panel-heading"><span className="panel-label">Node palette</span><small>Click or drag</small></div>
         {(["START", "AGENT", "TOOL", "CONDITION", "APPROVAL", "TRANSFORM", "END"] as DefinitionNode["type"][]).map((type) => <button type="button" draggable="true" key={type} className="workflow-palette-item" onClick={() => addNode(type)} onDragStart={(event) => handlePaletteDragStart(event, type)}><span className="workflow-palette-dot" style={{ background: colors[type] }} /><span>{typeLabels[type]}</span><span className="workflow-palette-add">+</span></button>)}
       </aside>
       <div className={`workflow-canvas-wrap ${paletteDragActive ? "is-drop-target" : ""}`} onDragEnter={() => setPaletteDragActive(true)} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as globalThis.Node)) setPaletteDragActive(false); }} onDrop={handleCanvasDrop}>
         {paletteDragActive ? <div className="workflow-drop-hint" role="status">Drop to add node</div> : null}
+        <button className="workflow-canvas-fullscreen-toggle" type="button" aria-label={diagramFullscreen ? "Exit full screen workflow diagram" : "Open workflow diagram in full screen"} title={diagramFullscreen ? "Exit full screen" : "Open diagram in full screen"} onClick={() => void toggleDiagramFullscreen()}>
+          {diagramFullscreen ? <Minimize2 size={17} aria-hidden="true" /> : <Maximize2 size={17} aria-hidden="true" />}
+        </button>
         <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onInit={setFlowInstance} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onNodeClick={(_, node) => { setSelected(node.id); setInspectorOpen(true); }} fitView minZoom={0.25} maxZoom={1.8} proOptions={{ hideAttribution: true }}><Background gap={20} size={1} color="var(--grid-line)" /><MiniMap nodeColor={(node) => colors[(node.data as CanvasNodeData).type]} pannable zoomable nodeStrokeWidth={1} /><Controls /></ReactFlow>
       </div>
       <aside className={`workflow-inspector ${inspectorOpen ? "" : "is-collapsed"}`}>
@@ -689,6 +838,19 @@ export function WorkflowEditor({ workflowId, initialDraft, latestVersionId, agen
         </fieldset>
       </div>
     </details>
-    {runInputOpen ? <div className="modal-backdrop" role="presentation"><section className="modal-dialog workflow-run-input-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-run-input-heading"><div className="modal-heading"><div><span className="eyebrow">Run workflow</span><h2 id="workflow-run-input-heading">Provide workflow input</h2><p className="panel-copy">These fields become the input object available to Start and Agent nodes.</p></div><button className="icon-button modal-close" type="button" onClick={() => setRunInputOpen(false)} aria-label="Close workflow input dialog"><X size={17} aria-hidden="true" /></button></div><form className="modal-form" onSubmit={(event) => { event.preventDefault(); void executeRun(); }}><div className="workflow-input-list">{runInputFields.map((field) => <div className="workflow-input-row" key={field.id}><label className="form-label"><span>Field name</span><input value={field.key} onChange={(event) => updateRunInputField(field.id, { key: event.target.value })} placeholder="topic" autoComplete="off" /></label><label className="form-label"><span>Value type</span><select value={field.type} onChange={(event) => updateRunInputField(field.id, { type: event.target.value as RunInputField["type"] })}><option value="text">Text</option><option value="number">Number</option><option value="boolean">True / false</option></select></label><label className="form-label workflow-input-value"><span>Value</span>{field.type === "boolean" ? <select value={field.value || "false"} onChange={(event) => updateRunInputField(field.id, { value: event.target.value })}><option value="true">True</option><option value="false">False</option></select> : <input type={field.type === "number" ? "number" : "text"} value={field.value} onChange={(event) => updateRunInputField(field.id, { value: event.target.value })} placeholder={field.type === "number" ? "42" : "Research workflow orchestration"} />}</label><button className="icon-button danger workflow-input-remove" type="button" onClick={() => removeRunInputField(field.id)} aria-label={`Remove ${field.key || "input"} field`}><Trash2 size={15} aria-hidden="true" /></button></div>)}</div><button className="text-button workflow-input-add" type="button" onClick={addRunInputField}><Plus size={14} aria-hidden="true" />Add input field</button><small className="workflow-helper">The UI converts these values into JSON before the run starts, so no JSON syntax is required.</small><div className="modal-actions"><button className="button subtle-button" type="button" onClick={() => setRunInputOpen(false)}>Cancel</button><button className="button primary-button" type="submit" disabled={busy}><Play size={15} aria-hidden="true" />Start run</button></div></form></section></div> : null}
+    {runInputOpen ? <div className="modal-backdrop" role="presentation"><section className="modal-dialog workflow-run-input-dialog" role="dialog" aria-modal="true" aria-labelledby="workflow-run-input-heading">
+      <div className="modal-heading"><div><span className="eyebrow">Run workflow</span><h2 id="workflow-run-input-heading">Provide workflow input</h2><p className="panel-copy">{runInputSchemaDefined ? "These values follow the input contract published with this workflow version." : "These fields become the input object available to Start and Agent nodes."}</p></div><button className="icon-button modal-close" type="button" onClick={() => setRunInputOpen(false)} aria-label="Close workflow input dialog"><X size={17} aria-hidden="true" /></button></div>
+      <form className="modal-form" onSubmit={(event) => { event.preventDefault(); void executeRun(); }}>
+        <div className="workflow-input-list">{runInputFields.map((field) => <div className={`workflow-input-row${runInputSchemaDefined ? " is-schema-defined" : ""}`} key={field.id}>
+          {runInputSchemaDefined ? <div className="workflow-input-name-field"><span>Field name</span><div className="workflow-input-field-key"><strong>{field.key}</strong><small>{field.required ? "Required" : "Optional"}</small></div></div> : <label className="form-label"><span>Field name</span><PrimaryTextInput value={field.key} onChange={(event) => updateRunInputField(field.id, { key: event.target.value })} placeholder="topic" autoComplete="off" /></label>}
+          {!runInputSchemaDefined ? <label className="form-label"><span>Value type</span><WorkflowSelect value={field.type} options={[{ value: "text", label: "Text" }, { value: "number", label: "Number" }, { value: "boolean", label: "True / false" }]} placeholder="Type" ariaLabel={`${field.key || "Input"} value type`} onChange={(value) => updateRunInputField(field.id, { type: value as RunInputField["type"] })} /></label> : null}
+          <label className="form-label workflow-input-value"><span>Value</span>{field.enum?.length ? <WorkflowSelect value={field.value} options={field.enum.map((value) => ({ value: String(value), label: String(value) }))} placeholder="Choose a value" ariaLabel={`${field.key} value`} onChange={(value) => updateRunInputField(field.id, { value })} /> : field.type === "boolean" ? <WorkflowSelect value={field.value || "false"} options={[{ value: "true", label: "True" }, { value: "false", label: "False" }]} placeholder="Choose true or false" ariaLabel={`${field.key} value`} onChange={(value) => updateRunInputField(field.id, { value })} /> : field.type === "object" || field.type === "array" ? <PrimaryTextArea rows={3} value={field.value} onChange={(event) => updateRunInputField(field.id, { value: event.target.value })} aria-label={`${field.key} value`} placeholder={field.type === "object" ? "{\"key\": \"value\"}" : "[\"value\"]"} /> : <PrimaryTextInput type={field.type === "number" ? "number" : "text"} value={field.value} onChange={(event) => updateRunInputField(field.id, { value: event.target.value })} aria-label={`${field.key} value`} placeholder={field.type === "number" ? "42" : "Enter a value"} />}{field.description ? <small className="workflow-input-description">{field.description}</small> : null}</label>
+          {!runInputSchemaDefined ? <button className="icon-button danger workflow-input-remove" type="button" onClick={() => removeRunInputField(field.id)} aria-label={`Remove ${field.key || "input"} field`}><Trash2 size={15} aria-hidden="true" /></button> : null}
+        </div>)}</div>
+        {runInputError ? <p className="form-error" role="alert">{runInputError}</p> : null}
+        {!runInputSchemaDefined ? <><button className="text-button workflow-input-add" type="button" onClick={addRunInputField}><Plus size={14} aria-hidden="true" />Add input field</button><small className="workflow-helper">Values are converted to JSON before the run starts.</small></> : null}
+        <div className="modal-actions"><button className="button subtle-button" type="button" onClick={() => setRunInputOpen(false)}>Cancel</button><button className="button primary-button" type="submit" disabled={busy}><Play size={15} aria-hidden="true" />Start run</button></div>
+      </form>
+    </section></div> : null}
   </div></ReactFlowProvider>;
 }

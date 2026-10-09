@@ -144,7 +144,7 @@ function formatDuration(durationMs: number | null) {
   return `${seconds < 10 ? seconds.toFixed(2) : seconds.toFixed(1)} s`;
 }
 
-export function WorkflowRunView({ runId }: { runId: string }) {
+export function WorkflowRunView({ runId, onSelectNode, onNodeRunsChange, selectedNodeKey, onClearNodeFilter }: { runId: string; onSelectNode?: (nodeKey: string) => void; onNodeRunsChange?: (nodeRuns: WorkflowNodeRun[]) => void; selectedNodeKey?: string | null; onClearNodeFilter?: () => void }) {
   const [run, setRun] = useState<WorkflowRun | null>(null);
   const [events, setEvents] = useState<WorkflowEvent[]>([]);
   const [nodeRuns, setNodeRuns] = useState<WorkflowNodeRun[]>([]);
@@ -172,6 +172,7 @@ export function WorkflowRunView({ runId }: { runId: string }) {
         if (cancelled) return;
         setRun(nextRun);
         setNodeRuns(nextNodeRuns);
+        onNodeRunsChange?.(nextNodeRuns);
         setError(null);
       } catch (reason: unknown) {
         if (!cancelled) setError(reason instanceof Error ? reason.message : "Unable to load run.");
@@ -185,7 +186,7 @@ export function WorkflowRunView({ runId }: { runId: string }) {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [runId, terminal]);
+  }, [runId, terminal, onNodeRunsChange]);
 
   const childRunIds = nodeRuns.flatMap((item) => item.agent_run_id ? [item.agent_run_id] : []);
   const childRunKey = childRunIds.join(",");
@@ -288,6 +289,12 @@ export function WorkflowRunView({ runId }: { runId: string }) {
     (nodeRun) => nodeRun.status === "FAILED" && nodeRun.node_key === run?.current_node_key,
   ) ?? nodeRuns.find((nodeRun) => nodeRun.status === "FAILED");
   const selectedNodeRun = selectedNodeRunId ? nodeRunsById.get(selectedNodeRunId) ?? null : null;
+
+  useEffect(() => {
+    if (!selectedNodeKey) return;
+    const matchingRun = [...nodeRuns].reverse().find((item) => item.node_key === selectedNodeKey);
+    if (matchingRun) setSelectedNodeRunId(matchingRun.id);
+  }, [nodeRuns, selectedNodeKey]);
   const selectedChildRun = selectedChildRunId ? childRuns.find((item) => item.id === selectedChildRunId) ?? null : null;
   const elapsed = useMemo(
     () => run?.started_at
@@ -387,6 +394,7 @@ export function WorkflowRunView({ runId }: { runId: string }) {
         <div className="workflow-run-timeline">
           <div className="panel-heading">
             <div><span className="eyebrow">Live observation</span><h2>Execution timeline</h2></div>
+            {selectedNodeKey ? <button className="button subtle-button" type="button" onClick={onClearNodeFilter}>Clear node filter</button> : null}
             {terminal ? <span className="status-badge muted">Terminal</span> : <span className="status-badge success"><span />Live</span>}
           </div>
           {events.length === 0 ? (
@@ -394,7 +402,14 @@ export function WorkflowRunView({ runId }: { runId: string }) {
           ) : (
             <ol className="workflow-timeline">
               {events.map((event) => {
-                const nodeRun = event.node_run_id ? nodeRunsById.get(event.node_run_id) : null;
+                const eventParentRunId = typeof event.data.parent_run_id === "string" ? event.data.parent_run_id : null;
+                let nodeRun = event.node_run_id ? nodeRunsById.get(event.node_run_id) ?? null : null;
+                if (!nodeRun && eventParentRunId) {
+                  const rootNode = nodeRuns.find((item) => item.agent_run_id === eventParentRunId);
+                  const nestedRun = childRuns.find((child) => child.id === eventParentRunId);
+                  nodeRun = rootNode ?? (nestedRun ? nodeRuns.find((item) => item.agent_run_id === nestedRun.root_run_id) ?? null : null);
+                }
+                if (selectedNodeKey && nodeRun?.node_key !== selectedNodeKey) return null;
                 const nodeStatus = finalNodeStatus(event, nodeRunsById);
                 const visualStatus = timelineStatus(event, nodeStatus);
                 const label = String(event.data.node_name ?? nodeRun?.node_name ?? event.data.node_key ?? readableEvent(event.event));
@@ -410,7 +425,7 @@ export function WorkflowRunView({ runId }: { runId: string }) {
                 );
                 return (
                     <li key={event.sequence} className={`workflow-timeline-item workflow-${visualStatus.toLowerCase()}`}>
-                    {nodeRun ? <button type="button" className={`workflow-trace-button${selectedNodeRunId === nodeRun.id ? " selected" : ""}`} onClick={() => setSelectedNodeRunId(nodeRun.id)} aria-label={`Inspect ${label} trace`} aria-current={selectedNodeRunId === nodeRun.id ? "true" : undefined}>{content}</button> : content}
+                    {nodeRun ? <button type="button" className={`workflow-trace-button${selectedNodeRunId === nodeRun.id ? " selected" : ""}`} onClick={() => { setSelectedNodeRunId(nodeRun.id); onSelectNode?.(nodeRun.node_key); }} aria-label={`Inspect ${label} trace`} aria-current={selectedNodeRunId === nodeRun.id ? "true" : undefined}>{content}</button> : content}
                   </li>
                 );
               })}

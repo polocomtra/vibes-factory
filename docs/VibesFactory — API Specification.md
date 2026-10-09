@@ -4950,3 +4950,59 @@ connection/credential references and model metadata, never the key. Revoked or
 invalid BYOK bindings fail explicitly without fallback to a system credential.
 Agents without `connection_id` continue using the platform Azure
 `gpt-6-luna` default.
+
+
+---
+
+# 90. Workflow Chat
+
+Workflow chat sessions pin one published `WorkflowVersion`. A session is private
+to its creator within the workspace. Chat interpretation creates no run until a
+structured decision requests execution and the version's `input_schema` validates.
+Manual run requests use the same contract and return `422 WORKFLOW_INPUT_INVALID`
+when values do not match it.
+
+## `POST /v1/workflows/{workflow_id}/chats`
+
+Request: `{ "workflow_version_id": "uuid" }`. Creates a session (`201`). Archived
+workflows and versions without `configuration.chat.enabled` cannot start chats.
+
+## `GET /v1/workflows/{workflow_id}/chats`
+
+Lists the current user's sessions, newest activity first.
+
+## `GET /v1/workflow-chats/{chat_id}`
+
+Returns the pinned version, collected input, active run and timestamps. Other
+workspace members cannot read the session.
+
+## `GET /v1/workflow-chats/{chat_id}/messages?after={sequence}&limit=50`
+
+Returns transcript messages in monotonically increasing `sequence_no` order.
+`WORKFLOW_RUN` messages reference the ordinary workflow run; clients obtain its
+current output and events through the existing workflow-run APIs.
+
+## `POST /v1/workflow-chats/{chat_id}/turns`
+
+Requires `Idempotency-Key` and accepts `{ "message": "..." }`. Returns `202` with
+a durable turn ID. Reusing a key and identical payload replays the turn; reusing
+it with another payload returns `409 IDEMPOTENCY_KEY_REUSED`. Only one turn may
+be processing per session. The leased worker stores its structured decision and
+any queued workflow run in PostgreSQL. Interpretation asks for missing or
+ambiguous required values and answers follow-up questions without starting runs.
+
+## `GET /v1/workflow-chat-turns/{turn_id}`
+
+Returns `QUEUED`, `RUNNING`, `COMPLETED` or `FAILED`, normalized error details,
+model usage and optional trace/run IDs. A run created by chat is submitted to the
+same execution queue as a manual run and emits the same durable SSE event stream.
+Approval still requires the existing approval API.
+
+## Published input and chat configuration
+
+`configuration.input_schema` is a closed JSON object contract with top-level
+string, integer, number, boolean, object or array fields, optional defaults,
+enums and descriptions. Published versions are immutable. Chat configuration
+uses `enabled`, optional `description`, and optional model binding fields
+`provider`, `model`, `connection_id` and `deployment_name`. Credentials are never
+stored in the workflow definition.

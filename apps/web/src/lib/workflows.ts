@@ -47,6 +47,21 @@ export type WorkflowDefinition = {
   viewport?: { x: number; y: number; zoom: number } | null;
 };
 
+export type WorkflowInputSchema = {
+  type: "object";
+  properties: Record<string, { type: "string" | "integer" | "number" | "boolean" | "object" | "array"; title?: string; description?: string; default?: unknown; enum?: unknown[] }>;
+  required: string[];
+  additionalProperties: false;
+};
+
+export type WorkflowChatConfig = { enabled: boolean; description?: string; connection_id?: string | null; model?: string | null };
+
+export type WorkflowVersion = { id: string; workflow_id: string; version_number: number; configuration: Record<string, unknown>; definition: WorkflowDefinition };
+
+export type WorkflowChatSession = { id: string; workflow_id: string; workflow_version_id: string; title: string | null; collected_input: Record<string, unknown>; active_run_id: string | null; created_at: string; updated_at: string };
+export type WorkflowChatMessage = { id: string; sequence_no: number; role: "USER" | "ASSISTANT"; kind: "TEXT" | "WORKFLOW_RUN"; content: Record<string, unknown>; workflow_run_id: string | null; created_at: string };
+export type WorkflowChatTurn = { id: string; chat_session_id: string; status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED"; decision: { action: string; reply: string; input: Record<string, unknown> } | null; error: { code: string; message: string } | null; model_usage: Record<string, unknown>; workflow_run_id: string | null; trace_id: string | null; created_at: string; completed_at: string | null };
+
 export type WorkflowDraft = {
   workflow_id: string;
   revision: number;
@@ -164,9 +179,18 @@ export async function publishWorkflow(workflowId: string) {
 }
 
 export async function fetchWorkflowVersions(workflowId: string) {
-  const body = await json<{ data: Array<{ id: string; version_number: number }> }>(await apiFetch(`/v1/workflows/${workflowId}/versions`));
+  const body = await json<{ data: Array<{ id: string; version_number: number; configuration?: Record<string, unknown> }> }>(await apiFetch(`/v1/workflows/${workflowId}/versions`));
   return body.data;
 }
+
+export async function fetchWorkflowVersion(versionId: string) { return json<WorkflowVersion>(await apiFetch(`/v1/workflow-versions/${versionId}`)); }
+
+export async function createWorkflowChat(workflowId: string, workflowVersionId: string) { return json<WorkflowChatSession>(await apiFetch(`/v1/workflows/${workflowId}/chats`, { method: "POST", body: JSON.stringify({ workflow_version_id: workflowVersionId }) })); }
+export async function fetchWorkflowChats(workflowId: string) { return (await json<{ data: WorkflowChatSession[] }>(await apiFetch(`/v1/workflows/${workflowId}/chats`))).data; }
+export async function fetchWorkflowChat(chatId: string) { return json<WorkflowChatSession>(await apiFetch(`/v1/workflow-chats/${chatId}`)); }
+export async function fetchWorkflowChatMessages(chatId: string, after = 0) { return (await json<{ data: WorkflowChatMessage[]; pagination: { next_cursor: number | null; has_more: boolean } }>(await apiFetch(`/v1/workflow-chats/${chatId}/messages?after=${after}&limit=100`))); }
+export async function createWorkflowChatTurn(chatId: string, message: string, idempotencyKey: string) { return json<WorkflowChatTurn>(await apiFetch(`/v1/workflow-chats/${chatId}/turns`, { method: "POST", headers: { "Idempotency-Key": idempotencyKey }, body: JSON.stringify({ message }) })); }
+export async function fetchWorkflowChatTurn(turnId: string) { return json<WorkflowChatTurn>(await apiFetch(`/v1/workflow-chat-turns/${turnId}`)); }
 
 export async function runWorkflow(workflowId: string, workflowVersionId: string, input: Record<string, unknown>) {
   return json<WorkflowRun>(await apiFetch(`/v1/workflows/${workflowId}/runs`, { method: "POST", headers: { "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ workflow_version_id: workflowVersionId, input, execution_mode: "async" }) }));
@@ -175,6 +199,8 @@ export async function runWorkflow(workflowId: string, workflowVersionId: string,
 export async function fetchWorkflowRun(runId: string) {
   return json<WorkflowRun>(await apiFetch(`/v1/workflow-runs/${runId}`));
 }
+
+export async function cancelWorkflowRun(runId: string) { return json<WorkflowRun>(await apiFetch(`/v1/workflow-runs/${runId}:cancel`, { method: "POST" })); }
 
 export async function fetchWorkflowRuns(workflowId: string, limit = 50) {
   const body = await json<{ data: WorkflowRunSummary[]; pagination: { next_cursor: string | null; has_more: boolean } }>(await apiFetch(`/v1/workflows/${workflowId}/runs?limit=${limit}`));

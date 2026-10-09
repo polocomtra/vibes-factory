@@ -5968,3 +5968,25 @@ Acceptance criteria:
 - frontend build succeeds.
 - CI configuration is present.
 ```
+
+
+---
+
+# 114. Workflow Chat Delivery
+
+Implement workflow chat as three slices: (1) versioned input contracts and
+builder forms shared by manual Run; (2) owner-scoped durable sessions, turns and
+messages plus leased interpretation jobs and shared workflow run creation; and
+(3) responsive chat and live execution observation using existing run events,
+node runs, child runs and approval flows.
+
+The implementation uses structured model decisions, schema validation before
+execution, idempotent turn submission, and atomic run/job/transcript persistence.
+The UI provides clarification, input summary, run/result cards, timeline and
+read-only graph on desktop, with Chat/Execution tabs on smaller screens. Existing
+workflow versions and manual Run remain supported.
+
+Release checks: unit tests for schema validation and chat decisions; PostgreSQL
+API/worker checks for isolation, idempotency, redelivery and terminal output
+hydration; and responsive browser checks for happy path, clarification, follow-up,
+reconnect, approvals, keyboard access and both themes at 375/768/1024/1440px.

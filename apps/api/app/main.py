@@ -31,6 +31,7 @@ from .sessions.routes import router as session_router
 from .telemetry import initialize_telemetry
 from .tools.routes import router as tool_router
 from .traces.routes import router as trace_router
+from .workflows.chat import router as workflow_chat_router
 from .workflows.routes import router as workflow_router
 from .workspaces.routes import router as workspace_router
 
@@ -78,6 +79,7 @@ app.include_router(knowledge_router)
 app.include_router(memory_router)
 app.include_router(guardrail_router)
 app.include_router(workflow_router)
+app.include_router(workflow_chat_router)
 app.include_router(evaluation_router)
 app.include_router(deployment_router)
 app.include_router(monitoring_router)
