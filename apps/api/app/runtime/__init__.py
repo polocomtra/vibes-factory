@@ -1,4 +1,4 @@
-"""Synchronous Phase 4 agent runtime."""
+"""Agent runtime contracts, execution, and budget primitives."""
 
 from .contracts import (
     AgentRunRequest,

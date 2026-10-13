@@ -59,7 +59,7 @@ from ..models import (
     WorkflowRunEvent,
     WorkflowRunStatus,
 )
-from ..runs.routes import _build_runtime_request
+from ..runs.request_builder import build_runtime_request as _build_runtime_request
 from ..runs.schemas import RunCreateRequest
 from ..runtime.budget import ExecutionContext
 from ..runtime.contracts import TextInput

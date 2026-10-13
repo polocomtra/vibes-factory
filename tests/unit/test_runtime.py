@@ -1,14 +1,19 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
 
+from apps.api.app.guardrails.contracts import GuardrailEvaluation
 from apps.api.app.model_providers.contracts import (
     ModelMessage,
     ModelResponse,
+    ModelToolCall,
     ModelUsage,
 )
+from apps.api.app.model_providers.fake import FakeModelProvider
 from apps.api.app.models import Span, SpanStatus, SpanType
 from apps.api.app.runtime.budget import (
     ExecutionBudgetTracker,
@@ -26,7 +31,8 @@ from apps.api.app.runtime.contracts import (
     TokenUsage,
 )
 from apps.api.app.runtime.errors import RuntimeExecutionError
-from apps.api.app.runtime.service import AgentRuntime, _safe_provider_metadata
+from apps.api.app.runtime.serialization import _safe_provider_metadata
+from apps.api.app.runtime.service import AgentRuntime
 from apps.api.app.traces.routes import _span_response
 
 
@@ -232,6 +238,62 @@ def test_provider_metadata_drops_secret_shaped_fields() -> None:
             "nested": {"token": "secret"},
         }
     ) == {"request_id": "req-123", "nested": {}}
+
+
+@pytest.mark.asyncio
+async def test_tool_approval_returns_token_usage_without_budget_counters() -> None:
+    request = runtime_request()
+    session = SimpleNamespace(add=Mock(), flush=AsyncMock(), commit=AsyncMock())
+    registry = SimpleNamespace(validate_request=Mock())
+    runtime = AgentRuntime(session, registry)  # type: ignore[arg-type]
+    run_id = uuid4()
+    trace_id = uuid4()
+    run = SimpleNamespace(id=run_id, started_at=datetime.now(UTC))
+    trace = SimpleNamespace(id=trace_id)
+    root_span = SimpleNamespace(id=uuid4())
+    user_message = SimpleNamespace()
+    runtime.lifecycle.start = AsyncMock(  # type: ignore[method-assign]
+        return_value=(run, trace, root_span, user_message)
+    )
+    runtime._apply_input_guardrail = AsyncMock(  # type: ignore[method-assign]
+        return_value=request
+    )
+    runtime._evaluate_guardrail = AsyncMock(  # type: ignore[method-assign]
+        return_value=GuardrailEvaluation(value="approved candidate")
+    )
+    response = ModelResponse(
+        content="",
+        tool_calls=(ModelToolCall(id="call-1", name="send", arguments={}),),
+    )
+    provider = FakeModelProvider(lambda _request: response)
+    runtime._model_provider_and_key = AsyncMock(  # type: ignore[method-assign]
+        return_value=(provider, "test-key")
+    )
+    runtime.accounting.record_model_accounting = AsyncMock()  # type: ignore[method-assign]
+    runtime.tool_executor.execute = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeExecutionError(
+            "GUARDRAIL_APPROVAL_REQUIRED",
+            "Approval required.",
+            status_code=202,
+            run_id=run_id,
+            trace_id=trace_id,
+        )
+    )
+
+    result = await runtime.run(request)
+
+    assert result.status == "WAITING_APPROVAL"
+    assert result.run_id == run_id
+    assert result.trace_id == trace_id
+    assert result.completed_at is None
+    assert set(result.usage.model_dump(exclude_none=True)) == {
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    }
+    assert result.usage.total_tokens == (
+        result.usage.input_tokens + result.usage.output_tokens
+    )
 
 
 def test_context_span_type_and_usage_are_exposed_by_trace_contract() -> None:

@@ -31,7 +31,12 @@ from ..models import (
     Session,
     User,
 )
-from ..runs.routes import _build_runtime_request, _sse
+from ..runs.request_builder import (
+    build_runtime_request as _build_runtime_request,
+)
+from ..runs.request_builder import (
+    serialize_sse as _sse,
+)
 from ..runs.schemas import RunCreateRequest
 from ..runtime.contracts import AgentRunRequest, RuntimeStreamEvent
 from ..runtime.errors import RuntimeExecutionError

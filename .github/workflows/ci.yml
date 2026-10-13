@@ -12,13 +12,13 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_DB: vibesfactory
+          POSTGRES_DB: vibesfactory_test
           POSTGRES_USER: vibesfactory
           POSTGRES_PASSWORD: vibesfactory
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U vibesfactory -d vibesfactory"
+          --health-cmd "pg_isready -U vibesfactory -d vibesfactory_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
@@ -35,9 +35,12 @@ jobs:
         run: mypy apps/api/app
       - name: Migrate
         env:
-          VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@localhost:5432/vibesfactory
+          VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@localhost:5432/vibesfactory_test
         run: alembic upgrade head
       - name: Test
+        env:
+          VF_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@localhost:5432/vibesfactory_test
+          VF_TEST_DATABASE_URL: postgresql+asyncpg://vibesfactory:vibesfactory@localhost:5432/vibesfactory_test
         run: pytest
 
   frontend:

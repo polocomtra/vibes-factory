@@ -30,7 +30,7 @@ from ..models import (
     User,
 )
 from ..monitoring.pricing import pricing_for_call
-from ..runs.routes import _build_runtime_request
+from ..runs.request_builder import build_runtime_request as _build_runtime_request
 from ..runs.schemas import RunCreateRequest
 from ..runtime.budget import estimate_model_cost
 from ..runtime.contracts import TextInput, TokenUsage

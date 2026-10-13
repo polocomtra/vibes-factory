@@ -38,7 +38,12 @@ from ..models import (
     WorkflowRunEvent,
     WorkflowRunStatus,
 )
-from ..runs.routes import _build_runtime_request, _load_version
+from ..runs.request_builder import (
+    build_runtime_request as _build_runtime_request,
+)
+from ..runs.request_builder import (
+    load_version as _load_version,
+)
 from ..runs.schemas import RunCreateRequest
 from ..runtime.contracts import TextInput
 from ..runtime.service import AgentRuntime

@@ -32,7 +32,7 @@ def _provider_role(message: SessionMessage) -> Literal["user", "assistant", "too
 
 
 class ContextBuilder:
-    """Create the Phase 4 text-only ModelRequest and approximate token count."""
+    """Create a text-only ModelRequest and approximate token count."""
 
     def build(self, request: AgentRunRequest) -> ContextBuildResult:
         messages = [
