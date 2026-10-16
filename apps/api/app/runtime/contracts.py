@@ -26,6 +26,29 @@ class ExecutionBudget(BaseModel):
     timeout_seconds: int = Field(default=120, ge=1, le=3_600)
 
 
+class RuntimePlanningConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_plan_tasks: int = Field(default=12, ge=1, le=100)
+    max_tool_calls_per_task: int = Field(default=6, ge=1, le=40)
+    max_replans: int = Field(default=3, ge=0, le=20)
+    progress_assessment_interval: int = Field(default=1, ge=1, le=20)
+    allow_replan: bool = True
+    structured_output_max_attempts: int = Field(default=2, ge=1, le=2)
+    context_token_limit: int = Field(default=16_000, ge=256, le=200_000)
+    completion_policy: Literal["STRICT", "PARTIAL"] = "PARTIAL"
+
+
+class RuntimeWorkingStateConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_name: str = "default"
+    schema_version: int = Field(default=1, ge=1)
+    json_schema: dict[str, object] = Field(default_factory=dict)
+    initial_data: dict[str, object] = Field(default_factory=dict)
+    context_fields: tuple[str, ...] = ()
+
+
 class TokenUsage(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -127,6 +150,11 @@ class AgentVersionRuntimeConfig(BaseModel):
     memory: RuntimeMemoryBinding | None = None
     guardrails_enabled: bool = False
     guardrails: tuple[RuntimeGuardrail, ...] = ()
+    execution_strategy: Literal["REACTIVE", "PLAN_AND_EXECUTE"] = "REACTIVE"
+    planning: RuntimePlanningConfig = Field(default_factory=RuntimePlanningConfig)
+    working_state: RuntimeWorkingStateConfig = Field(
+        default_factory=RuntimeWorkingStateConfig
+    )
 
 
 class RuntimeSession(BaseModel):

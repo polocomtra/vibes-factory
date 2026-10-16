@@ -15,6 +15,7 @@ import {
     FileText,
     GitBranch,
     LoaderCircle,
+    Maximize2,
     Plus,
     Search as SearchIcon,
     Send,
@@ -41,6 +42,7 @@ import { ApprovalDecisionCard } from "../../../../components/approval-decision-c
 import { PrimarySelect } from "../../../../components/primary-select";
 import { fetchApprovals } from "../../../../lib/approvals";
 import {
+    createRun,
     createRunStream,
     createSession,
     fetchMessages,
@@ -48,6 +50,7 @@ import {
     fetchRunChildren,
     fetchSessions,
     fetchRunTrace,
+    fetchRunPlan,
     fetchSessionTraces,
     fetchSpan,
     fetchTraceSpans,
@@ -55,6 +58,7 @@ import {
     type Citation,
     type ChildRun,
     type Run,
+    type RunPlan,
     type Session,
     type Span,
     type RunTrace,
@@ -513,6 +517,16 @@ const markdownComponents: Components = {
             </div>
         );
     },
+    table: ({ children }) => (
+        <div
+            className="workflow-output-table-scroll"
+            role="region"
+            aria-label="Scrollable response table"
+            tabIndex={0}
+        >
+            <table>{children}</table>
+        </div>
+    ),
 };
 
 function MessageContent({ message }: { message: Message }) {
@@ -616,6 +630,69 @@ function PlaygroundMessage({
     fallbackCitations?: Citation[];
 }) {
     const content = textOf(message);
+    const [expandedOutputOpen, setExpandedOutputOpen] = useState(false);
+    const expandOutputButtonRef = useRef<HTMLButtonElement>(null);
+    const expandedOutputCloseRef = useRef<HTMLButtonElement>(null);
+    const expandedOutputDialogRef = useRef<HTMLElement>(null);
+    const previousOutputFocusRef = useRef<HTMLElement | null>(null);
+    const canExpandOutput =
+        message.role === "ASSISTANT" && content.length >= 1600;
+    const closeExpandedOutput = useCallback(() => {
+        setExpandedOutputOpen(false);
+    }, []);
+
+    useEffect(() => {
+        if (!expandedOutputOpen) return;
+        previousOutputFocusRef.current =
+            document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : expandOutputButtonRef.current;
+        const previousBodyOverflow = document.body.style.overflow;
+        const previousBodyPaddingRight = document.body.style.paddingRight;
+        const scrollbarWidth =
+            window.innerWidth - document.documentElement.clientWidth;
+        document.body.style.overflow = "hidden";
+        if (scrollbarWidth > 0)
+            document.body.style.paddingRight = `${scrollbarWidth}px`;
+        const focusFrame = window.requestAnimationFrame(() =>
+            expandedOutputCloseRef.current?.focus({ preventScroll: true }),
+        );
+        function handleDialogKeyDown(event: KeyboardEvent) {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeExpandedOutput();
+                return;
+            }
+            if (event.key !== "Tab") return;
+            const dialog = expandedOutputDialogRef.current;
+            if (!dialog) return;
+            const focusable = Array.from(
+                dialog.querySelectorAll<HTMLElement>(
+                    'button:not(:disabled), [href], [tabindex]:not([tabindex="-1"])',
+                ),
+            );
+            if (focusable.length === 0) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first.focus();
+            }
+        }
+        document.addEventListener("keydown", handleDialogKeyDown);
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            document.removeEventListener("keydown", handleDialogKeyDown);
+            document.body.style.overflow = previousBodyOverflow;
+            document.body.style.paddingRight = previousBodyPaddingRight;
+            previousOutputFocusRef.current?.focus({ preventScroll: true });
+            previousOutputFocusRef.current = null;
+        };
+    }, [closeExpandedOutput, expandedOutputOpen]);
+
     if (message.role === "TOOL") return null;
     const usedExternalResearch = tools.some(
         (tool) => tool.name.trim().toLowerCase() === "web_search",
@@ -653,9 +730,72 @@ function PlaygroundMessage({
             </article>
             {tools.length > 0 ? <ToolActivityGroup tools={tools} /> : null}
             <div className="message-actions">
+                {canExpandOutput ? (
+                    <button
+                        ref={expandOutputButtonRef}
+                        className="message-copy-button message-expand-button"
+                        type="button"
+                        aria-label="Open full-screen response"
+                        title="Open full-screen response"
+                        onClick={() => setExpandedOutputOpen(true)}
+                    >
+                        <Maximize2 size={15} aria-hidden="true" />
+                    </button>
+                ) : null}
                 <CopyButton text={content} />
             </div>
             {citations.length > 0 ? <SourcesPanel citations={citations} /> : null}
+            {expandedOutputOpen
+                ? createPortal(
+                      <div
+                          className="trace-modal-backdrop workflow-output-modal-backdrop"
+                          role="presentation"
+                          onMouseDown={(event) => {
+                              if (event.target === event.currentTarget)
+                                  closeExpandedOutput();
+                          }}
+                      >
+                          <section
+                              className="workflow-output-modal"
+                              role="dialog"
+                              aria-modal="true"
+                              aria-labelledby={`expanded-chat-output-${message.id}`}
+                              ref={expandedOutputDialogRef}
+                          >
+                              <header className="workflow-output-modal-header">
+                                  <div>
+                                      <span className="eyebrow">
+                                          Full-screen response
+                                      </span>
+                                      <h2 id={`expanded-chat-output-${message.id}`}>
+                                          {agentName}
+                                      </h2>
+                                  </div>
+                                  <button
+                                      ref={expandedOutputCloseRef}
+                                      className="icon-button"
+                                      type="button"
+                                      aria-label="Close full-screen response"
+                                      onClick={closeExpandedOutput}
+                                  >
+                                      <X size={17} aria-hidden="true" />
+                                  </button>
+                              </header>
+                              <div className="workflow-output-modal-body">
+                                  <article className="message-content workflow-output-expanded-markdown">
+                                      <ReactMarkdown
+                                          remarkPlugins={[remarkGfm]}
+                                          components={markdownComponents}
+                                      >
+                                          {content}
+                                      </ReactMarkdown>
+                                  </article>
+                              </div>
+                          </section>
+                      </div>,
+                      document.body,
+                  )
+                : null}
         </div>
     );
 }
@@ -1080,6 +1220,7 @@ export default function PlaygroundPage() {
     const [messages, setMessages] = useState<Message[]>([]);
     const [composer, setComposer] = useState("");
     const [lastRun, setLastRun] = useState<Run | null>(null);
+    const [runPlan, setRunPlan] = useState<RunPlan | null>(null);
     const [sessionTraces, setSessionTraces] = useState<TraceListItem[]>([]);
     const [tracesLoading, setTracesLoading] = useState(false);
     const [traceRunId, setTraceRunId] = useState<string | null>(null);
@@ -1489,6 +1630,7 @@ export default function PlaygroundPage() {
         setStatus("RUNNING");
         setError(null);
         setLastRun(null);
+        setRunPlan(null);
         setApprovalRequestId(null);
         setComposer("");
         setStreamingText("");
@@ -1502,6 +1644,22 @@ export default function PlaygroundPage() {
         try {
             let terminal: "COMPLETED" | "FAILED" | null = null;
             let failureMessage: string | null = null;
+            const versionConfig = await fetchVersion(agentId, selectedVersionId);
+            if (versionConfig.runtime_config.execution_strategy === "PLAN_AND_EXECUTE") {
+                setToolActivity("Planning tasks and assessing progress…");
+                const run = await createRun(
+                    agentId,
+                    sessionId,
+                    selectedVersionId,
+                    text,
+                    controller.signal,
+                );
+                activeRunId = run.id;
+                setStreamRunId(run.id);
+                terminal = run.status === "COMPLETED" ? "COMPLETED" : run.status === "FAILED" ? "FAILED" : null;
+                failureMessage = run.error?.message ?? null;
+                setStreamingText(run.output?.text ?? "");
+            } else {
             for await (const event of createRunStream(
                 agentId,
                 sessionId,
@@ -1621,11 +1779,19 @@ export default function PlaygroundPage() {
                     break;
                 }
             }
+            }
             flushDelta();
             let resolvedStatus: "COMPLETED" | "FAILED" | "WAITING_APPROVAL" | null = terminal;
             if (activeRunId) {
                 const run = await fetchRun(activeRunId);
                 setLastRun(run);
+                if (versionConfig.runtime_config.execution_strategy === "PLAN_AND_EXECUTE") {
+                    try {
+                        setRunPlan(await fetchRunPlan(run.id));
+                    } catch {
+                        setRunPlan(null);
+                    }
+                }
                 resolvedStatus =
                     run.status === "COMPLETED"
                         ? "COMPLETED"
@@ -1679,6 +1845,10 @@ export default function PlaygroundPage() {
                 return;
             }
             setStatus("FAILED");
+            // The live activity label is only meaningful while a run is active.
+            // Clear it on request failures so a failed run cannot leave its
+            // spinner visible beside the terminal error state.
+            setToolActivity(null);
             try {
                 await reloadMessages(sessionId, {
                     optimisticMessage,
@@ -1960,7 +2130,7 @@ export default function PlaygroundPage() {
                                         ),
                                     )
                                 )}
-                                {toolActivity ? (
+                                {toolActivity && busy && status === "RUNNING" ? (
                                     <div
                                         className="tool-runtime-panel tool-runtime-live"
                                         role="status"
@@ -2136,6 +2306,30 @@ export default function PlaygroundPage() {
                                     </div>
                                 </dl>
                             </section>
+                            {runPlan ? (
+                                <section className="panel planned-run-panel" aria-label="Execution plan">
+                                    <div className="panel-heading">
+                                        <div>
+                                            <span className="panel-kicker">Plan &amp; Execute</span>
+                                            <h2>Task progress</h2>
+                                        </div>
+                                        <StatusBadge status={runPlan.status} />
+                                    </div>
+                                    <p className="panel-copy">
+                                        {runPlan.tasks.filter((task) => task.status === "COMPLETED").length} of {runPlan.tasks.length} tasks completed
+                                        {runPlan.replan_count ? ` · ${runPlan.replan_count} replans` : ""}
+                                    </p>
+                                    <ol className="planned-task-list">
+                                        {runPlan.tasks.map((task) => (
+                                            <li key={task.id} className={`planned-task ${task.status.toLowerCase()}`}>
+                                                <span className="planned-task-status">{task.status.replaceAll("_", " ")}</span>
+                                                <strong>{task.description}</strong>
+                                                {task.result?.summary ? <small>{task.result.summary}</small> : null}
+                                            </li>
+                                        ))}
+                                    </ol>
+                                </section>
+                            ) : null}
                             <section
                                 className="panel recent-run-panel"
                                 aria-busy={tracesLoading}

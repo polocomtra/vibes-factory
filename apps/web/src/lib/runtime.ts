@@ -46,6 +46,28 @@ export type Run = {
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
+  execution_mode?: "sync" | "async";
+  result_status?: "COMPLETE" | "PARTIAL" | null;
+  completion_reason?: string | null;
+  cancellation_requested_at?: string | null;
+};
+
+export type RunPlan = {
+  id: string;
+  objective: string;
+  revision: number;
+  status: "ACTIVE" | "COMPLETED" | "PARTIAL" | "FAILED";
+  replan_count: number;
+  tasks: Array<{
+    id: string;
+    task_key: string;
+    description: string;
+    sequence: number;
+    dependencies: string[];
+    status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
+    result: { summary?: string } | null;
+    attempt_count: number;
+  }>;
 };
 
 export type ChildRun = Pick<Run, "id" | "agent_id" | "agent_version_id" | "session_id" | "parent_run_id" | "root_run_id" | "trace_id" | "status" | "usage" | "error" | "started_at" | "completed_at" | "created_at"> & {
@@ -244,9 +266,10 @@ export async function fetchMessages(sessionId: string): Promise<Message[]> {
   return (await response.json() as Collection<Message>).data;
 }
 
-export async function createRun(agentId: string, sessionId: string, agentVersionId: string, text: string): Promise<Run> {
+export async function createRun(agentId: string, sessionId: string, agentVersionId: string, text: string, signal?: AbortSignal): Promise<Run> {
   const response = await apiFetch(`/v1/agents/${agentId}/runs`, {
     method: "POST",
+    signal,
     body: JSON.stringify({ input: { type: "text", text }, session_id: sessionId, agent_version_id: agentVersionId }),
   });
   await assertOk(response);
@@ -340,6 +363,12 @@ export async function fetchRun(runId: string): Promise<Run> {
   const response = await apiFetch(`/v1/runs/${runId}`);
   await assertOk(response);
   return await response.json() as Run;
+}
+
+export async function fetchRunPlan(runId: string): Promise<RunPlan> {
+  const response = await apiFetch(`/v1/runs/${runId}/plan`);
+  await assertOk(response);
+  return await response.json() as RunPlan;
 }
 
 export async function fetchRunChildren(runId: string): Promise<ChildRun[]> {

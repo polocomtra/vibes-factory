@@ -29,6 +29,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AppShell } from "../../../components/app-shell";
 import { ModelConnectionPicker } from "../../../components/model-connection-picker";
 import { PrimarySelect } from "../../../components/primary-select";
+import { PrimaryTextArea, PrimaryTextInput } from "../../../components/primary-text-field";
 import { apiFetch, readApiError } from "../../../lib/api";
 import {
   fetchAgent,
@@ -92,6 +93,7 @@ function initialDraft(): AgentDraft {
       provider_options: {},
     },
     runtime_config: {
+      execution_strategy: "REACTIVE",
       max_steps: 20,
       max_model_calls: 10,
       max_tool_calls: 10,
@@ -99,6 +101,23 @@ function initialDraft(): AgentDraft {
       max_agent_depth: 3,
       max_total_tokens: 100000,
       timeout_seconds: 120,
+      planning: {
+        max_plan_tasks: 12,
+        max_tool_calls_per_task: 6,
+        max_replans: 3,
+        progress_assessment_interval: 1,
+        allow_replan: true,
+        structured_output_max_attempts: 2,
+        context_token_limit: 16000,
+        completion_policy: "PARTIAL",
+      },
+      working_state: {
+        schema_name: "default",
+        schema_version: 1,
+        json_schema: { type: "object", properties: {}, additionalProperties: false },
+        initial_data: {},
+        context_fields: [],
+      },
     },
     memory_config: {
       enabled: false,
@@ -180,6 +199,7 @@ export default function AgentDetailPage() {
   const [dirty, setDirty] = useState(false);
   const [changeNote, setChangeNote] = useState("");
   const [runtimeOpen, setRuntimeOpen] = useState(false);
+  const [stateSchemaText, setStateSchemaText] = useState("");
   const [publishOpen, setPublishOpen] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -235,6 +255,9 @@ export default function AgentDetailPage() {
       setName(agentData.name);
       setDescription(agentData.description ?? "");
       setDraft(draftData);
+      setStateSchemaText(
+        JSON.stringify(draftData.runtime_config.working_state.json_schema, null, 2),
+      );
       setVersions(versionData);
       setWorkspaceAgents(workspaceAgentData);
       setChildBindings(childBindingData);
@@ -529,13 +552,45 @@ export default function AgentDetailPage() {
   }
 
   function updateRuntime(
-    key: keyof AgentDraft["runtime_config"],
+    key: "max_steps" | "max_model_calls" | "max_tool_calls" | "max_child_runs" | "max_agent_depth" | "max_total_tokens" | "timeout_seconds",
     value: string,
   ) {
     updateDraft({
       ...draft,
       runtime_config: { ...draft.runtime_config, [key]: Number(value) },
     });
+  }
+
+  function updatePlanning(
+    key: keyof AgentDraft["runtime_config"]["planning"],
+    value: number,
+  ) {
+    updateDraft({
+      ...draft,
+      runtime_config: {
+        ...draft.runtime_config,
+        planning: { ...draft.runtime_config.planning, [key]: value },
+      },
+    });
+  }
+
+  function updateStateSchema(value: string) {
+    try {
+      const jsonSchema = JSON.parse(value) as Record<string, unknown>;
+      updateDraft({
+        ...draft,
+        runtime_config: {
+          ...draft.runtime_config,
+          working_state: {
+            ...draft.runtime_config.working_state,
+            json_schema: jsonSchema,
+          },
+        },
+      });
+      setError(null);
+    } catch {
+      setError("Working state schema must be valid JSON before saving.");
+    }
   }
 
   useEffect(() => {
@@ -1195,6 +1250,37 @@ export default function AgentDetailPage() {
             </button>
             {runtimeOpen ? (
               <div className="runtime-grid" id="runtime-config-content">
+                {draft.runtime_config.execution_strategy === "PLAN_AND_EXECUTE" ? (
+                  <p className="panel-copy runtime-span-two">
+                    Plan &amp; Execute runs have platform caps of 12 tool calls,
+                    24 model calls, 80,000 tokens, and 5 minutes per run. Each
+                    task can use up to 6 tool calls.
+                  </p>
+                ) : null}
+                <label className="runtime-span-two">
+                  Execution strategy
+                  <PrimarySelect
+                    value={draft.runtime_config.execution_strategy}
+                    options={[
+                      { value: "REACTIVE", label: "Reactive", secondary: "Single-loop execution" },
+                      { value: "PLAN_AND_EXECUTE", label: "Plan & Execute", secondary: "Create a plan, execute tasks, and assess progress" },
+                    ]}
+                    placeholder="Choose a strategy"
+                    ariaLabel="Execution strategy"
+                    onChange={(value) =>
+                      updateDraft({
+                        ...draft,
+                        runtime_config: {
+                          ...draft.runtime_config,
+                          execution_strategy: value as "REACTIVE" | "PLAN_AND_EXECUTE",
+                        },
+                      })
+                    }
+                  />
+                  <small>
+                    Plan &amp; Execute requires a published model with confirmed strict structured-output support.
+                  </small>
+                </label>
                 {(
                   [
                     "max_steps",
@@ -1208,7 +1294,7 @@ export default function AgentDetailPage() {
                 ).map((key) => (
                   <label key={key}>
                     {key.replaceAll("_", " ")}
-                    <input
+                    <PrimaryTextInput
                       type="number"
                       min="0"
                       value={String(draft.runtime_config[key])}
@@ -1218,6 +1304,42 @@ export default function AgentDetailPage() {
                     />
                   </label>
                 ))}
+                {draft.runtime_config.execution_strategy === "PLAN_AND_EXECUTE" ? (
+                  <>
+                    {(
+                      [
+                        "max_plan_tasks",
+                        "max_tool_calls_per_task",
+                        "max_replans",
+                        "context_token_limit",
+                      ] as const
+                    ).map((key) => (
+                      <label key={key}>
+                        {key.replaceAll("_", " ")}
+                        <PrimaryTextInput
+                          type="number"
+                          min="0"
+                          value={String(draft.runtime_config.planning[key])}
+                          onChange={(event) => updatePlanning(key, Number(event.target.value))}
+                        />
+                      </label>
+                    ))}
+                    <label className="runtime-span-two">
+                      Working state JSON Schema
+                      <PrimaryTextArea
+                        rows={8}
+                        spellCheck={false}
+                        value={stateSchemaText}
+                        aria-label="Working state JSON Schema"
+                        onChange={(event) => setStateSchemaText(event.target.value)}
+                        onBlur={() => updateStateSchema(stateSchemaText)}
+                      />
+                      <small>
+                        Local JSON Schema only. The initial state must validate before publishing.
+                      </small>
+                    </label>
+                  </>
+                ) : null}
               </div>
             ) : null}
           </section>

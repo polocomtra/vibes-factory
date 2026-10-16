@@ -20,6 +20,7 @@ class ModelConnectionTestRequest(BaseModel):
     deployment_name: str | None = Field(default=None, max_length=255)
     base_url: str | None = Field(default=None, max_length=2048)
     api_key: SecretStr = Field(min_length=1, repr=False)
+    probe_planning: bool = False
 
     @field_validator("provider", mode="before")
     @classmethod
@@ -53,3 +54,4 @@ class ModelConnectionTestResponse(BaseModel):
     model_name: str
     latency_ms: int | None = None
     error: ModelConnectionTestError | None = None
+    capabilities: dict[str, bool] | None = None

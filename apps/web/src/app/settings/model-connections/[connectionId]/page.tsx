@@ -8,6 +8,7 @@ import { ArrowLeft, LoaderCircle, RotateCcw, Save, ShieldCheck, Trash2 } from "l
 import { AppShell, useSelectedWorkspaceRole } from "../../../../components/app-shell";
 import { PrimarySelect, type PrimarySelectOption } from "../../../../components/primary-select";
 import { PrimaryTextInput } from "../../../../components/primary-text-field";
+import { PrimarySwitch } from "../../../../components/primary-switch";
 import { apiFetch, readApiError } from "../../../../lib/api";
 import { discoverModels, fetchModelConnection, renameModelConnection, revokeModelConnection, rotateModelConnectionKey, testSavedModelConnection, type DiscoveredModel, type ModelConnection } from "../../../../lib/model-connections";
 
@@ -21,6 +22,7 @@ function ConnectionDetail() {
   const [apiKey, setApiKey] = useState("");
   const [modelName, setModelName] = useState("");
   const [deploymentName, setDeploymentName] = useState("");
+  const [probePlanning, setProbePlanning] = useState(false);
   const [models, setModels] = useState<DiscoveredModel[]>([]);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Awaited<ReturnType<typeof testSavedModelConnection>> | null>(null);
@@ -61,7 +63,7 @@ function ConnectionDetail() {
   }
   async function test() {
     setBusy(true); setError(null); setTestResult(null);
-    try { setTestResult(await testSavedModelConnection(connectionId, { model_name: modelName, ...(connection?.provider === "azure_openai" ? { deployment_name: deploymentName } : {}) })); }
+    try { setTestResult(await testSavedModelConnection(connectionId, { model_name: modelName, probe_planning: probePlanning, ...(connection?.provider === "azure_openai" ? { deployment_name: deploymentName } : {}) })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Connection test failed."); }
     finally { setBusy(false); }
   }
@@ -85,9 +87,16 @@ function ConnectionDetail() {
         {connection.provider !== "azure_openai" && modelOptions.length > 0 ? <div className="model-connection-model-field"><label htmlFor="test-model">Suggested model</label><PrimarySelect id="test-model" value={modelName} options={modelOptions} placeholder="Select a model" ariaLabel="Suggested model" searchable onChange={setModelName} /></div> : null}
         <label htmlFor="test-model-name">Model ID<PrimaryTextInput id="test-model-name" value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder={connection.provider === "azure_openai" ? "Azure deployment's model ID" : "provider/model-id"} required /></label>
         {connection.provider === "azure_openai" ? <label htmlFor="test-deployment">Deployment name<PrimaryTextInput id="test-deployment" value={deploymentName} onChange={(event) => setDeploymentName(event.target.value)} required /></label> : null}
+        <PrimarySwitch
+          checked={probePlanning}
+          onChange={setProbePlanning}
+          label="Probe planning capabilities"
+          description="Sends strict structured-output and function-call probes; results are saved for this model."
+          disabled={busy || connection.status !== "ACTIVE"}
+        />
         {discoveryError ? <div className="form-error" role="alert"><p>{discoveryError}</p><button className="button secondary-button" type="button" onClick={async () => { setDiscoveryError(null); try { setModels(await discoverModels(connectionId)); } catch (reason) { setDiscoveryError(reason instanceof Error ? reason.message : "Model discovery failed."); } }}>Retry model discovery</button><small>You can still enter a model ID manually.</small></div> : null}
         <button className="button secondary-button" type="button" disabled={busy || connection.status !== "ACTIVE" || !modelName.trim() || (connection.provider === "azure_openai" && !deploymentName.trim())} onClick={() => void test()}>{busy ? <LoaderCircle className="spin" size={14} aria-hidden="true" /> : <ShieldCheck size={14} aria-hidden="true" />}Test model</button>
-        {testResult ? <div className={`model-test-result ${testResult.status === "SUCCESS" ? "success" : "failed"}`} role={testResult.status === "FAILED" ? "alert" : "status"}><strong>{testResult.status === "SUCCESS" ? "Model verified" : "Model test failed"}</strong><span>{testResult.error?.message ?? `${testResult.provider} · ${testResult.model_name} · ${testResult.latency_ms ?? 0} ms`}</span></div> : null}
+        {testResult ? <div className={`model-test-result ${testResult.status === "SUCCESS" ? "success" : "failed"}`} role={testResult.status === "FAILED" ? "alert" : "status"}><strong>{testResult.status === "SUCCESS" ? "Model verified" : "Model test failed"}</strong><span>{testResult.error?.message ?? `${testResult.provider} · ${testResult.model_name} · ${testResult.latency_ms ?? 0} ms`}</span>{testResult.capabilities ? <span>Planning probe: structured output {testResult.capabilities.structured_output ? "supported" : "unsupported"} · tool calling {testResult.capabilities.tool_calling ? "supported" : "unsupported"}</span> : null}</div> : null}
       </section>
       {error ? <div className="form-error" role="alert">{error}</div> : null}
       {isOwner && connection.status === "ACTIVE" ? <section className="panel danger-panel"><div><strong>Revoke model access</strong><p>Agents using this provider key will fail their next model call.</p></div><button className="button danger-button" type="button" disabled={busy} onClick={() => void revoke()}><Trash2 size={14} aria-hidden="true" />Revoke</button></section> : null}

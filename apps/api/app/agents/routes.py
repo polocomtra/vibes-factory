@@ -18,6 +18,7 @@ from ..models import (
     AgentDraftChildAgent,
     AgentStatus,
     AgentVersion,
+    ModelConnection,
     User,
 )
 from ..workspaces.authorization import require_workspace_membership
@@ -53,8 +54,14 @@ from .service import (
     validate_draft,
     validate_model_binding,
 )
+from .templates import list_agent_templates
 
 router = APIRouter(prefix="/v1", tags=["agents"])
+
+
+@router.get("/agent-templates", response_model=dict[str, list[dict[str, object]]])
+async def get_agent_templates() -> dict[str, list[dict[str, object]]]:
+    return {"data": list_agent_templates()}
 
 
 def _service_error(error: AgentServiceError) -> HTTPException:
@@ -124,6 +131,8 @@ def _draft_response(draft: AgentDraft) -> AgentDraftResponse:
         runtime_config=RuntimeConfiguration.model_validate(draft.runtime_config),
         memory_config=MemoryConfiguration.model_validate(draft.memory_config),
         guardrails_enabled=draft.guardrails_enabled,
+        template_id=draft.template_id,
+        template_version=draft.template_version,
         updated_at=draft.updated_at,
     )
 
@@ -389,7 +398,22 @@ async def validate_agent_draft(
                 "details": {},
             },
         )
-    errors = validate_draft(draft)
+    capability_profile = None
+    connection_id = draft.model_config.get("connection_id")
+    if connection_id:
+        try:
+            connection = await session.scalar(
+                select(ModelConnection).where(
+                    ModelConnection.id == UUID(str(connection_id)),
+                    ModelConnection.workspace_id == agent.workspace_id,
+                )
+            )
+            if connection is not None:
+                profile = (connection.capability_profiles or {}).get(draft.model_name)
+                capability_profile = profile if isinstance(profile, dict) else None
+        except ValueError:
+            pass
+    errors = validate_draft(draft, capability_profile=capability_profile)
     try:
         await validate_model_binding(session, agent.workspace_id, draft)
     except AgentServiceError as error:

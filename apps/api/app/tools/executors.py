@@ -3,12 +3,15 @@
 import ast
 import asyncio
 import hashlib
+import io
 import math
+import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from time import monotonic
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 import structlog
@@ -56,6 +59,101 @@ _BLOCKED_HOSTNAMES = frozenset(
     }
 )
 logger = structlog.get_logger(__name__)
+FETCH_RESOURCE_MAX_BYTES = 2 * 1024 * 1024
+FETCH_RESOURCE_MAX_CHARS = 120_000
+FETCH_RESOURCE_DEFAULT_EXCERPT_CHARS = 12_000
+
+
+class _ReadableHtmlParser(HTMLParser):
+    """Extract article/main text while excluding active and navigational markup."""
+
+    _SKIP = frozenset({"script", "style", "noscript", "svg", "nav", "footer"})
+    _CONTENT = frozenset({"article", "main"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.title: list[str] = []
+        self._in_title = False
+        self._skip_depth = 0
+        self._content_depth = 0
+        self._text: list[str] = []
+        self._content_text: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        name = tag.lower()
+        if name == "title":
+            self._in_title = True
+        if name in self._SKIP:
+            self._skip_depth += 1
+        if name in self._CONTENT:
+            self._content_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        name = tag.lower()
+        if name == "title":
+            self._in_title = False
+        if name in self._SKIP:
+            self._skip_depth = max(0, self._skip_depth - 1)
+        if name in self._CONTENT:
+            self._content_depth = max(0, self._content_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title:
+            self.title.append(data)
+        if self._skip_depth:
+            return
+        value = data.strip()
+        if value:
+            self._text.append(value)
+            if self._content_depth:
+                self._content_text.append(value)
+
+    def result(self) -> tuple[str | None, str]:
+        title = " ".join(" ".join(self.title).split()) or None
+        source = self._content_text if self._content_text else self._text
+        text = re.sub(r"\n{3,}", "\n\n", "\n".join(source)).strip()
+        return title, text
+
+
+def _extract_readable_resource(
+    content: bytes, content_type: str, url: str
+) -> tuple[str | None, str, int | None]:
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    path = urlparse(url).path.lower()
+    if media_type == "application/pdf" or path.endswith(".pdf"):
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(content))
+        if len(reader.pages) > 50:
+            raise ValueError("RESOURCE_PAGE_LIMIT")
+        text = "\n\n".join(
+            f"[Page {index + 1}]\n{page.extract_text() or ''}"
+            for index, page in enumerate(reader.pages)
+        ).strip()
+        if not text:
+            raise ValueError("RESOURCE_NO_TEXT")
+        return None, text, len(reader.pages)
+    if media_type in {
+        "text/plain",
+        "text/markdown",
+        "text/x-markdown",
+    } or path.endswith((".txt", ".md", ".markdown")):
+        text = content.decode("utf-8")
+        return (
+            None,
+            "\n".join(line.rstrip() for line in text.splitlines()).strip(),
+            None,
+        )
+    if media_type in {"text/html", "application/xhtml+xml", ""}:
+        parser = _ReadableHtmlParser()
+        parser.feed(content.decode("utf-8", errors="replace"))
+        parser.close()
+        title, text = parser.result()
+        if not text:
+            raise ValueError("RESOURCE_NO_TEXT")
+        return title, text, None
+    raise ValueError("RESOURCE_TYPE_UNSUPPORTED")
 
 
 class HttpToolConfigError(ValueError):
@@ -605,12 +703,15 @@ class FunctionToolRegistry:
         exa_client_factory: Callable[[str], Any] | None = None,
     ) -> None:
         self._web_search = ExaWebSearchExecutor(exa_api_key, exa_client_factory)
+        self._fetch_web_resource = FetchWebResourceExecutor()
 
     async def execute(
         self, name: str, arguments: Mapping[str, Any], context: ToolExecutionContext
     ) -> ToolResult:
         if name == "web_search":
             return await self._web_search.execute(arguments, context)
+        if name == "fetch_web_resource":
+            return await self._fetch_web_resource.execute(arguments, context)
         if name == "echo":
             return ToolResult(ok=True, output={"value": arguments.get("value")})
         if name == "current_datetime":
@@ -634,6 +735,176 @@ class FunctionToolRegistry:
             error_code="TOOL_NOT_FOUND",
             error_message="The requested function tool is unavailable.",
         )
+
+
+class FetchWebResourceExecutor:
+    """Read a bounded public web resource without credentials or auto redirects."""
+
+    async def execute(
+        self, arguments: Mapping[str, Any], context: ToolExecutionContext
+    ) -> ToolResult:
+        url = arguments.get("url")
+        excerpt_chars = arguments.get(
+            "excerpt_chars", FETCH_RESOURCE_DEFAULT_EXCERPT_CHARS
+        )
+        if (
+            not isinstance(url, str)
+            or not 1 <= len(url) <= 4096
+            or isinstance(excerpt_chars, bool)
+            or not isinstance(excerpt_chars, int)
+            or not 100 <= excerpt_chars <= FETCH_RESOURCE_DEFAULT_EXCERPT_CHARS
+        ):
+            return ToolResult(
+                ok=False,
+                error_code="RESOURCE_INVALID_ARGUMENT",
+                error_message="The web resource request is invalid.",
+            )
+        deadline = monotonic() + min(context.timeout_seconds, 20.0)
+        current_url = url.strip()
+        raw_body = b""
+        response_headers: httpx.Headers | None = None
+        try:
+            for redirect_count in range(4):
+                parsed = urlparse(current_url)
+                if (
+                    parsed.scheme not in {"http", "https"}
+                    or not parsed.hostname
+                    or parsed.username is not None
+                    or parsed.password is not None
+                ):
+                    raise HttpToolConfigError(
+                        "Only public HTTP and HTTPS URLs are supported.",
+                        code="RESOURCE_URL_INVALID",
+                    )
+                addresses = await _assert_public_destination(current_url)
+                transport = httpx.AsyncHTTPTransport(trust_env=False)
+                pin_transport_to_addresses(transport, parsed.hostname, addresses)
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                async with httpx.AsyncClient(
+                    follow_redirects=False,
+                    timeout=min(remaining, 20.0),
+                    trust_env=False,
+                    transport=transport,
+                ) as client:
+                    async with client.stream(
+                        "GET",
+                        current_url,
+                        headers={
+                            "Accept": (
+                                "text/html,text/plain,text/markdown,application/pdf"
+                            )
+                        },
+                    ) as response:
+                        if response.status_code in {301, 302, 303, 307, 308}:
+                            location = response.headers.get("location")
+                            if not location or redirect_count >= 3:
+                                raise HttpToolConfigError(
+                                    "The web resource exceeded the redirect limit.",
+                                    code="RESOURCE_REDIRECT_LIMIT",
+                                )
+                            current_url = urljoin(current_url, location)
+                            continue
+                        if not 200 <= response.status_code < 300:
+                            raise HttpToolConfigError(
+                                "The web resource returned an error.",
+                                code="RESOURCE_FETCH_FAILED",
+                            )
+                        chunks: list[bytes] = []
+                        size = 0
+                        async for chunk in response.aiter_bytes():
+                            size += len(chunk)
+                            if size > FETCH_RESOURCE_MAX_BYTES:
+                                raise HttpToolConfigError(
+                                    "The web resource exceeds the size limit.",
+                                    code="RESOURCE_TOO_LARGE",
+                                )
+                            chunks.append(chunk)
+                        raw_body = b"".join(chunks)
+                        response_headers = response.headers
+                break
+            else:
+                raise HttpToolConfigError(
+                    "The web resource exceeded the redirect limit.",
+                    code="RESOURCE_REDIRECT_LIMIT",
+                )
+            if response_headers is None:
+                raise HttpToolConfigError(
+                    "The web resource could not be fetched.",
+                    code="RESOURCE_FETCH_FAILED",
+                )
+            content_type = response_headers.get("content-type", "")
+            title, parsed_text, page_count = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _extract_readable_resource, raw_body, content_type, current_url
+                ),
+                timeout=min(10.0, max(0.1, deadline - monotonic())),
+            )
+            if not parsed_text:
+                raise ValueError("RESOURCE_NO_TEXT")
+            extracted = parsed_text[:FETCH_RESOURCE_MAX_CHARS]
+            truncated = (
+                len(parsed_text) > FETCH_RESOURCE_MAX_CHARS
+                or len(extracted) > excerpt_chars
+            )
+            excerpt = extracted[:excerpt_chars]
+            return ToolResult(
+                ok=True,
+                output={
+                    "final_url": current_url,
+                    "title": title,
+                    "fetched_at": datetime.now(UTC).isoformat(),
+                    "content_hash": hashlib.sha256(
+                        extracted.encode("utf-8")
+                    ).hexdigest(),
+                    "content_type": content_type.split(";", 1)[0].strip().lower(),
+                    "text": excerpt,
+                    "extracted_chars": len(extracted),
+                    "truncated": truncated,
+                    "page_count": page_count,
+                },
+            )
+        except HttpToolConfigError as error:
+            return ToolResult(
+                ok=False, error_code=error.code, error_message=error.message
+            )
+        except TimeoutError:
+            return ToolResult(
+                ok=False,
+                error_code="RESOURCE_TIMEOUT",
+                error_message="Reading the web resource timed out.",
+            )
+        except UnicodeDecodeError:
+            return ToolResult(
+                ok=False,
+                error_code="RESOURCE_ENCODING_UNSUPPORTED",
+                error_message="The web resource is not valid UTF-8 text.",
+            )
+        except ValueError as error:
+            code = (
+                str(error)
+                if str(error).startswith("RESOURCE_")
+                else "RESOURCE_PARSE_FAILED"
+            )
+            messages = {
+                "RESOURCE_NO_TEXT": "The web resource contains no extractable text.",
+                "RESOURCE_PAGE_LIMIT": "The PDF exceeds the 50 page limit.",
+                "RESOURCE_TYPE_UNSUPPORTED": "The web resource type is not supported.",
+            }
+            return ToolResult(
+                ok=False,
+                error_code=code,
+                error_message=messages.get(
+                    code, "The web resource could not be parsed."
+                ),
+            )
+        except (httpx.HTTPError, OSError):
+            return ToolResult(
+                ok=False,
+                error_code="RESOURCE_FETCH_FAILED",
+                error_message="The web resource could not be fetched.",
+            )
 
 
 class HttpToolExecutor:

@@ -63,6 +63,7 @@ class ConnectionTestRequest(BaseModel):
 
     model_name: str = Field(min_length=1, max_length=255)
     deployment_name: str | None = Field(default=None, max_length=255)
+    probe_planning: bool = False
 
 
 class DiscoveredModel(BaseModel):

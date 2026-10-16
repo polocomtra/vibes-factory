@@ -1,8 +1,10 @@
 """Pydantic contracts for the Agent control-plane API."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ..models import AgentStatus, MemoryType
@@ -74,6 +76,8 @@ class ModelConfiguration(BaseModel):
 class RuntimeConfiguration(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    execution_strategy: Literal["REACTIVE", "PLAN_AND_EXECUTE"] = "REACTIVE"
+
     max_steps: int = Field(default=20, ge=1, le=1000)
     max_model_calls: int = Field(default=10, ge=1, le=1000)
     max_tool_calls: int = Field(default=10, ge=0, le=1000)
@@ -81,6 +85,72 @@ class RuntimeConfiguration(BaseModel):
     max_agent_depth: int = Field(default=3, ge=0, le=20)
     max_total_tokens: int = Field(default=100_000, ge=1, le=10_000_000)
     timeout_seconds: int = Field(default=120, ge=1, le=3600)
+    planning: "PlanningConfiguration" = Field(
+        default_factory=lambda: PlanningConfiguration()
+    )
+    working_state: "WorkingStateConfiguration" = Field(
+        default_factory=lambda: WorkingStateConfiguration()
+    )
+
+    @model_validator(mode="after")
+    def validate_strategy(self) -> "RuntimeConfiguration":
+        if self.execution_strategy == "PLAN_AND_EXECUTE" and self.max_model_calls < 3:
+            raise ValueError("PLAN_AND_EXECUTE requires at least three model calls")
+        return self
+
+
+class PlanningConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_plan_tasks: int = Field(default=12, ge=1, le=100)
+    max_tool_calls_per_task: int = Field(default=6, ge=1, le=40)
+    max_replans: int = Field(default=3, ge=0, le=20)
+    progress_assessment_interval: int = Field(default=1, ge=1, le=20)
+    allow_replan: bool = True
+    structured_output_max_attempts: int = Field(default=2, ge=1, le=2)
+    context_token_limit: int = Field(default=16_000, ge=256, le=200_000)
+    completion_policy: Literal["STRICT", "PARTIAL"] = "PARTIAL"
+
+
+class WorkingStateConfiguration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_name: str = Field(default="default", min_length=1, max_length=128)
+    schema_version: int = Field(default=1, ge=1, le=1000)
+    json_schema: dict[str, object] = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    )
+    initial_data: dict[str, object] = Field(default_factory=dict)
+    context_fields: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_local_schema(self) -> "WorkingStateConfiguration":
+        def reject_remote_refs(value: object) -> None:
+            if isinstance(value, dict):
+                ref = value.get("$ref")
+                if isinstance(ref, str) and not ref.startswith("#"):
+                    raise ValueError(
+                        "working_state schema cannot use remote references"
+                    )
+                for child in value.values():
+                    reject_remote_refs(child)
+            elif isinstance(value, list):
+                for child in value:
+                    reject_remote_refs(child)
+
+        reject_remote_refs(self.json_schema)
+        Draft202012Validator.check_schema(self.json_schema)
+        Draft202012Validator(self.json_schema).validate(self.initial_data)
+        properties = self.json_schema.get("properties", {})
+        if not isinstance(properties, dict) or any(
+            field not in properties for field in self.context_fields
+        ):
+            raise ValueError("working_state context_fields must name schema properties")
+        return self
 
 
 class MemoryRetrieveConfiguration(BaseModel):
@@ -131,6 +201,8 @@ class AgentCreateRequest(BaseModel):
     model: ModelConfiguration | None = None
     runtime_config: RuntimeConfiguration = Field(default_factory=RuntimeConfiguration)
     memory_config: MemoryConfiguration = Field(default_factory=MemoryConfiguration)
+    template_id: Literal["deep_research"] | None = None
+    template_version: int | None = Field(default=None, ge=1, le=1000)
 
     @field_validator("name", "instructions")
     @classmethod
@@ -147,6 +219,14 @@ class AgentCreateRequest(BaseModel):
             return None
         value = value.strip()
         return value or None
+
+    @model_validator(mode="after")
+    def validate_template_version(self) -> "AgentCreateRequest":
+        if self.template_id is None and self.template_version is not None:
+            raise ValueError("template_version requires template_id")
+        if self.template_id is not None and self.template_version is None:
+            self.template_version = 1
+        return self
 
 
 class AgentUpdateRequest(BaseModel):
@@ -225,6 +305,8 @@ class AgentDraftResponse(BaseModel):
     runtime_config: RuntimeConfiguration
     memory_config: MemoryConfiguration
     guardrails_enabled: bool = True
+    template_id: str | None = None
+    template_version: int | None = None
     updated_at: datetime
 
 

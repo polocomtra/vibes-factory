@@ -45,8 +45,54 @@ class RunResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
+    execution_mode: str = "sync"
+    result_status: str | None = None
+    completion_reason: str | None = None
+    cancellation_requested_at: datetime | None = None
 
 
 class RunCollectionResponse(BaseModel):
     data: list[RunResponse]
     pagination: dict[str, str | bool | None]
+
+
+class RunPlanTaskResponse(BaseModel):
+    id: UUID
+    task_key: str
+    description: str
+    sequence: int
+    dependencies: list[str]
+    status: str
+    result: dict[str, Any] | None
+    attempt_count: int
+
+
+class RunPlanResponse(BaseModel):
+    id: UUID
+    objective: str
+    revision: int
+    status: str
+    replan_count: int
+    tasks: list[RunPlanTaskResponse]
+
+
+class RunStateResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    schema_name: str
+    schema_version: int
+    state_schema: dict[str, Any] = Field(alias="schema")
+    data: dict[str, Any]
+    revision: int
+
+
+class RunEventResponse(BaseModel):
+    sequence: int
+    event_type: str
+    payload: dict[str, Any]
+    created_at: datetime
+
+
+class RunEventCollectionResponse(BaseModel):
+    data: list[RunEventResponse]
+    next_cursor: int | None

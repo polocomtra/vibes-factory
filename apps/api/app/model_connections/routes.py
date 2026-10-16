@@ -2,7 +2,7 @@
 
 import base64
 import binascii
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
@@ -285,12 +285,22 @@ async def test_saved_model_connection(
             deployment_name=payload.deployment_name,
             base_url=base_url if connection.provider == "azure_openai" else None,
             api_key=SecretStr(api_key),
+            probe_planning=payload.probe_planning,
         )
         result = await test_connection(
             request,
             ModelProviderRegistry.from_settings(get_settings()),
             pinned_addresses=pinned_addresses,
         )
+        if result.status == "SUCCESS" and result.capabilities is not None:
+            profiles = dict(connection.capability_profiles or {})
+            profiles[payload.model_name] = {
+                **result.capabilities,
+                "probed_at": datetime.now(UTC).isoformat(),
+                "probe_version": 1,
+            }
+            connection.capability_profiles = profiles
+            await session.commit()
         return result.model_dump(mode="json")
     except ModelConnectionError as exc:
         raise _error(exc) from exc

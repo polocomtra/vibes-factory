@@ -54,6 +54,7 @@ from .contracts import (
 from .errors import RuntimeExecutionError
 from .lifecycle import RunLifecycle
 from .model_access import ModelAccessResolver
+from .plan_execute import PlanAndExecute
 from .retrieval import RuntimeRetrieval
 from .run_execution import RunExecution
 from .state import RunState
@@ -92,6 +93,7 @@ class AgentRuntime:
         self.accounting = RuntimeAccounting(session)
         self.lifecycle = RunLifecycle(session, self.accounting)
         self.run_execution = RunExecution(self)
+        self.plan_execute = PlanAndExecute(self)
         self.stream_execution = StreamExecution(self)
         self.tool_executor = ToolBatchExecutor(self)
         self.guardrail_engine = GuardrailEngine()
@@ -337,6 +339,10 @@ class AgentRuntime:
         *,
         execution_context: ExecutionContext | None = None,
     ) -> AgentRunResult:
+        if request.agent_version.execution_strategy == "PLAN_AND_EXECUTE":
+            return await self.plan_execute.execute(
+                request, execution_context=execution_context
+            )
         return await self.run_execution.execute(
             request, execution_context=execution_context
         )
@@ -347,6 +353,12 @@ class AgentRuntime:
         *,
         execution_context: ExecutionContext | None = None,
     ) -> AsyncIterator[RuntimeStreamEvent]:
+        if request.agent_version.execution_strategy == "PLAN_AND_EXECUTE":
+            raise RuntimeExecutionError(
+                "PLANNED_STREAM_UNAVAILABLE",
+                "Plan & Execute does not support request-bound streaming yet.",
+                status_code=409,
+            )
         async for event in self.stream_execution.execute(
             request, execution_context=execution_context
         ):
@@ -370,6 +382,47 @@ class AgentRuntime:
                 "The session does not belong to this agent.",
                 status_code=404,
             )
+        if request.agent_version.execution_strategy == "PLAN_AND_EXECUTE":
+            from ..agents.catalog import find_model
+
+            definition = find_model(
+                request.agent_version.model_provider,
+                request.agent_version.model_name,
+            )
+            saved_capabilities = request.agent_version.model_options.get("capabilities")
+            structured_output = (
+                saved_capabilities.get("structured_output")
+                if isinstance(saved_capabilities, dict)
+                else (
+                    definition.capabilities.get("structured_output")
+                    if definition is not None
+                    else None
+                )
+            )
+            if structured_output is not True:
+                raise RuntimeExecutionError(
+                    "PLANNING_MODEL_CAPABILITY_UNKNOWN",
+                    "Plan & Execute requires confirmed strict structured-output "
+                    "support.",
+                    status_code=422,
+                )
+            if request.agent_version.tools:
+                tool_calling = (
+                    saved_capabilities.get("tool_calling")
+                    if isinstance(saved_capabilities, dict)
+                    else (
+                        definition.capabilities.get("tool_calling")
+                        if definition is not None
+                        else None
+                    )
+                )
+                if tool_calling is not True:
+                    raise RuntimeExecutionError(
+                        "PLANNING_TOOL_CAPABILITY_UNKNOWN",
+                        "Plan & Execute with tools requires confirmed "
+                        "tool-calling support.",
+                        status_code=422,
+                    )
         if (request.session.user_id is None) == (
             request.session.public_api_key_id is None
         ):

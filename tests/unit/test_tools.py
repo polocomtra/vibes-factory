@@ -14,8 +14,10 @@ from apps.api.app.tools.catalog import (
 from apps.api.app.tools.contracts import ToolExecutionContext, ToolResult
 from apps.api.app.tools.executors import (
     ExaWebSearchExecutor,
+    FetchWebResourceExecutor,
     HttpToolConfigError,
     HttpToolExecutor,
+    _extract_readable_resource,
     canonical_http_config,
 )
 from apps.api.app.tools.naming import model_tool_name
@@ -138,6 +140,49 @@ def test_web_search_catalog_contract_is_bounded() -> None:
         validate({"query": "x", "num_results": 11}, WEB_SEARCH_INPUT)
     validate({"query": "x", "results": []}, WEB_SEARCH_OUTPUT)
     validate({"query": "x", "results": [], "request_id": None}, WEB_SEARCH_OUTPUT)
+
+
+def test_fetch_web_resource_catalog_is_bounded() -> None:
+    definition = next(
+        item for item in builtin_definitions() if item["name"] == "fetch_web_resource"
+    )
+    input_schema = definition["input_schema"]
+    assert input_schema["properties"]["excerpt_chars"]["maximum"] == 12_000
+    assert definition["config"] == {"function_name": "fetch_web_resource"}
+
+
+def test_fetch_html_extracts_main_and_excludes_active_content() -> None:
+    title, text, page_count = _extract_readable_resource(
+        b"<html><head><title>Research</title><script>bad()</script></head>"
+        b"<body><nav>menu</nav><main><h1>Finding</h1><p>Useful evidence</p>"
+        b"</main><footer>boilerplate</footer></body></html>",
+        "text/html; charset=utf-8",
+        "https://example.com/article",
+    )
+    assert title == "Research"
+    assert "Useful evidence" in text
+    assert "menu" not in text
+    assert "bad()" not in text
+    assert page_count is None
+
+
+def test_fetch_markdown_preserves_readable_text() -> None:
+    _, text, _ = _extract_readable_resource(
+        b"## Source\n\nReadable text",
+        "text/markdown; charset=utf-8",
+        "https://example.com/source.md",
+    )
+    assert text == "## Source\n\nReadable text"
+
+
+@pytest.mark.asyncio
+async def test_fetch_rejects_non_http_url_without_network() -> None:
+    result = await FetchWebResourceExecutor().execute(
+        {"url": "file:///etc/passwd"},
+        ToolExecutionContext(workspace_id=uuid4()),
+    )
+    assert result.ok is False
+    assert result.error_code == "RESOURCE_URL_INVALID"
 
 
 def test_builtin_catalog_exposes_top_level_input_and_output_fields() -> None:

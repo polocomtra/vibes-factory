@@ -23,6 +23,7 @@ export type ModelConfiguration = {
 };
 
 export type RuntimeConfiguration = {
+  execution_strategy: "REACTIVE" | "PLAN_AND_EXECUTE";
   max_steps: number;
   max_model_calls: number;
   max_tool_calls: number;
@@ -30,6 +31,23 @@ export type RuntimeConfiguration = {
   max_agent_depth: number;
   max_total_tokens: number;
   timeout_seconds: number;
+  planning: {
+    max_plan_tasks: number;
+    max_tool_calls_per_task: number;
+    max_replans: number;
+    progress_assessment_interval: number;
+    allow_replan: boolean;
+    structured_output_max_attempts: number;
+    context_token_limit: number;
+    completion_policy: "STRICT" | "PARTIAL";
+  };
+  working_state: {
+    schema_name: string;
+    schema_version: number;
+    json_schema: Record<string, unknown>;
+    initial_data: Record<string, unknown>;
+    context_fields: string[];
+  };
 };
 
 export type MemoryConfiguration = {
@@ -59,7 +77,20 @@ export type AgentDraft = {
   runtime_config: RuntimeConfiguration;
   memory_config: MemoryConfiguration;
   guardrails_enabled: boolean;
+  template_id?: string | null;
+  template_version?: number | null;
   updated_at: string;
+};
+
+export type AgentTemplate = {
+  id: string;
+  version: number;
+  name: string;
+  description: string;
+  instructions: string;
+  runtime_config: RuntimeConfiguration;
+  tools: string[];
+  capabilities: string[];
 };
 
 export type AgentVersionSummary = {
@@ -93,6 +124,12 @@ export async function fetchModels(): Promise<ModelDefinition[]> {
   const response = await apiFetch("/v1/models");
   if (!response.ok) throw new Error(await readApiError(response));
   return (await response.json() as { data: ModelDefinition[] }).data;
+}
+
+export async function fetchAgentTemplates(): Promise<AgentTemplate[]> {
+  const response = await apiFetch("/v1/agent-templates");
+  if (!response.ok) throw new Error(await readApiError(response));
+  return (await response.json() as { data: AgentTemplate[] }).data;
 }
 
 export async function fetchAgents(workspaceId: string, search = "", status = ""): Promise<Agent[]> {

@@ -16,7 +16,11 @@ from ..db import get_session
 from ..model_providers.registry import ModelProviderRegistry
 from ..models import (
     Agent,
+    AgentPlan,
+    AgentPlanTask,
+    AgentRunState,
     Run,
+    RunEvent,
     User,
 )
 from ..runtime.errors import RuntimeExecutionError
@@ -32,7 +36,12 @@ from .schemas import (
     RunCollectionResponse,
     RunCreateRequest,
     RunErrorResponse,
+    RunEventCollectionResponse,
+    RunEventResponse,
+    RunPlanResponse,
+    RunPlanTaskResponse,
     RunResponse,
+    RunStateResponse,
 )
 
 router = APIRouter(prefix="/v1", tags=["runs"])
@@ -105,6 +114,20 @@ def _run_response(run: Run) -> RunResponse:
         started_at=run.started_at,
         completed_at=run.completed_at,
         created_at=run.created_at,
+        execution_mode=run.execution_mode,
+        result_status=(
+            str(run.metadata_json.get("result_status"))
+            if isinstance(run.metadata_json, dict)
+            and run.metadata_json.get("result_status") is not None
+            else None
+        ),
+        completion_reason=(
+            str(run.metadata_json.get("completion_reason"))
+            if isinstance(run.metadata_json, dict)
+            and run.metadata_json.get("completion_reason") is not None
+            else None
+        ),
+        cancellation_requested_at=run.cancellation_requested_at,
     )
 
 
@@ -249,3 +272,125 @@ async def get_run(
         raise _not_found("The run was not found.")
     await require_workspace_access(session, user.id, run.workspace_id)
     return _run_response(run)
+
+
+@router.get("/runs/{run_id}/plan", response_model=RunPlanResponse)
+async def get_run_plan(
+    run_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunPlanResponse:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, run.workspace_id)
+    plan = await session.scalar(
+        select(AgentPlan).where(
+            AgentPlan.run_id == run.id,
+            AgentPlan.workspace_id == run.workspace_id,
+        )
+    )
+    if plan is None:
+        raise _not_found("The run does not have a plan.")
+    tasks = list(
+        (
+            await session.scalars(
+                select(AgentPlanTask)
+                .where(
+                    AgentPlanTask.plan_id == plan.id,
+                    AgentPlanTask.workspace_id == run.workspace_id,
+                )
+                .order_by(AgentPlanTask.sequence)
+                .limit(100)
+            )
+        ).all()
+    )
+    return RunPlanResponse(
+        id=plan.id,
+        objective=plan.objective,
+        revision=plan.revision,
+        status=plan.status.value,
+        replan_count=plan.replan_count,
+        tasks=[
+            RunPlanTaskResponse(
+                id=task.id,
+                task_key=task.task_key,
+                description=task.description,
+                sequence=task.sequence,
+                dependencies=task.dependencies,
+                status=task.status.value,
+                result=task.result,
+                attempt_count=task.attempt_count,
+            )
+            for task in tasks
+        ],
+    )
+
+
+@router.get("/runs/{run_id}/state", response_model=RunStateResponse)
+async def get_run_state(
+    run_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunStateResponse:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, run.workspace_id)
+    state = await session.scalar(
+        select(AgentRunState).where(
+            AgentRunState.run_id == run.id,
+            AgentRunState.workspace_id == run.workspace_id,
+        )
+    )
+    if state is None:
+        raise _not_found("The run does not have working state.")
+    return RunStateResponse(
+        schema_name=state.schema_name,
+        schema_version=state.schema_version,
+        schema=state.schema_json,
+        data=state.data,
+        revision=state.revision,
+    )
+
+
+@router.get("/runs/{run_id}/events", response_model=RunEventCollectionResponse)
+async def list_run_events(
+    run_id: UUID,
+    after_sequence: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunEventCollectionResponse:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, run.workspace_id)
+    events = list(
+        (
+            await session.scalars(
+                select(RunEvent)
+                .where(
+                    RunEvent.run_id == run.id,
+                    RunEvent.workspace_id == run.workspace_id,
+                    RunEvent.sequence > after_sequence,
+                )
+                .order_by(RunEvent.sequence)
+                .limit(limit + 1)
+            )
+        ).all()
+    )
+    has_more = len(events) > limit
+    events = events[:limit]
+    return RunEventCollectionResponse(
+        data=[
+            RunEventResponse(
+                sequence=event.sequence,
+                event_type=event.event_type,
+                payload=event.payload,
+                created_at=event.created_at,
+            )
+            for event in events
+        ],
+        next_cursor=events[-1].sequence if has_more and events else None,
+    )

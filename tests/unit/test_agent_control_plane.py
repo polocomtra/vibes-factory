@@ -14,6 +14,7 @@ from apps.api.app.agents.schemas import (
     ModelConfiguration,
 )
 from apps.api.app.agents.service import build_snapshot, validate_draft
+from apps.api.app.agents.templates import materialize_template
 from apps.api.app.models import AgentDraft
 
 
@@ -87,6 +88,29 @@ def test_snapshot_contains_future_binding_slots() -> None:
     assert snapshot["knowledge_bases"] == []
     assert snapshot["guardrails"] == []
     assert snapshot["child_agents"] == []
+    assert snapshot["template"] is None
+
+
+def test_deep_research_template_materializes_versioned_planning_defaults() -> None:
+    template = materialize_template("deep_research", 1)
+    assert template["runtime_config"]["execution_strategy"] == "PLAN_AND_EXECUTE"
+    assert template["runtime_config"]["max_model_calls"] == 24
+    assert template["runtime_config"]["max_tool_calls"] == 12
+    assert template["runtime_config"]["planning"]["max_plan_tasks"] == 8
+    assert template["runtime_config"]["planning"]["max_tool_calls_per_task"] == 6
+    assert template["tools"] == ["web_search", "fetch_web_resource"]
+    with pytest.raises(ValueError):
+        materialize_template("deep_research", 2)
+
+
+def test_agent_creation_request_resolves_template_version_default() -> None:
+    payload = AgentCreateRequest(
+        name="Research template",
+        slug="research-template",
+        instructions="Will be replaced by the selected template.",
+        template_id="deep_research",
+    )
+    assert payload.template_version == 1
 
 
 def test_snapshot_pins_model_connection_metadata_without_credentials() -> None:

@@ -173,6 +173,9 @@ class SpanType(StrEnum):
     MEMORY_RETRIEVAL = "MEMORY_RETRIEVAL"
     GUARDRAIL = "GUARDRAIL"
     APPROVAL = "APPROVAL"
+    PLAN = "PLAN"
+    TASK = "TASK"
+    PROGRESS_ASSESSMENT = "PROGRESS_ASSESSMENT"
 
 
 class MemoryType(StrEnum):
@@ -203,6 +206,7 @@ class JobType(StrEnum):
     WORKFLOW_CHAT_TURN = "WORKFLOW_CHAT_TURN"
     APPROVAL_RESUME = "APPROVAL_RESUME"
     EVALUATION_BATCH = "EVALUATION_BATCH"
+    AGENT_EXECUTION = "AGENT_EXECUTION"
 
 
 class EvaluationStatus(StrEnum):
@@ -438,6 +442,8 @@ class AgentDraft(Base):
     guardrails_enabled: Mapped[bool] = mapped_column(
         default=True, server_default="true", nullable=False
     )
+    template_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     updated_by: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -1403,6 +1409,9 @@ class ModelConnection(Base):
         PostgreSQLUUID(as_uuid=True), nullable=False, unique=True
     )
     base_url: Mapped[str | None] = mapped_column(String(2048))
+    capability_profiles: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, server_default="{}", nullable=False
+    )
     created_by: Mapped[UUID] = mapped_column(
         PostgreSQLUUID(as_uuid=True), ForeignKey("users.id"), nullable=False
     )
@@ -2131,6 +2140,23 @@ class Run(Base):
     metadata_json: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, default=dict, server_default="{}", nullable=False
     )
+    execution_mode: Mapped[str] = mapped_column(
+        String(16), default="sync", server_default="sync", nullable=False
+    )
+    cancellation_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deadline_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    execution_epoch: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    next_event_sequence: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -2149,10 +2175,254 @@ class Run(Base):
         Index("ix_runs_trace_id", "trace_id"),
         Index("ix_runs_deployment_created", "deployment_id", "created_at"),
         UniqueConstraint("public_invocation_id", name="uq_runs_public_invocation"),
+        UniqueConstraint(
+            "session_id", "idempotency_key_hash", name="uq_runs_session_idempotency"
+        ),
         Index("ix_runs_parent_run_id", "parent_run_id"),
         Index("ix_runs_root_run_id", "root_run_id"),
         Index("ix_runs_workflow_run_id", "workflow_run_id"),
         Index("ix_runs_status_created", "status", "created_at"),
+    )
+
+
+class PlanStatus(StrEnum):
+    ACTIVE = "ACTIVE"
+    COMPLETED = "COMPLETED"
+    PARTIAL = "PARTIAL"
+    FAILED = "FAILED"
+
+
+class PlanTaskStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    SKIPPED = "SKIPPED"
+
+
+class AgentRunState(Base):
+    __tablename__ = "agent_run_states"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    schema_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    checkpoint: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, default=dict, nullable=False
+    )
+    checkpoint_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentPlan(Base):
+    __tablename__ = "agent_plans"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    objective: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[PlanStatus] = mapped_column(
+        Enum(PlanStatus, native_enum=False, length=32),
+        default=PlanStatus.ACTIVE,
+        nullable=False,
+    )
+    replan_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class AgentPlanTask(Base):
+    __tablename__ = "agent_plan_tasks"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    plan_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_plans.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    dependencies: Mapped[list[str]] = mapped_column(JSONB, default=list, nullable=False)
+    status: Mapped[PlanTaskStatus] = mapped_column(
+        Enum(PlanTaskStatus, native_enum=False, length=32),
+        default=PlanTaskStatus.PENDING,
+        nullable=False,
+    )
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    retry_of_task_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_plan_tasks.id", ondelete="SET NULL"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("plan_id", "task_key", name="uq_agent_plan_task_key"),
+        UniqueConstraint("plan_id", "sequence", name="uq_agent_plan_task_sequence"),
+        Index("ix_agent_plan_tasks_ready", "plan_id", "status", "sequence"),
+    )
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, nullable=False)
+    deduplication_key: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_run_events_sequence"),
+        UniqueConstraint("run_id", "deduplication_key", name="uq_run_events_dedup"),
+        Index("ix_run_events_workspace_run", "workspace_id", "run_id", "sequence"),
+    )
+
+
+class Artifact(Base):
+    __tablename__ = "artifacts"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    run_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    task_id: Mapped[UUID | None] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("agent_plan_tasks.id", ondelete="SET NULL"),
+    )
+    artifact_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(512), nullable=False)
+    inline_data: Mapped[str | None] = mapped_column(Text)
+    blob_key: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    producer_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, default=dict, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "producer_key", name="uq_artifacts_producer"),
+        Index("ix_artifacts_workspace_run", "workspace_id", "run_id", "created_at"),
+        CheckConstraint(
+            "(inline_data IS NULL) != (blob_key IS NULL)",
+            name="ck_artifacts_content_location",
+        ),
+    )
+
+
+class ArtifactReference(Base):
+    __tablename__ = "artifact_references"
+
+    id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    workspace_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_artifact_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_artifact_id: Mapped[UUID] = mapped_column(
+        PostgreSQLUUID(as_uuid=True),
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    relation: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "source_artifact_id",
+            "target_artifact_id",
+            "relation",
+            name="uq_artifact_reference",
+        ),
     )
 
 

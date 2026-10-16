@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openai import AsyncOpenAI
+from pydantic import SecretStr
 
 from apps.api.app.model_providers.contracts import (
     ModelMessage,
@@ -21,7 +22,13 @@ from apps.api.app.model_providers.providers.openai import (
     OpenAIProvider,
 )
 from apps.api.app.model_providers.registry import ModelProviderRegistry
-from apps.api.app.model_providers.service import CONNECTION_TEST_MAX_OUTPUT_TOKENS
+from apps.api.app.model_providers.schemas import ModelConnectionTestRequest
+from apps.api.app.model_providers.service import (
+    CONNECTION_TEST_MAX_OUTPUT_TOKENS,
+)
+from apps.api.app.model_providers.service import (
+    test_connection as run_connection_test,
+)
 
 
 def request(provider: str, model: str = "custom-model") -> ModelRequest:
@@ -31,6 +38,46 @@ def request(provider: str, model: str = "custom-model") -> ModelRequest:
         messages=(ModelMessage(role="user", content="hello"),),
         max_output_tokens=8,
     )
+
+
+@pytest.mark.asyncio
+async def test_connection_probe_confirms_strict_output_and_tool_calling() -> None:
+    def response_for(model_request: ModelRequest) -> ModelResponse:
+        if model_request.response_schema:
+            return ModelResponse(content='{"supported":true}')
+        if model_request.tools:
+            return ModelResponse(
+                content="",
+                tool_calls=(
+                    ModelToolCall(name="capability_probe", arguments={"ok": True}),
+                ),
+            )
+        return ModelResponse(content="OK")
+
+    provider = FakeModelProvider(response_for)
+
+    class RegistryStub:
+        @staticmethod
+        def validate_request(_request: ModelRequest) -> None:
+            return None
+
+        @staticmethod
+        def resolve(*_args: object, **_kwargs: object) -> FakeModelProvider:
+            return provider
+
+    result = await run_connection_test(
+        ModelConnectionTestRequest(
+            provider="openrouter",
+            model_name="vendor/model",
+            api_key=SecretStr("temporary"),
+            probe_planning=True,
+        ),
+        RegistryStub(),  # type: ignore[arg-type]
+    )
+
+    assert result.status == "SUCCESS"
+    assert result.capabilities == {"structured_output": True, "tool_calling": True}
+    assert len(provider.requests) == 3
 
 
 class FakeOpenAIClient:
@@ -87,6 +134,38 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
     assert kwargs["input"] == "hello"
     assert "temperature" not in kwargs
     client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_azure_sends_required_defaulted_fields_for_strict_outputs() -> None:
+    response = SimpleNamespace(output_text="{}", output=[], status="completed")
+    client = FakeOpenAIClient(response)
+    provider = AzureOpenAIProvider(
+        base_url="https://resource.services.ai.azure.com/openai/v1",
+        client_factory=cast(Callable[..., AsyncOpenAI], lambda **kwargs: client),
+    )
+    from apps.api.app.runtime.planning import PlanProposal
+
+    schema = PlanProposal.model_json_schema()
+    await provider.generate(
+        request("azure_openai", "gpt-6-luna").model_copy(
+            update={"response_schema": schema}
+        ),
+        "temporary-key",
+    )
+
+    format_config = client.responses.create.await_args.kwargs["text"]["format"]
+    schema = format_config["schema"]
+    definitions = schema["$defs"]
+    assert isinstance(definitions, dict)
+    proposed_task = definitions["ProposedTask"]
+    assert isinstance(proposed_task, dict)
+    properties = proposed_task["properties"]
+    assert isinstance(properties, dict)
+    assert proposed_task["required"] == list(properties)
+    assert proposed_task["additionalProperties"] is False
+    assert "default" not in str(schema)
+    assert "title" not in str(schema)
 
 
 @pytest.mark.asyncio

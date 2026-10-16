@@ -84,8 +84,8 @@ export async function discoverModels(id: string): Promise<DiscoveredModel[]> {
 
 export async function testSavedModelConnection(
   id: string,
-  payload: { model_name: string; deployment_name?: string },
-): Promise<{ status: "SUCCESS" | "FAILED"; provider: string; model_name: string; latency_ms?: number; error?: { code: string; message: string } | null }> {
+  payload: { model_name: string; deployment_name?: string; probe_planning?: boolean },
+): Promise<{ status: "SUCCESS" | "FAILED"; provider: string; model_name: string; latency_ms?: number; capabilities?: Record<string, boolean> | null; error?: { code: string; message: string } | null }> {
   const response = await apiFetch(`/v1/model-connections/${id}:test`, {
     method: "POST", body: JSON.stringify(payload),
   });

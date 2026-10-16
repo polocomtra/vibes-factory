@@ -32,6 +32,7 @@ from ..models import (
     Tool,
     ToolVersion,
 )
+from ..tools.catalog import ensure_builtin_tools
 from ..tools.naming import model_tool_name
 from .catalog import find_model, get_default_model
 from .schemas import (
@@ -43,6 +44,7 @@ from .schemas import (
     ModelConfiguration,
     RuntimeConfiguration,
 )
+from .templates import materialize_template
 
 
 class AgentServiceError(Exception):
@@ -60,7 +62,11 @@ class AgentServiceError(Exception):
         self.details = details or {}
 
 
-def validate_draft(draft: AgentDraft) -> list[DraftValidationIssue]:
+def validate_draft(
+    draft: AgentDraft,
+    *,
+    capability_profile: dict[str, Any] | None = None,
+) -> list[DraftValidationIssue]:
     issues: list[DraftValidationIssue] = []
     if (
         not draft.model_config.get("connection_id")
@@ -74,7 +80,7 @@ def validate_draft(draft: AgentDraft) -> list[DraftValidationIssue]:
             )
         )
     try:
-        RuntimeConfiguration.model_validate(draft.runtime_config)
+        runtime_config = RuntimeConfiguration.model_validate(draft.runtime_config)
     except ValueError as exc:
         issues.append(
             DraftValidationIssue(
@@ -83,6 +89,29 @@ def validate_draft(draft: AgentDraft) -> list[DraftValidationIssue]:
                 message=str(exc),
             )
         )
+    else:
+        if runtime_config.execution_strategy == "PLAN_AND_EXECUTE":
+            definition = find_model(draft.model_provider, draft.model_name)
+            confirmed_structured_output = (
+                capability_profile.get("structured_output") is True
+                if capability_profile is not None
+                else (
+                    draft.model_config.get("connection_id") is None
+                    and definition is not None
+                    and definition.capabilities.get("structured_output") is True
+                )
+            )
+            if not confirmed_structured_output:
+                issues.append(
+                    DraftValidationIssue(
+                        code="PLANNING_MODEL_CAPABILITY_UNKNOWN",
+                        field="model.name",
+                        message=(
+                            "Plan & Execute requires a model with confirmed strict "
+                            "structured-output support."
+                        ),
+                    )
+                )
     if not draft.instructions.strip():
         issues.append(
             DraftValidationIssue(
@@ -265,6 +294,14 @@ def build_snapshot(
         "knowledge_bases": knowledge_bases or [],
         "guardrails": guardrail_snapshot,
         "child_agents": [],
+        "template": (
+            {
+                "id": draft.template_id,
+                "version": draft.template_version,
+            }
+            if draft.template_id is not None
+            else None
+        ),
     }
 
 
@@ -274,6 +311,19 @@ async def create_agent(
     user_id: UUID,
     payload: AgentCreateRequest,
 ) -> Agent:
+    template: dict[str, Any] | None = None
+    if payload.template_id is not None:
+        try:
+            template = materialize_template(
+                payload.template_id, payload.template_version or 1
+            )
+        except ValueError as error:
+            raise AgentServiceError(
+                "AGENT_TEMPLATE_NOT_FOUND",
+                "The requested agent template version is unavailable.",
+                404,
+                {"template_id": payload.template_id},
+            ) from error
     selected_model = payload.model or ModelConfiguration(
         provider=get_default_model().provider,
         name=get_default_model().name,
@@ -317,17 +367,45 @@ async def create_agent(
     session.add(
         AgentDraft(
             agent_id=agent.id,
-            instructions=payload.instructions,
+            instructions=(
+                str(template["instructions"]) if template else payload.instructions
+            ),
             model_provider=selected_model.provider,
             model_name=selected_model.name,
             model_config=selected_model.model_dump(
                 mode="json", exclude={"provider", "name"}
             ),
-            runtime_config=payload.runtime_config.model_dump(),
+            runtime_config=(
+                template["runtime_config"]
+                if template
+                else payload.runtime_config.model_dump()
+            ),
             memory_config=_memory_config_data(memory_config),
+            template_id=str(template["id"]) if template else None,
+            template_version=int(template["version"]) if template else None,
             updated_by=user_id,
         )
     )
+    if template is not None:
+        await ensure_builtin_tools(session, workspace_id, user_id)
+        template_tool_names = template.get("tools", [])
+        tool_versions = await session.scalars(
+            select(ToolVersion)
+            .join(Tool, Tool.id == ToolVersion.tool_id)
+            .where(
+                Tool.workspace_id == workspace_id,
+                Tool.slug.in_(template_tool_names),
+                ToolVersion.version_number == 1,
+            )
+        )
+        for tool_version in tool_versions.all():
+            session.add(
+                AgentDraftTool(
+                    agent_id=agent.id,
+                    tool_version_id=tool_version.id,
+                    enabled=True,
+                )
+            )
     await session.commit()
     await session.refresh(agent)
     return agent
@@ -431,7 +509,22 @@ async def publish_version(
     if draft is None:
         raise AgentServiceError("RESOURCE_NOT_FOUND", "Agent draft was not found.", 404)
     await validate_model_binding(session, locked_agent.workspace_id, draft)
-    issues = validate_draft(draft)
+    capability_profile: dict[str, Any] | None = None
+    connection_id = draft.model_config.get("connection_id")
+    if connection_id:
+        connection = await session.scalar(
+            select(ModelConnection).where(
+                ModelConnection.id == UUID(str(connection_id)),
+                ModelConnection.workspace_id == locked_agent.workspace_id,
+            )
+        )
+        if connection is not None:
+            stored_profile = (connection.capability_profiles or {}).get(
+                draft.model_name
+            )
+            if isinstance(stored_profile, dict):
+                capability_profile = stored_profile
+    issues = validate_draft(draft, capability_profile=capability_profile)
     if issues:
         raise AgentServiceError(
             "DRAFT_INVALID",
@@ -455,6 +548,26 @@ async def publish_version(
     )
     tool_snapshots: list[dict[str, object]] = []
     binding_rows = bindings.all()
+    planning_config = RuntimeConfiguration.model_validate(draft.runtime_config)
+    if planning_config.execution_strategy == "PLAN_AND_EXECUTE" and binding_rows:
+        definition = find_model(draft.model_provider, draft.model_name)
+        tool_calling_confirmed = (
+            capability_profile.get("tool_calling") is True
+            if capability_profile is not None
+            else (
+                draft.model_config.get("connection_id") is None
+                and definition is not None
+                and definition.capabilities.get("tool_calling") is True
+            )
+        )
+        if not tool_calling_confirmed:
+            raise AgentServiceError(
+                "PLANNING_TOOL_CAPABILITY_UNAVAILABLE",
+                "Plan & Execute requires confirmed tool-calling support for "
+                "attached tools.",
+                422,
+                {"field": "model.name"},
+            )
     for binding, tool_version, tool in binding_rows:
         if (
             tool_version.workspace_id != locked_agent.workspace_id
@@ -660,11 +773,21 @@ async def publish_version(
         ).one()
         connection, credential = connection_row
         definition = find_model(draft.model_provider, draft.model_name)
+        profile_capabilities = (
+            {
+                key: value
+                for key, value in capability_profile.items()
+                if key in {"structured_output", "tool_calling", "streaming"}
+                and isinstance(value, bool)
+            }
+            if capability_profile is not None
+            else (definition.capabilities if definition else {})
+        )
         model_binding = {
             "connection_id": str(connection.id),
             "credential_id": str(credential.id),
             "provider_endpoint": connection.base_url,
-            "capabilities": definition.capabilities if definition else {},
+            "capabilities": profile_capabilities,
         }
     version = AgentVersion(
         workspace_id=locked_agent.workspace_id,

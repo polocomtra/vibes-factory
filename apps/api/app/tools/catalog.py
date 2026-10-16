@@ -9,7 +9,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Tool, ToolRiskLevel, ToolStatus, ToolType, ToolVersion
 
-BUILTIN_SLUGS = frozenset({"calculator", "current_datetime", "echo", "web_search"})
+BUILTIN_SLUGS = frozenset(
+    {"calculator", "current_datetime", "echo", "fetch_web_resource", "web_search"}
+)
 
 WEB_SEARCH_INPUT = {
     "type": "object",
@@ -40,6 +42,42 @@ WEB_SEARCH_OUTPUT = {
         "request_id": {"type": ["string", "null"]},
     },
     "required": ["query", "results"],
+    "additionalProperties": False,
+}
+
+FETCH_WEB_RESOURCE_INPUT = {
+    "type": "object",
+    "properties": {
+        "url": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "excerpt_chars": {"type": "integer", "minimum": 100, "maximum": 12000},
+    },
+    "required": ["url"],
+    "additionalProperties": False,
+}
+FETCH_WEB_RESOURCE_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "final_url": {"type": "string"},
+        "title": {"type": ["string", "null"]},
+        "fetched_at": {"type": "string"},
+        "content_hash": {"type": "string"},
+        "content_type": {"type": "string"},
+        "text": {"type": "string"},
+        "extracted_chars": {"type": "integer"},
+        "truncated": {"type": "boolean"},
+        "page_count": {"type": ["integer", "null"]},
+    },
+    "required": [
+        "final_url",
+        "title",
+        "fetched_at",
+        "content_hash",
+        "content_type",
+        "text",
+        "extracted_chars",
+        "truncated",
+        "page_count",
+    ],
     "additionalProperties": False,
 }
 
@@ -111,6 +149,16 @@ def builtin_definitions() -> tuple[dict[str, Any], ...]:
                 "search_type": "auto",
                 "contents": {"highlights": True},
             },
+        },
+        {
+            "name": "fetch_web_resource",
+            "description": (
+                "Read a public web page, plain text document, Markdown file, or "
+                "text-based PDF and return a bounded, sanitized text excerpt."
+            ),
+            "input_schema": FETCH_WEB_RESOURCE_INPUT,
+            "output_schema": FETCH_WEB_RESOURCE_OUTPUT,
+            "config": {"function_name": "fetch_web_resource"},
         },
     )
 

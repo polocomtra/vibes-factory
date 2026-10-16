@@ -7309,6 +7309,35 @@ th:first-child {
 .agent-flow-section .panel-heading {
     margin-bottom: 4px;
 }
+.template-preview {
+    margin-top: 16px;
+    padding: 16px;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: var(--surface-secondary);
+}
+.template-preview p {
+    margin: 0;
+    color: var(--text-secondary);
+}
+.template-preview small {
+    display: block;
+    margin-top: 12px;
+    color: var(--text-tertiary);
+}
+.template-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+.template-chips span {
+    padding: 4px 8px;
+    border: 1px solid var(--border-default);
+    border-radius: 999px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
 .editor-hint {
     display: flex;
     align-items: flex-start;
@@ -8261,6 +8290,18 @@ th:first-child {
     font-size: 14px;
     font-weight: 600;
 }
+.runtime-grid .runtime-span-two {
+    grid-column: 1 / -1;
+}
+.planned-run-panel { gap: 14px; }
+.planned-run-panel > .panel-copy { margin: -4px 0 0; }
+.planned-task-list { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.planned-task { display: grid; gap: 6px; min-width: 0; padding: 12px; border: 1px solid var(--border-default); border-radius: 9px; background: var(--surface-secondary); }
+.planned-task-status { color: var(--text-tertiary); font-family: var(--font-mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.planned-task.completed .planned-task-status { color: var(--success); }
+.planned-task.failed .planned-task-status { color: var(--status-error); }
+.planned-task strong { color: var(--text-primary); font-size: 13px; line-height: 1.45; overflow-wrap: anywhere; }
+.planned-task small { color: var(--text-secondary); line-height: 1.45; overflow-wrap: anywhere; }
 .runtime-grid input {
     width: 100%;
     min-height: 40px;
@@ -9311,6 +9352,7 @@ input[type="number"] {
 .message-actions {
     display: flex;
     justify-content: flex-end;
+    gap: 6px;
     margin-top: 2px;
 }
 .playground-message-wrap > .inline-tool-activity {

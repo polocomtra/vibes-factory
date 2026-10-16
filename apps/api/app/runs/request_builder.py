@@ -11,7 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..agents.schemas import MemoryConfiguration
+from ..agents.schemas import MemoryConfiguration, RuntimeConfiguration
 from ..models import (
     Agent,
     AgentVersion,
@@ -31,8 +31,10 @@ from ..runtime.contracts import (
     RuntimeGuardrail,
     RuntimeKnowledgeBinding,
     RuntimeMemoryBinding,
+    RuntimePlanningConfig,
     RuntimeSession,
     RuntimeTool,
+    RuntimeWorkingStateConfig,
     SessionMessage,
 )
 from ..runtime.errors import RuntimeExecutionError
@@ -117,7 +119,13 @@ async def build_runtime_request(
             "A published knowledge base does not belong to the agent workspace.",
             status_code=422,
         )
-    budget = ExecutionBudget.model_validate(version.runtime_config)
+    # Older immutable versions only contain the original budget fields. The
+    # application defaults added to RuntimeConfiguration keep those snapshots
+    # reactive without rewriting historical JSONB.
+    runtime_config = RuntimeConfiguration.model_validate(version.runtime_config)
+    budget = ExecutionBudget.model_validate(
+        runtime_config.model_dump(include=set(ExecutionBudget.model_fields))
+    )
     memory_config = MemoryConfiguration.model_validate(version.memory_config)
     snapshot_guardrails = version.snapshot.get("guardrails", {})
     guardrail_items = (
@@ -224,6 +232,13 @@ async def build_runtime_request(
             ),
             guardrails_enabled=version.guardrails_enabled,
             guardrails=runtime_guardrails,
+            execution_strategy=runtime_config.execution_strategy,
+            planning=RuntimePlanningConfig.model_validate(
+                runtime_config.planning.model_dump()
+            ),
+            working_state=RuntimeWorkingStateConfig.model_validate(
+                runtime_config.working_state.model_dump(mode="json")
+            ),
         ),
         session=RuntimeSession(
             id=conversation.id,

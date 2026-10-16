@@ -61,6 +61,42 @@ def _response_input(request: ModelRequest) -> str | list[dict[str, Any]]:
     return _messages(request)
 
 
+def _strict_json_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Prepare a platform schema for OpenAI strict Structured Outputs.
+
+    Pydantic marks fields with defaults as optional in its JSON Schema. OpenAI
+    strict mode requires every object property to be listed as required, so
+    those values must be emitted explicitly (usually as an empty list/string).
+    Defaults and titles are annotations for the application and are not part of
+    the wire contract; application validation remains responsible for limits
+    and semantic constraints after the response is returned.
+    """
+
+    def normalize(value: object) -> object:
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+
+        normalized = {
+            str(key): normalize(item)
+            for key, item in value.items()
+            if key not in {"default", "title"}
+        }
+        properties = normalized.get("properties")
+        if normalized.get("type") == "object" and isinstance(properties, dict):
+            normalized["required"] = list(properties)
+            normalized["additionalProperties"] = False
+        return normalized
+
+    normalized_schema = normalize(schema)
+    if not isinstance(normalized_schema, dict):
+        raise ProviderError(
+            "MODEL_REQUEST_INVALID", "The structured output schema is invalid."
+        )
+    return normalized_schema
+
+
 async def _close_client(client: object | None) -> None:
     close = getattr(client, "close", None)
     if not callable(close):
@@ -230,7 +266,7 @@ class OpenAIProvider:
                     "type": "json_schema",
                     "name": "response",
                     "strict": True,
-                    "schema": request.response_schema,
+                    "schema": _strict_json_schema(request.response_schema),
                 }
             }
         return kwargs
