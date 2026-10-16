@@ -46,6 +46,8 @@ class ExecutionContext:
     deadline: float | None = None
     counters: dict[str, int] = field(default_factory=dict)
     cancel_check: Any = None
+    job_id: UUID | None = None
+    execution_owner: str | None = None
 
     def __post_init__(self) -> None:
         self.counters.update(
@@ -74,6 +76,8 @@ class ExecutionContext:
             deadline=self.deadline,
             counters=self.counters,
             cancel_check=self.cancel_check,
+            job_id=self.job_id,
+            execution_owner=self.execution_owner,
         )
 
     def snapshot(self) -> dict[str, int]:

@@ -808,7 +808,8 @@ class FetchWebResourceExecutor:
                             continue
                         if not 200 <= response.status_code < 300:
                             raise HttpToolConfigError(
-                                "The web resource returned an error.",
+                                "The web resource returned HTTP "
+                                f"{response.status_code}.",
                                 code="RESOURCE_FETCH_FAILED",
                             )
                         chunks: list[bytes] = []
@@ -864,6 +865,7 @@ class FetchWebResourceExecutor:
                     "truncated": truncated,
                     "page_count": page_count,
                 },
+                metadata={"_artifact_text": extracted},
             )
         except HttpToolConfigError as error:
             return ToolResult(

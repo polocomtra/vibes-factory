@@ -76,10 +76,63 @@ The built-in Deep Research template creates an ordinary editable draft with
 versioned template metadata and pins the workspace's immutable web search and
 resource-reader tool versions.
 
-Plan-and-execute is currently **inline and synchronous**. PostgreSQL job type,
-checkpoint and fencing fields reserve the durable-job boundary, but async run
-creation, worker resume, replaying SSE, durable cancellation, artifact APIs and
-grounded citation rendering are not implemented. Do not enable async execution
-or describe this strategy as restart-resumable until those lifecycle guarantees
-and their integration tests are in place. See ADR-015 for the strategy and
-compatibility decision.
+The Playground now queues `PLAN_AND_EXECUTE` runs through the existing
+PostgreSQL leased-job worker. Queued Run, user message, trace, initial event,
+idempotency metadata and the versioned immutable request snapshot commit in one
+transaction. The worker applies the input guardrail before model or tool calls.
+The execution deadline starts when the first worker claims the Run, so queue
+wait does not consume the budget. Async creation requires an
+`Idempotency-Key`; repeating the same key and payload returns the same Run,
+while reusing it for different input returns a conflict. Async runs are gated
+by `VF_ENABLE_ASYNC_AGENT_RUNS` (off in application defaults, on in local
+Docker Compose).
+
+The worker increments `Run.execution_epoch` on acquisition. Runtime persistence
+checks both that epoch and the current job lease owner before critical writes;
+a stale worker cannot complete or fail a Run after takeover. Cancellation is a
+durable request that the worker polls during provider and tool waits. Run
+events are append-only and can be listed or replayed with
+`GET /v1/runs/{id}/events:stream` and `Last-Event-ID`; disconnecting only stops
+observation.
+
+Checkpoints currently resume at verified boundaries. A task whose tool results
+and conversation are checkpointed as `TASK_READY` continues without repeating
+those calls; completed tasks remain completed, and a checkpoint between a
+completed task and its assessment resumes by assessing that task. If a worker
+stops during a model call, during a tool call before its result is checkpointed,
+or at another ambiguous operation boundary, recovery fails the Run with
+`RUN_RESUME_UNSAFE` rather than replaying work and risking duplicate cost or
+side effects. Timeout accounting starts when the first worker claims the Run,
+not while it waits in the queue.
+
+Research outputs now use the generic `artifacts` store. Successful
+`fetch_web_resource` calls persist a redacted `SOURCE_DOCUMENT` snapshot, bind it
+to the current plan task, and expose only its artifact ID plus the inspected
+excerpt to the model. Content up to 64 KiB stays inline; larger content uses the
+configured private BlobStore and a deterministic content key. Artifacts are
+deduplicated by run and producer key. The authenticated run artifact endpoints
+list metadata and return bounded UTF-8 content ranges without exposing a storage
+URI. Deep Research template v2 includes the run-scoped `read_artifact_content`
+tool; template v1 remains materializable with its original tool set.
+
+The API exposes `GET /v1/runs/{run_id}/artifacts` and
+`GET /v1/runs/{run_id}/artifacts/{artifact_id}/content?offset=0&limit=16000`.
+The latter returns a character range and a next offset. Both endpoints verify
+workspace access and require the artifact to belong to the requested Run.
+
+Research synthesis receives a bounded catalog of inspected source excerpts. A
+citation is kept only when its source ID belongs to this Run and its exact
+excerpt appears both in the stored source snapshot and the excerpt sent to the
+model. The runtime makes one budgeted citation-repair call for semantic citation
+errors; unresolved citations are removed and make the report `PARTIAL`. The
+renderer adds source links and references from source artifacts to the final
+`REPORT` artifact. This validates citation provenance, not factual correctness.
+The deterministic Cloud Run versus ECS Fargate fixture covers a follow-up gap,
+source-backed citations, invalid excerpts and report rendering without live
+internet or model calls.
+
+The PostgreSQL integration test for queue creation/idempotency requires
+`VF_TEST_DATABASE_URL` and is skipped when that isolated test database is not
+configured. Full failure-injection coverage for lease races, cancellation races
+and every checkpoint boundary is still required before treating crash recovery
+as fully validated. See ADR-015 for the strategy and compatibility decision.

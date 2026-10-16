@@ -12,6 +12,8 @@ import structlog
 from sqlalchemy import func, select
 
 from ..approvals.service import create_approval, mark_tool_run_waiting
+from ..artifacts.service import ArtifactService
+from ..config import get_settings
 from ..guardrails.contracts import GuardrailDecision
 from ..model_providers.contracts import ModelMessage, ModelToolCall
 from ..models import (
@@ -170,6 +172,9 @@ class ToolBatchExecutor:
                 # Persist the model's redacted tool batch and every completed
                 # predecessor before suspending.  The worker resumes this
                 # exact call; it never asks the model to regenerate arguments.
+                await self.runtime.lifecycle._assert_execution_owner(
+                    run, execution_context
+                )
                 await self.runtime.session.commit()
                 approval_span = Span(
                     id=uuid4(),
@@ -205,6 +210,9 @@ class ToolBatchExecutor:
                 await mark_tool_run_waiting(self.runtime.session, run)
                 parent_span.status = SpanStatus.COMPLETED
                 parent_span.completed_at = datetime.now(UTC)
+                await self.runtime.lifecycle._assert_execution_owner(
+                    run, execution_context
+                )
                 await self.runtime.session.commit()
                 raise RuntimeExecutionError(
                     "GUARDRAIL_APPROVAL_REQUIRED",
@@ -257,6 +265,7 @@ class ToolBatchExecutor:
             self.runtime.session.add(span)
             await self.runtime.session.flush()
             child_run_id: UUID | None = None
+            artifact_read_ref: tuple[UUID, int] | None = None
             try:
                 if blocked_code is not None:
                     result = {
@@ -472,6 +481,9 @@ class ToolBatchExecutor:
                                         "usage": execution_context.snapshot(),
                                     },
                                 )
+                                await self.runtime.lifecycle._assert_execution_owner(
+                                    run, execution_context
+                                )
                                 await self.runtime.session.commit()
                                 # A child failure is a root failure.  Persist the
                                 # child span first, then let the outer lifecycle
@@ -532,19 +544,90 @@ class ToolBatchExecutor:
                 else:
                     assert version is not None
                     assert catalog_tool is not None
-                    execution = await self.runtime.tool_pipeline.execute(
-                        version,
-                        call.arguments,
-                        ToolExecutionContext(
-                            workspace_id=request.workspace_id,
-                            run_id=run.id,
-                            trace_id=trace.id,
-                            timeout_seconds=min(
-                                float(version.timeout_seconds), timeout_seconds
+                    if call.name == "read_artifact_content":
+                        from ..models import Artifact
+                        from ..tools.validation import validate
+
+                        try:
+                            validate(call.arguments, version.input_schema)
+                            artifact_id = UUID(str(call.arguments["artifact_id"]))
+                            artifact = await self.runtime.session.scalar(
+                                select(Artifact).where(
+                                    Artifact.id == artifact_id,
+                                    Artifact.run_id == run.id,
+                                    Artifact.workspace_id == request.workspace_id,
+                                    Artifact.artifact_type == "SOURCE_DOCUMENT",
+                                )
+                            )
+                            if artifact is None:
+                                execution = ToolResult(
+                                    ok=False,
+                                    error_code="ARTIFACT_NOT_FOUND",
+                                    error_message=(
+                                        "The source is unavailable in this run."
+                                    ),
+                                )
+                            else:
+                                artifact_service = ArtifactService(
+                                    self.runtime.session, get_settings()
+                                )
+                                offset_value = call.arguments.get("offset", 0)
+                                limit_value = call.arguments.get("limit", 4_000)
+                                if (
+                                    isinstance(offset_value, bool)
+                                    or not isinstance(offset_value, int)
+                                    or isinstance(limit_value, bool)
+                                    or not isinstance(limit_value, int)
+                                ):
+                                    raise ValueError("Invalid artifact range")
+                                offset = offset_value
+                                limit = limit_value
+                                output = await artifact_service.read_text_range(
+                                    artifact, offset=offset, limit=limit
+                                )
+                                artifact_read_ref = (artifact.id, offset)
+                                validate(output, version.output_schema)
+                                execution = ToolResult(ok=True, output=output)
+                        except (ValueError, KeyError, TypeError):
+                            execution = ToolResult(
+                                ok=False,
+                                error_code="ARTIFACT_ARGUMENTS_INVALID",
+                                error_message="The artifact read request is invalid.",
+                            )
+                        except OSError:
+                            execution = ToolResult(
+                                ok=False,
+                                error_code="ARTIFACT_CONTENT_UNAVAILABLE",
+                                error_message=(
+                                    "The source artifact content is unavailable."
+                                ),
+                            )
+                    else:
+                        execution = await self.runtime.tool_pipeline.execute(
+                            version,
+                            call.arguments,
+                            ToolExecutionContext(
+                                workspace_id=request.workspace_id,
+                                run_id=run.id,
+                                trace_id=trace.id,
+                                timeout_seconds=min(
+                                    float(version.timeout_seconds), timeout_seconds
+                                ),
                             ),
-                        ),
+                        )
+                    await self.runtime.lifecycle._assert_execution_owner(
+                        run, execution_context
                     )
+                    private_artifact_text: str | None = None
                     if execution.ok and execution.output is not None:
+                        visible_output = dict(execution.output)
+                        safe_metadata = dict(execution.metadata)
+                        raw_artifact_text = safe_metadata.pop("_artifact_text", None)
+                        if isinstance(raw_artifact_text, str):
+                            private_artifact_text = raw_artifact_text
+                        execution = execution.model_copy(
+                            update={"output": visible_output, "metadata": safe_metadata}
+                        )
                         output_evaluation = await self.runtime._evaluate_guardrail(
                             request,
                             run,
@@ -578,6 +661,143 @@ class ToolBatchExecutor:
                             execution = execution.model_copy(
                                 update={"output": output_evaluation.value}
                             )
+                    if (
+                        execution.ok
+                        and execution.output is not None
+                        and artifact_read_ref is not None
+                    ):
+                        returned_text = execution.output.get("content")
+                        safe_returned_text = (
+                            redactor.redact(returned_text)
+                            if isinstance(returned_text, str)
+                            else None
+                        )
+                        if isinstance(safe_returned_text, str):
+                            from ..models import Artifact
+
+                            artifact_id, offset = artifact_read_ref
+                            read_artifact = await self.runtime.session.scalar(
+                                select(Artifact).where(
+                                    Artifact.id == artifact_id,
+                                    Artifact.run_id == run.id,
+                                    Artifact.workspace_id == request.workspace_id,
+                                )
+                            )
+                            if read_artifact is not None:
+                                artifact_service = ArtifactService(
+                                    self.runtime.session, get_settings()
+                                )
+                                stored_text = (
+                                    await artifact_service.read_all(read_artifact)
+                                ).decode("utf-8")
+                                if (
+                                    stored_text[
+                                        offset : offset + len(safe_returned_text)
+                                    ]
+                                    == safe_returned_text
+                                ):
+                                    artifact_service.record_inspected_range(
+                                        read_artifact,
+                                        offset=offset,
+                                        text=safe_returned_text,
+                                    )
+                    if (
+                        execution.ok
+                        and execution.output is not None
+                        and private_artifact_text is not None
+                    ):
+                        safe_output = redactor.redact(execution.output)
+                        safe_full_text = redactor.redact(private_artifact_text)
+                        if not isinstance(safe_output, dict) or not isinstance(
+                            safe_full_text, str
+                        ):
+                            raise RuntimeExecutionError(
+                                "ARTIFACT_REDACTION_FAILED",
+                                "The fetched source could not be safely stored.",
+                                status_code=500,
+                            )
+                        excerpt = safe_output.get("text")
+                        if not isinstance(excerpt, str):
+                            excerpt = ""
+                        task_id = None
+                        if state.active_task_key is not None:
+                            from ..models import AgentPlan, AgentPlanTask
+
+                            task_id = await self.runtime.session.scalar(
+                                select(AgentPlanTask.id)
+                                .join(AgentPlan, AgentPlan.id == AgentPlanTask.plan_id)
+                                .where(
+                                    AgentPlan.run_id == run.id,
+                                    AgentPlan.workspace_id == run.workspace_id,
+                                    AgentPlanTask.workspace_id == run.workspace_id,
+                                    AgentPlanTask.task_key == state.active_task_key,
+                                )
+                            )
+                        artifact = await ArtifactService(
+                            self.runtime.session, get_settings()
+                        ).create(
+                            run,
+                            artifact_type="SOURCE_DOCUMENT",
+                            mime_type="text/plain; charset=utf-8",
+                            title=str(
+                                safe_output.get("title")
+                                or safe_output.get("final_url")
+                                or "Fetched source"
+                            ),
+                            content=safe_full_text,
+                            producer_key=f"fetch:{call.id}",
+                            task_id=task_id,
+                            metadata={
+                                "source_url": str(safe_output.get("final_url") or ""),
+                                "fetched_at": str(safe_output.get("fetched_at") or ""),
+                                "source_content_hash": str(
+                                    safe_output.get("content_hash") or ""
+                                ),
+                                "inspected_excerpt": excerpt[:12_000],
+                                "inspected_ranges": [
+                                    {
+                                        "start": 0,
+                                        "end": len(excerpt[:12_000]),
+                                        "text": excerpt[:12_000],
+                                    }
+                                ],
+                                "inspected_char_end": len(excerpt),
+                                "extracted_chars": len(safe_full_text),
+                                "truncated": bool(safe_output.get("truncated", False)),
+                            },
+                        )
+                        safe_output["source_artifact_id"] = str(artifact.id)
+                        execution = execution.model_copy(update={"output": safe_output})
+                        from .plan_store import AgentPlanStore
+
+                        await AgentPlanStore(
+                            self.runtime.session,
+                            execution_epoch=(
+                                execution_context.counters.get("execution_epoch")
+                                if execution_context is not None
+                                else None
+                            ),
+                            job_id=(
+                                execution_context.job_id
+                                if execution_context is not None
+                                else None
+                            ),
+                            execution_owner=(
+                                execution_context.execution_owner
+                                if execution_context is not None
+                                else None
+                            ),
+                        ).append_event(
+                            run,
+                            "source.discovered",
+                            {
+                                "artifact_id": str(artifact.id),
+                                "title": artifact.title,
+                                "source_url": artifact.metadata_json.get("source_url"),
+                                "task_key": state.active_task_key,
+                            },
+                            deduplication_key=f"artifact.source.{call.id}",
+                        )
                     succeeded = execution.ok
                     result = {"ok": execution.ok}
                     if execution.metadata:
@@ -715,6 +935,7 @@ class ToolBatchExecutor:
                     child_run_id=child_run_id,
                 )
             )
+        await self.runtime.lifecycle._assert_execution_owner(run, execution_context)
         await self.runtime.session.commit()
         return ToolBatchResult(
             records=tuple(results),

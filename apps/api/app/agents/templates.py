@@ -1,9 +1,10 @@
 """Versioned, server-owned templates for creating ordinary agent drafts."""
 
-from typing import Any
+import json
+from typing import Any, cast
 
 DEEP_RESEARCH_TEMPLATE_ID = "deep_research"
-DEEP_RESEARCH_TEMPLATE_VERSION = 1
+DEEP_RESEARCH_TEMPLATE_VERSION = 2
 
 DEEP_RESEARCH_TEMPLATE: dict[str, Any] = {
     "id": DEEP_RESEARCH_TEMPLATE_ID,
@@ -77,6 +78,16 @@ DEEP_RESEARCH_TEMPLATE: dict[str, Any] = {
     "capabilities": ["plan_and_execute", "web_search", "web_read"],
 }
 
+# Version 1 remains materializable for clients holding an existing template
+# descriptor. Its tool set and snapshot are preserved exactly.
+DEEP_RESEARCH_TEMPLATE_V1: dict[str, Any] = json.loads(
+    json.dumps(DEEP_RESEARCH_TEMPLATE)
+)
+DEEP_RESEARCH_TEMPLATE_V1["version"] = 1
+DEEP_RESEARCH_TEMPLATE["version"] = DEEP_RESEARCH_TEMPLATE_VERSION
+DEEP_RESEARCH_TEMPLATE["tools"].append("read_artifact_content")
+DEEP_RESEARCH_TEMPLATE["capabilities"].append("artifact_read")
+
 
 def list_agent_templates() -> list[dict[str, Any]]:
     """Return a detached descriptor safe to expose to clients."""
@@ -84,12 +95,13 @@ def list_agent_templates() -> list[dict[str, Any]]:
 
 
 def materialize_template(template_id: str, version: int) -> dict[str, Any]:
-    if (
-        template_id != DEEP_RESEARCH_TEMPLATE_ID
-        or version != DEEP_RESEARCH_TEMPLATE_VERSION
-    ):
+    if template_id != DEEP_RESEARCH_TEMPLATE_ID:
         raise ValueError("The requested agent template version is not available.")
     # JSON-compatible deep copy so draft edits cannot mutate the template constant.
-    import json
-
-    return json.loads(json.dumps(DEEP_RESEARCH_TEMPLATE))
+    if version == 1:
+        source = DEEP_RESEARCH_TEMPLATE_V1
+    elif version == DEEP_RESEARCH_TEMPLATE_VERSION:
+        source = DEEP_RESEARCH_TEMPLATE
+    else:
+        raise ValueError("The requested agent template version is not available.")
+    return cast(dict[str, Any], json.loads(json.dumps(source)))

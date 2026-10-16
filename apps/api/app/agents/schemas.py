@@ -225,7 +225,7 @@ class AgentCreateRequest(BaseModel):
         if self.template_id is None and self.template_version is not None:
             raise ValueError("template_version requires template_id")
         if self.template_id is not None and self.template_version is None:
-            self.template_version = 1
+            self.template_version = 2
         return self
 
 

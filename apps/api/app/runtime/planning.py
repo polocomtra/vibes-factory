@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Mapping
 from typing import Literal
 
-from jsonschema import Draft202012Validator
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from jsonschema import (
+    Draft202012Validator,
+)
+from jsonschema import (
+    ValidationError as JsonSchemaValidationError,
+)
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .errors import RuntimeExecutionError
 
@@ -60,24 +66,75 @@ class StructuredTaskResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    summary: str
-    state_updates: tuple[StructuredStateOperation, ...]
+    summary: str = Field(min_length=1, max_length=12_000)
+    state_updates: tuple[StructuredStateOperation, ...] = ()
+
+
+class TaskResultDecodeError(ValueError):
+    """Safe, actionable description of a malformed task result."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def parse_task_result(content: str) -> TaskResultProposal:
     """Decode strict structured output into the application's state contract."""
     import json
 
-    result = StructuredTaskResult.model_validate_json(content)
-    updates = tuple(
-        StateOperation(
-            operation=operation.operation,
-            field=operation.field,
-            value=json.loads(operation.value_json),
-        )
-        for operation in result.state_updates
-    )
-    return TaskResultProposal(summary=result.summary, state_updates=updates)
+    try:
+        result = StructuredTaskResult.model_validate_json(content)
+    except ValidationError as error:
+        errors = error.errors(include_input=False)
+        location = ".".join(str(part) for part in errors[0]["loc"]) or "$"
+        reason = str(errors[0]["type"])
+        raise TaskResultDecodeError(
+            f"Task result field {location} is invalid ({reason})."
+        ) from error
+    except ValueError as error:
+        raise TaskResultDecodeError("Task result is not valid JSON.") from error
+
+    updates: list[StateOperation] = []
+    for index, operation in enumerate(result.state_updates):
+        try:
+            value = json.loads(operation.value_json)
+        except json.JSONDecodeError as json_error:
+            try:
+                # Some providers return Python-style quoted object/list text
+                # inside this JSON string. literal_eval parses literals only;
+                # the resulting value is still checked against the published
+                # JSON Schema by apply_state_updates before persistence.
+                value = ast.literal_eval(operation.value_json)
+            except (SyntaxError, ValueError):
+                raise TaskResultDecodeError(
+                    "state_updates["
+                    f"{index}].value_json must contain a JSON object, array, "
+                    "string, number, boolean, or null."
+                ) from json_error
+        try:
+            updates.append(
+                StateOperation(
+                    operation=operation.operation,
+                    field=operation.field,
+                    value=value,
+                )
+            )
+        except ValidationError as error:
+            errors = error.errors(include_input=False)
+            reason = str(errors[0]["type"])
+            raise TaskResultDecodeError(
+                f"state_updates[{index}] is invalid ({reason})."
+            ) from error
+
+    try:
+        return TaskResultProposal(summary=result.summary, state_updates=tuple(updates))
+    except ValidationError as error:
+        errors = error.errors(include_input=False)
+        location = ".".join(str(part) for part in errors[0]["loc"]) or "$"
+        reason = str(errors[0]["type"])
+        raise TaskResultDecodeError(
+            f"Task result field {location} is invalid ({reason})."
+        ) from error
 
 
 class ProgressAssessment(BaseModel):
@@ -208,10 +265,12 @@ def apply_state_updates(
             updated[operation.field] = current + values
     try:
         Draft202012Validator(schema).validate(updated)
-    except Exception as error:
+    except JsonSchemaValidationError as error:
+        path = ".".join(str(part) for part in error.absolute_path) or "$"
         raise RuntimeExecutionError(
             "WORKING_STATE_VALIDATION_FAILED",
             "The updated working state does not match its published schema.",
             status_code=422,
+            details={"path": path, "rule": str(error.validator)},
         ) from error
     return updated

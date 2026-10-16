@@ -217,7 +217,13 @@ class OpenAIProvider:
             raise ProviderError(
                 "PROVIDER_CREDENTIAL_MISSING", "Provider credentials are required."
             )
-        kwargs: dict[str, object] = {"api_key": api_key, "timeout": self.timeout}
+        # The runtime owns retries and run budgets. Disable SDK-level retries so
+        # one model span cannot silently consume several provider timeouts.
+        kwargs: dict[str, object] = {
+            "api_key": api_key,
+            "timeout": self.timeout,
+            "max_retries": 0,
+        }
         if self.base_url:
             kwargs["base_url"] = self.base_url
         if self.pinned_addresses and self.base_url:

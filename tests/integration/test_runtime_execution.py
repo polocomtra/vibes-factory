@@ -6,13 +6,21 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from apps.api.app.artifacts.service import ArtifactService
+from apps.api.app.config import Settings
 from apps.api.app.model_providers.fake import FakeModelProvider
 from apps.api.app.models import (
     Agent,
     AgentVersion,
+    Artifact,
+    ArtifactReference,
+    Job,
+    JobStatus,
+    JobType,
     Message,
     MessageRole,
     Run,
+    RunEvent,
     RunStatus,
     Session,
     Span,
@@ -21,6 +29,7 @@ from apps.api.app.models import (
     User,
     Workspace,
 )
+from apps.api.app.runs.async_execution import acquire_run_execution, enqueue_agent_run
 from apps.api.app.runtime.contracts import (
     AgentRunRequest,
     AgentVersionRuntimeConfig,
@@ -28,6 +37,7 @@ from apps.api.app.runtime.contracts import (
     RuntimeSession,
     TextInput,
 )
+from apps.api.app.runtime.errors import RuntimeExecutionError
 from apps.api.app.runtime.service import AgentRuntime
 
 
@@ -158,6 +168,60 @@ async def test_run_persists_completed_run_messages_and_trace(
 
 
 @pytest.mark.asyncio
+async def test_run_artifacts_are_deduplicated_and_referenced_in_workspace(
+    runtime_test_session: AsyncSession,
+) -> None:
+    request = await runtime_request(runtime_test_session)
+    result = await AgentRuntime(runtime_test_session, FakeRegistry()).run(request)  # type: ignore[arg-type]
+    run = await runtime_test_session.get(Run, result.run_id)
+    assert run is not None
+    service = ArtifactService(runtime_test_session, Settings())
+
+    source = await service.create(
+        run,
+        artifact_type="SOURCE_DOCUMENT",
+        mime_type="text/plain; charset=utf-8",
+        title="Official source",
+        content="A verified inspected excerpt.",
+        producer_key="fixture:fetch-call-1",
+        metadata={
+            "source_url": "https://example.test/source",
+            "inspected_excerpt": "A verified inspected excerpt.",
+        },
+    )
+    same_source = await service.create(
+        run,
+        artifact_type="SOURCE_DOCUMENT",
+        mime_type="text/plain; charset=utf-8",
+        title="Duplicate retry",
+        content="A verified inspected excerpt.",
+        producer_key="fixture:fetch-call-1",
+    )
+    report = await service.create(
+        run,
+        artifact_type="REPORT",
+        mime_type="text/markdown; charset=utf-8",
+        title="Research report",
+        content="Conclusion [S1].",
+        producer_key="fixture:report-final",
+    )
+    await service.reference(run, source, report, relation="SUPPORTS")
+    await runtime_test_session.commit()
+
+    persisted = await runtime_test_session.get(Artifact, source.id)
+    reference = await runtime_test_session.scalar(
+        select(ArtifactReference).where(
+            ArtifactReference.source_artifact_id == source.id,
+            ArtifactReference.target_artifact_id == report.id,
+            ArtifactReference.workspace_id == run.workspace_id,
+        )
+    )
+    assert same_source.id == source.id
+    assert persisted is not None and persisted.run_id == run.id
+    assert reference is not None and reference.relation == "SUPPORTS"
+
+
+@pytest.mark.asyncio
 async def test_stream_persists_run_and_emits_completion_events(
     runtime_test_session: AsyncSession,
 ) -> None:
@@ -175,3 +239,83 @@ async def test_stream_persists_run_and_emits_completion_events(
         "run.completed",
     ]
     assert run is not None and run.status == RunStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_async_plan_run_queues_once_and_rejects_idempotency_conflict(
+    runtime_test_session: AsyncSession,
+) -> None:
+    request = await runtime_request(runtime_test_session)
+    request = request.model_copy(
+        update={
+            "agent_version": request.agent_version.model_copy(
+                update={"execution_strategy": "PLAN_AND_EXECUTE"}
+            )
+        }
+    )
+
+    run, created = await enqueue_agent_run(
+        runtime_test_session,
+        FakeRegistry(),  # type: ignore[arg-type]
+        request,
+        "integration-key-1",
+    )
+    job = await runtime_test_session.scalar(
+        select(Job).where(
+            Job.job_type == JobType.AGENT_EXECUTION,
+            Job.resource_id == run.id,
+        )
+    )
+
+    assert created
+    assert run.status == RunStatus.QUEUED
+    assert run.execution_mode == "async"
+    assert run.started_at is None
+    assert job is not None and job.status == JobStatus.QUEUED
+    assert job.payload["request_snapshot"]["input"]["text"] == "Explain traces."
+    assert run.deadline_at is None
+    queued_events = list(
+        (
+            await runtime_test_session.scalars(
+                select(RunEvent).where(
+                    RunEvent.run_id == run.id,
+                    RunEvent.deduplication_key == "run.queued",
+                )
+            )
+        ).all()
+    )
+    assert len(queued_events) == 1
+
+    same_run, created_again = await enqueue_agent_run(
+        runtime_test_session,
+        FakeRegistry(),  # type: ignore[arg-type]
+        request,
+        "integration-key-1",
+    )
+    assert same_run.id == run.id
+    assert not created_again
+
+    acquired = await acquire_run_execution(runtime_test_session, run.id)
+    assert acquired is not None
+    started_run, first_epoch = acquired
+    assert started_run.status == RunStatus.RUNNING
+    assert started_run.started_at is not None
+    assert started_run.deadline_at is not None
+    first_deadline = started_run.deadline_at
+
+    recovered = await acquire_run_execution(runtime_test_session, run.id)
+    assert recovered is not None
+    recovered_run, second_epoch = recovered
+    assert second_epoch == first_epoch + 1
+    assert recovered_run.deadline_at == first_deadline
+
+    changed_request = request.model_copy(
+        update={"input": TextInput(text="Different objective")}
+    )
+    with pytest.raises(RuntimeExecutionError, match="different request"):
+        await enqueue_agent_run(
+            runtime_test_session,
+            FakeRegistry(),  # type: ignore[arg-type]
+            changed_request,
+            "integration-key-1",
+        )

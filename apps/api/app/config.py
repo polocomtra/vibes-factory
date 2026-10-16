@@ -33,11 +33,14 @@ class Settings(BaseSettings):
     supabase_publishable_key: str | None = None
     supabase_jwt_jwks_url: str | None = None
     supabase_auth_timeout_seconds: float = 5.0
-    model_provider_timeout_seconds: float = 60.0
+    # Keep provider requests below the 300s Plan & Execute hard limit while
+    # leaving enough room for research tools and final synthesis in one run.
+    model_provider_timeout_seconds: float = 240.0
     gemini_api_key: SecretStr | None = None
     exa_api_key: SecretStr | None = None
     encryption_master_key: SecretStr | None = None
     enable_mcp: bool = True
+    enable_async_agent_runs: bool = False
     mcp_allow_http: bool = False
     mcp_allowed_private_hosts: Annotated[list[str], NoDecode] = []
     mcp_connect_timeout_seconds: float = 10.0

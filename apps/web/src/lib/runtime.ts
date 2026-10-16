@@ -18,7 +18,25 @@ export type Message = {
   token_count: number | null;
   created_at: string;
 };
-export type Citation = { marker: string; chunk_id: string; document_id: string; knowledge_base_id: string; source_name: string; page: number | null; section: string | null; score: number; generation: number; excerpt: string };
+export type Citation = { marker: string; chunk_id: string | null; document_id: string | null; knowledge_base_id: string | null; source_name: string; page: number | null; section: string | null; score: number | null; generation: number | null; excerpt: string; artifact_id?: string | null; source_url?: string | null };
+export type ArtifactContent = {
+  artifact_id: string;
+  offset: number;
+  next_offset: number | null;
+  has_more: boolean;
+  content: string;
+};
+export type RunArtifact = {
+  id: string;
+  run_id: string;
+  task_id: string | null;
+  artifact_type: string;
+  mime_type: string;
+  title: string;
+  content_hash: string;
+  metadata: Record<string, unknown>;
+  created_at: string;
+};
 export type Run = {
   id: string;
   agent_id: string;
@@ -276,6 +294,35 @@ export async function createRun(agentId: string, sessionId: string, agentVersion
   return await response.json() as Run;
 }
 
+export async function createAsyncRun(
+  agentId: string,
+  sessionId: string,
+  agentVersionId: string,
+  text: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<Run> {
+  const response = await apiFetch(`/v1/agents/${agentId}/runs`, {
+    method: "POST",
+    signal,
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({
+      input: { type: "text", text },
+      session_id: sessionId,
+      agent_version_id: agentVersionId,
+      execution_mode: "async",
+    }),
+  });
+  await assertOk(response);
+  return await response.json() as Run;
+}
+
+export async function cancelRun(runId: string): Promise<Run> {
+  const response = await apiFetch(`/v1/runs/${runId}:cancel`, { method: "POST" });
+  await assertOk(response);
+  return await response.json() as Run;
+}
+
 function parseSseBlock(block: string): RunStreamEvent | null {
   let eventName = "";
   const dataLines: string[] = [];
@@ -369,6 +416,26 @@ export async function fetchRunPlan(runId: string): Promise<RunPlan> {
   const response = await apiFetch(`/v1/runs/${runId}/plan`);
   await assertOk(response);
   return await response.json() as RunPlan;
+}
+
+export async function fetchRunArtifactContent(
+  runId: string,
+  artifactId: string,
+  offset = 0,
+  limit = 4_000,
+): Promise<ArtifactContent> {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  const response = await apiFetch(
+    `/v1/runs/${runId}/artifacts/${artifactId}/content?${params.toString()}`,
+  );
+  await assertOk(response);
+  return (await response.json()) as ArtifactContent;
+}
+
+export async function fetchRunArtifacts(runId: string): Promise<RunArtifact[]> {
+  const response = await apiFetch(`/v1/runs/${runId}/artifacts`);
+  await assertOk(response);
+  return (await response.json() as { data: RunArtifact[] }).data;
 }
 
 export async function fetchRunChildren(runId: string): Promise<ChildRun[]> {

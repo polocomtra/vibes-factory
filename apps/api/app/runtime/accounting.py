@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..model_providers.contracts import ModelRequest, ModelResponse
 from ..models import Run, Span, SpanStatus, SpanType
 from ..monitoring.pricing import pricing_for_call
-from .budget import estimate_model_cost, estimate_model_request
+from .budget import ExecutionContext, estimate_model_cost, estimate_model_request
 from .contracts import TokenUsage
 
 
@@ -23,6 +23,8 @@ class RuntimeAccounting:
         span: Span,
         response: ModelResponse,
         request: ModelRequest,
+        *,
+        execution_context: ExecutionContext | None = None,
     ) -> None:
         provider_usage = response.usage
         input_estimated = provider_usage is None or provider_usage.input_tokens is None
@@ -58,6 +60,8 @@ class RuntimeAccounting:
         span.completed_at = datetime.now(UTC)
         # Persist provider usage and call duration before the pricing lookup or
         # later guardrail/tool work can fail or pause the run.
+        if execution_context is not None:
+            await self._assert_execution_owner(run, execution_context)
         await self.session.commit()
         pricing = await pricing_for_call(
             self.session,
@@ -100,8 +104,20 @@ class RuntimeAccounting:
                 "cost_status": "PRICING_MISSING",
                 "currency": "USD",
             }
+        if execution_context is not None:
+            await self._assert_execution_owner(run, execution_context)
         await self.refresh_run_accounting(run)
         await self.session.commit()
+
+    async def _assert_execution_owner(
+        self, run: Run, execution_context: ExecutionContext
+    ) -> None:
+        from .lifecycle import RunLifecycle
+
+        # The lifecycle already owns the shared session and its run/lease fence.
+        await RunLifecycle(self.session, self)._assert_execution_owner(
+            run, execution_context
+        )
 
     async def refresh_run_accounting(self, run: Run) -> None:
         spans = list(

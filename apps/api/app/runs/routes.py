@@ -1,15 +1,18 @@
 """Authenticated run creation, streaming and inspection routes."""
 
+import asyncio
 import base64
-from datetime import datetime
+from datetime import UTC, datetime
+from time import monotonic
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents.authorization import require_agent_access
+from ..artifacts.service import ARTIFACT_READ_LIMIT, ArtifactService
 from ..auth.dependencies import get_current_user
 from ..config import get_settings
 from ..db import get_session
@@ -19,13 +22,24 @@ from ..models import (
     AgentPlan,
     AgentPlanTask,
     AgentRunState,
+    Artifact,
+    Job,
+    JobStatus,
+    JobType,
     Run,
     RunEvent,
+    RunStatus,
+    Span,
+    SpanStatus,
+    Trace,
+    TraceStatus,
     User,
 )
 from ..runtime.errors import RuntimeExecutionError
+from ..runtime.plan_store import AgentPlanStore
 from ..runtime.service import AgentRuntime
 from ..workspaces.authorization import require_workspace_access
+from .async_execution import enqueue_agent_run
 from .request_builder import (
     build_runtime_request as _build_runtime_request,
 )
@@ -33,6 +47,9 @@ from .request_builder import (
     serialize_sse as _sse,
 )
 from .schemas import (
+    ArtifactCollectionResponse,
+    ArtifactContentResponse,
+    ArtifactResponse,
     RunCollectionResponse,
     RunCreateRequest,
     RunErrorResponse,
@@ -176,12 +193,35 @@ async def list_run_children(
 @router.post("/agents/{agent_id}/runs", response_model=RunResponse)
 async def create_run(
     payload: RunCreateRequest,
+    response: Response,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     agent: Agent = Depends(require_agent_access),
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> RunResponse:
     try:
         request = await _build_runtime_request(payload, agent, user, session)
+        if payload.execution_mode == "async":
+            if not get_settings().enable_async_agent_runs:
+                raise RuntimeExecutionError(
+                    "ASYNC_AGENT_RUNS_DISABLED",
+                    "Async agent runs are not enabled in this environment.",
+                    status_code=409,
+                )
+            if idempotency_key is None:
+                raise RuntimeExecutionError(
+                    "IDEMPOTENCY_KEY_REQUIRED",
+                    "Async runs require an Idempotency-Key header.",
+                    status_code=422,
+                )
+            run, _ = await enqueue_agent_run(
+                session,
+                ModelProviderRegistry.from_settings(get_settings()),
+                request,
+                idempotency_key,
+            )
+            response.status_code = 202
+            return _run_response(run)
         runtime_result = await AgentRuntime(
             session,
             ModelProviderRegistry.from_settings(get_settings()),
@@ -354,6 +394,108 @@ async def get_run_state(
     )
 
 
+def _artifact_response(artifact: Artifact) -> ArtifactResponse:
+    metadata = {
+        key: value
+        for key, value in artifact.metadata_json.items()
+        if key
+        not in {
+            "inspected_excerpt",
+            "inspected_ranges",
+            "blob_key",
+            "storage_uri",
+        }
+    }
+    return ArtifactResponse(
+        id=artifact.id,
+        run_id=artifact.run_id,
+        task_id=artifact.task_id,
+        artifact_type=artifact.artifact_type,
+        mime_type=artifact.mime_type,
+        title=artifact.title,
+        content_hash=artifact.content_hash,
+        metadata=metadata,
+        created_at=artifact.created_at,
+    )
+
+
+@router.get("/runs/{run_id}/artifacts", response_model=ArtifactCollectionResponse)
+async def list_run_artifacts(
+    run_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ArtifactCollectionResponse:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, run.workspace_id)
+    artifacts = list(
+        (
+            await session.scalars(
+                select(Artifact)
+                .where(
+                    Artifact.run_id == run.id,
+                    Artifact.workspace_id == run.workspace_id,
+                )
+                .order_by(Artifact.created_at, Artifact.id)
+                .limit(100)
+            )
+        ).all()
+    )
+    return ArtifactCollectionResponse(
+        data=[_artifact_response(artifact) for artifact in artifacts]
+    )
+
+
+@router.get(
+    "/runs/{run_id}/artifacts/{artifact_id}/content",
+    response_model=ArtifactContentResponse,
+)
+async def read_run_artifact_content(
+    run_id: UUID,
+    artifact_id: UUID,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=16_000, ge=1, le=ARTIFACT_READ_LIMIT),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ArtifactContentResponse:
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, run.workspace_id)
+    artifact = await session.scalar(
+        select(Artifact).where(
+            Artifact.id == artifact_id,
+            Artifact.run_id == run.id,
+            Artifact.workspace_id == run.workspace_id,
+        )
+    )
+    if artifact is None:
+        raise _not_found("The artifact was not found.")
+    try:
+        raw = await ArtifactService(session, get_settings()).read_all(artifact)
+        content = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "ARTIFACT_CONTENT_UNAVAILABLE",
+                "message": "The artifact content is unavailable.",
+                "details": {},
+            },
+        ) from None
+    chunk = content[offset : offset + limit]
+    next_offset = offset + len(chunk)
+    has_more = next_offset < len(content)
+    return ArtifactContentResponse(
+        artifact_id=artifact.id,
+        offset=offset,
+        next_offset=next_offset if has_more else None,
+        has_more=has_more,
+        content=chunk,
+    )
+
+
 @router.get("/runs/{run_id}/events", response_model=RunEventCollectionResponse)
 async def list_run_events(
     run_id: UUID,
@@ -380,6 +522,7 @@ async def list_run_events(
             )
         ).all()
     )
+
     has_more = len(events) > limit
     events = events[:limit]
     return RunEventCollectionResponse(
@@ -394,3 +537,157 @@ async def list_run_events(
         ],
         next_cursor=events[-1].sequence if has_more and events else None,
     )
+
+
+@router.get("/runs/{run_id}/events:stream")
+async def stream_run_events(
+    run_id: UUID,
+    request: Request,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    """Replay durable run events and continue observing until terminal state."""
+    try:
+        cursor = int(last_event_id or "0")
+        if cursor < 0:
+            raise ValueError
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "VALIDATION_ERROR",
+                "message": "Last-Event-ID must be a non-negative sequence.",
+                "details": {},
+            },
+        ) from None
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, run.workspace_id)
+    workspace_id = run.workspace_id
+
+    async def event_stream():
+        nonlocal cursor
+        last_heartbeat = monotonic()
+        while not await request.is_disconnected():
+            events = list(
+                (
+                    await session.scalars(
+                        select(RunEvent)
+                        .where(
+                            RunEvent.run_id == run_id,
+                            RunEvent.workspace_id == workspace_id,
+                            RunEvent.sequence > cursor,
+                        )
+                        .order_by(RunEvent.sequence)
+                        .limit(100)
+                    )
+                ).all()
+            )
+            status = await session.scalar(
+                select(Run.status).where(
+                    Run.id == run_id,
+                    Run.workspace_id == workspace_id,
+                )
+            )
+            await session.rollback()
+            if status is None:
+                return
+            for event in events:
+                cursor = event.sequence
+                yield _sse(event.event_type, event.payload, event.sequence)
+            if status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+                if not events:
+                    return
+            if not events and monotonic() - last_heartbeat >= 15:
+                yield ": heartbeat\n\n"
+                last_heartbeat = monotonic()
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/runs/{run_id}:cancel", response_model=RunResponse)
+async def cancel_run(
+    run_id: UUID,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> RunResponse:
+    candidate = await session.get(Run, run_id)
+    if candidate is None:
+        raise _not_found("The run was not found.")
+    await require_workspace_access(session, user.id, candidate.workspace_id)
+    # Worker execution locks the leased Job before its Run. Keep the same lock
+    # order here so a cancel racing with worker acquisition cannot deadlock.
+    if candidate.execution_mode == "async":
+        await session.scalar(
+            select(Job)
+            .where(
+                Job.job_type == JobType.AGENT_EXECUTION,
+                Job.resource_type == "run",
+                Job.resource_id == candidate.id,
+            )
+            .with_for_update()
+        )
+    run = await session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+    if run is None:
+        raise _not_found("The run was not found.")
+    if run.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+        return _run_response(run)
+
+    now = datetime.now(UTC)
+    run.cancellation_requested_at = run.cancellation_requested_at or now
+    if run.status == RunStatus.QUEUED:
+        run.status = RunStatus.CANCELLED
+        run.error_code = "RUN_CANCELLED"
+        run.error_message = "The run was cancelled before execution started."
+        run.completed_at = now
+        await session.execute(
+            update(Job)
+            .where(
+                Job.job_type == JobType.AGENT_EXECUTION,
+                Job.resource_id == run.id,
+                Job.status == JobStatus.QUEUED,
+            )
+            .values(status=JobStatus.CANCELLED)
+        )
+        await session.execute(
+            update(Span)
+            .where(Span.run_id == run.id, Span.status == SpanStatus.RUNNING)
+            .values(
+                status=SpanStatus.FAILED,
+                error_json={
+                    "code": "RUN_CANCELLED",
+                    "message": "The run was cancelled before execution started.",
+                },
+                completed_at=now,
+            )
+        )
+        trace = await session.get(Trace, run.trace_id)
+        if trace is not None:
+            trace.status = TraceStatus.FAILED
+            trace.completed_at = now
+    await AgentPlanStore(session).append_event(
+        run,
+        "run.cancellation_requested",
+        {"status": run.status.value},
+        deduplication_key="run.cancellation_requested",
+    )
+    if run.status == RunStatus.CANCELLED:
+        await AgentPlanStore(session).append_event(
+            run,
+            "run.cancelled",
+            {"status": "CANCELLED", "error_code": "RUN_CANCELLED"},
+            deduplication_key="run.terminal",
+        )
+    await session.commit()
+    return _run_response(run)

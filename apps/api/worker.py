@@ -26,6 +26,9 @@ from .app.memory.extraction import extract_candidates, persist_candidates
 from .app.model_providers.errors import ProviderError
 from .app.model_providers.registry import ModelProviderRegistry
 from .app.models import (
+    AgentPlan,
+    AgentPlanTask,
+    AgentRunState,
     AgentVersion,
     Document,
     DocumentChunk,
@@ -36,9 +39,19 @@ from .app.models import (
     MemoryStore,
     MemoryType,
     Message,
+    PlanTaskStatus,
     Run,
     RunStatus,
+    Span,
+    SpanStatus,
+    SpanType,
 )
+from .app.runs.async_execution import acquire_run_execution, mark_unsafe_resume
+from .app.runtime.budget import ExecutionContext
+from .app.runtime.contracts import AgentRunRequest
+from .app.runtime.errors import RuntimeExecutionError
+from .app.runtime.plan_store import AgentPlanStore
+from .app.runtime.service import AgentRuntime
 from .app.workflows.chat import process_chat_turn
 from .app.workflows.engine import process_workflow_execution
 
@@ -624,6 +637,277 @@ async def process_memory_extraction(job: Job, worker_id: str) -> None:
             await heartbeat
 
 
+async def _heartbeat_agent_execution(
+    job_id: UUID,
+    run_id: UUID,
+    worker_id: str,
+    epoch: int,
+    cancellation_requested: asyncio.Event,
+    lease_lost: asyncio.Event,
+) -> None:
+    """Renew the queue lease and observe durable cancellation/fencing state."""
+    interval = min(2, get_settings().workflow_heartbeat_seconds)
+    lease_seconds = get_settings().workflow_lease_seconds
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            async with SessionFactory() as session:
+                now = datetime.now(UTC)
+                updated = await session.execute(
+                    update(Job)
+                    .where(
+                        Job.id == job_id,
+                        Job.status == JobStatus.RUNNING,
+                        Job.lease_owner == worker_id,
+                    )
+                    .values(lease_expires_at=now + timedelta(seconds=lease_seconds))
+                )
+                run = await session.get(Run, run_id)
+                await session.commit()
+                if getattr(updated, "rowcount", 0) != 1:
+                    lease_lost.set()
+                    return
+                if (
+                    run is None
+                    or run.execution_epoch != epoch
+                    or run.status
+                    in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
+                ):
+                    lease_lost.set()
+                    return
+                if run.cancellation_requested_at is not None:
+                    cancellation_requested.set()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A transient heartbeat failure does not prove loss. The next
+            # guarded write still checks the epoch and the loop retries.
+            logger.exception("agent_execution_heartbeat_failed", run_id=str(run_id))
+
+
+async def _finish_agent_job(
+    job_id: UUID,
+    worker_id: str,
+    *,
+    status: JobStatus,
+    result: dict[str, Any] | None = None,
+    error: dict[str, Any] | None = None,
+) -> None:
+    async with SessionFactory() as session:
+        await session.execute(
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status == JobStatus.RUNNING,
+                Job.lease_owner == worker_id,
+            )
+            .values(
+                status=status,
+                result=result,
+                error=error,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+        )
+        await session.commit()
+
+
+async def process_agent_execution(job: Job, worker_id: str) -> None:
+    """Execute/resume one durable Plan & Execute run under an epoch fence."""
+    payload = job.payload if isinstance(job.payload, dict) else {}
+    try:
+        run_id = UUID(str(payload["run_id"]))
+        request = AgentRunRequest.model_validate(payload["request_snapshot"])
+    except (KeyError, ValueError, TypeError):
+        await _finish_agent_job(
+            job.id,
+            worker_id,
+            status=JobStatus.FAILED,
+            error={"code": "AGENT_JOB_INVALID", "message": "The agent job is invalid."},
+        )
+        logger.error("agent_execution_job_invalid", job_id=str(job.id))
+        return
+
+    async with SessionFactory() as session:
+        current_job = await session.scalar(
+            select(Job)
+            .where(
+                Job.id == job.id,
+                Job.status == JobStatus.RUNNING,
+                Job.lease_owner == worker_id,
+            )
+            .with_for_update()
+        )
+        run_before = await session.get(Run, run_id)
+        if current_job is None or run_before is None:
+            await session.rollback()
+            return
+        was_recovered = run_before.status == RunStatus.RUNNING
+        run_workspace_id = run_before.workspace_id
+        epoch_result = await acquire_run_execution(session, run_id)
+        if epoch_result is None:
+            await session.commit()
+            await _finish_agent_job(
+                job.id,
+                worker_id,
+                status=JobStatus.COMPLETED,
+                result={"run_status": "CANCELLED_OR_TERMINAL"},
+            )
+            return
+        run, epoch = epoch_result
+        plan = await session.scalar(
+            select(AgentPlan).where(
+                AgentPlan.run_id == run_id,
+                AgentPlan.workspace_id == run_workspace_id,
+            )
+        )
+        active_task = None
+        run_state = await session.scalar(
+            select(AgentRunState).where(
+                AgentRunState.run_id == run_id,
+                AgentRunState.workspace_id == run_workspace_id,
+            )
+        )
+        if plan is not None:
+            active_task = await session.scalar(
+                select(AgentPlanTask).where(
+                    AgentPlanTask.plan_id == plan.id,
+                    AgentPlanTask.status == PlanTaskStatus.RUNNING,
+                )
+            )
+        run_metadata = dict(run.metadata_json or {})
+        checkpoint_stage = run_metadata.get("execution_checkpoint_stage")
+        checkpoint = run_state.checkpoint if run_state is not None else {}
+        resumable_task = (
+            active_task is not None
+            and checkpoint.get("stage") == "TASK_READY"
+            and checkpoint.get("current_task_key") == active_task.task_key
+        )
+        if was_recovered and (
+            plan is None
+            or (active_task is not None and not resumable_task)
+            or checkpoint_stage == "MODEL_CALL_IN_FLIGHT"
+        ):
+            await session.rollback()
+            async with SessionFactory() as fail_session:
+                failed = await mark_unsafe_resume(
+                    fail_session,
+                    run_id,
+                    epoch,
+                    reason=(
+                        "A model/tool operation or planner call was in flight when "
+                        "the previous worker lease expired."
+                    ),
+                )
+            await _finish_agent_job(
+                job.id,
+                worker_id,
+                status=JobStatus.COMPLETED if failed else JobStatus.QUEUED,
+                result={"run_status": "FAILED_UNSAFE_RESUME"} if failed else None,
+                error=({"code": "RUN_RESUME_UNSAFE"} if failed else None),
+            )
+            return
+        if was_recovered:
+            await session.execute(
+                update(Span)
+                .where(
+                    Span.run_id == run_id,
+                    Span.span_type != SpanType.RUN,
+                    Span.status == SpanStatus.RUNNING,
+                )
+                .values(
+                    status=SpanStatus.FAILED,
+                    error_json={
+                        "code": "WORKER_LEASE_EXPIRED",
+                        "message": "Execution resumed from the last safe checkpoint.",
+                    },
+                    completed_at=datetime.now(UTC),
+                )
+            )
+        run_id = run.id
+        budget_usage = run_metadata.get("budget_usage", {})
+        counters = dict(budget_usage) if isinstance(budget_usage, dict) else {}
+        counters["execution_epoch"] = epoch
+        remaining_seconds = (
+            (run.deadline_at - datetime.now(UTC)).total_seconds()
+            if run.deadline_at is not None
+            else float(request.execution_budget.timeout_seconds)
+        )
+        context = ExecutionContext(
+            budget={
+                **request.execution_budget.model_dump(),
+                "max_agent_runs": request.execution_budget.max_model_calls,
+            },
+            trace_id=run.trace_id,
+            root_run_id=run.id,
+            deadline=monotonic() + remaining_seconds,
+            counters=counters,
+            job_id=job.id,
+            execution_owner=worker_id,
+        )
+        request = request.model_copy(update={"execution_run_id": run.id})
+        await AgentPlanStore(
+            session,
+            execution_epoch=epoch,
+            job_id=job.id,
+            execution_owner=worker_id,
+        ).append_event(
+            run,
+            "run.resumed" if was_recovered else "run.started",
+            {"execution_epoch": epoch},
+            deduplication_key=(
+                f"run.resumed.{epoch}" if was_recovered else f"run.started.{epoch}"
+            ),
+        )
+        await session.commit()
+
+    cancelled = asyncio.Event()
+    lease_lost = asyncio.Event()
+    context.cancel_check = lambda: cancelled.is_set() or lease_lost.is_set()
+    heartbeat = asyncio.create_task(
+        _heartbeat_agent_execution(
+            job.id, run_id, worker_id, epoch, cancelled, lease_lost
+        )
+    )
+    try:
+        runtime_session = SessionFactory()
+        async with runtime_session as session:
+            runtime = AgentRuntime(
+                session,
+                ModelProviderRegistry.from_settings(get_settings()),
+            )
+            result = await runtime.run(request, execution_context=context)
+        if lease_lost.is_set():
+            logger.warning("agent_execution_stale_worker_stopped", run_id=str(run_id))
+            return
+        await _finish_agent_job(
+            job.id,
+            worker_id,
+            status=JobStatus.COMPLETED,
+            result={"run_id": str(run_id), "run_status": result.status},
+        )
+    except RuntimeExecutionError as error:
+        if error.code == "RUN_EXECUTION_OWNERSHIP_LOST" or lease_lost.is_set():
+            logger.warning("agent_execution_fence_rejected_write", run_id=str(run_id))
+            return
+        await _finish_agent_job(
+            job.id,
+            worker_id,
+            status=JobStatus.COMPLETED,
+            result={"run_id": str(run_id), "run_status": "FAILED"},
+            error={"code": error.code, "message": error.message},
+        )
+    except Exception:
+        logger.exception("agent_execution_failed", run_id=str(run_id))
+        # Runtime strategy normally persists terminal failures itself. If the
+        # worker failed outside that boundary, leave the lease to expire so a
+        # new worker can inspect the checkpoint and either resume or fail safe.
+    finally:
+        heartbeat.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat
+
+
 async def run_worker() -> None:
     settings = get_settings()
     configure_logging(settings)
@@ -669,6 +953,8 @@ async def run_worker() -> None:
                     await process_approval_resume(job, worker_id)
                 elif job.job_type == JobType.EVALUATION_BATCH:
                     await process_evaluation_batch(job, worker_id)
+                elif job.job_type == JobType.AGENT_EXECUTION:
+                    await process_agent_execution(job, worker_id)
             except Exception:
                 logger.exception(
                     "job_processing_crashed",

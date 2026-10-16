@@ -2,7 +2,7 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,6 +17,7 @@ class RunCreateRequest(BaseModel):
     input: TextInput
     session_id: UUID
     agent_version_id: UUID
+    execution_mode: Literal["sync", "async"] = "sync"
 
 
 class RunErrorResponse(BaseModel):
@@ -96,3 +97,27 @@ class RunEventResponse(BaseModel):
 class RunEventCollectionResponse(BaseModel):
     data: list[RunEventResponse]
     next_cursor: int | None
+
+
+class ArtifactResponse(BaseModel):
+    id: UUID
+    run_id: UUID
+    task_id: UUID | None
+    artifact_type: str
+    mime_type: str
+    title: str
+    content_hash: str
+    metadata: dict[str, Any]
+    created_at: datetime
+
+
+class ArtifactCollectionResponse(BaseModel):
+    data: list[ArtifactResponse]
+
+
+class ArtifactContentResponse(BaseModel):
+    artifact_id: UUID
+    offset: int
+    next_offset: int | None
+    has_more: bool
+    content: str

@@ -10,7 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import Tool, ToolRiskLevel, ToolStatus, ToolType, ToolVersion
 
 BUILTIN_SLUGS = frozenset(
-    {"calculator", "current_datetime", "echo", "fetch_web_resource", "web_search"}
+    {
+        "calculator",
+        "current_datetime",
+        "echo",
+        "fetch_web_resource",
+        "read_artifact_content",
+        "web_search",
+    }
 )
 
 WEB_SEARCH_INPUT = {
@@ -77,6 +84,36 @@ FETCH_WEB_RESOURCE_OUTPUT = {
         "extracted_chars",
         "truncated",
         "page_count",
+    ],
+    "additionalProperties": False,
+}
+READ_ARTIFACT_CONTENT_INPUT = {
+    "type": "object",
+    "properties": {
+        "artifact_id": {"type": "string", "format": "uuid"},
+        "offset": {"type": "integer", "minimum": 0},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 12000},
+    },
+    "required": ["artifact_id"],
+    "additionalProperties": False,
+}
+READ_ARTIFACT_CONTENT_OUTPUT = {
+    "type": "object",
+    "properties": {
+        "artifact_id": {"type": "string", "format": "uuid"},
+        "title": {"type": "string"},
+        "offset": {"type": "integer"},
+        "next_offset": {"type": ["integer", "null"]},
+        "has_more": {"type": "boolean"},
+        "content": {"type": "string"},
+    },
+    "required": [
+        "artifact_id",
+        "title",
+        "offset",
+        "next_offset",
+        "has_more",
+        "content",
     ],
     "additionalProperties": False,
 }
@@ -159,6 +196,16 @@ def builtin_definitions() -> tuple[dict[str, Any], ...]:
             "input_schema": FETCH_WEB_RESOURCE_INPUT,
             "output_schema": FETCH_WEB_RESOURCE_OUTPUT,
             "config": {"function_name": "fetch_web_resource"},
+        },
+        {
+            "name": "read_artifact_content",
+            "description": (
+                "Read a bounded character range from a source snapshot fetched "
+                "earlier in this run."
+            ),
+            "input_schema": READ_ARTIFACT_CONTENT_INPUT,
+            "output_schema": READ_ARTIFACT_CONTENT_OUTPUT,
+            "config": {"function_name": "read_artifact_content"},
         },
     )
 

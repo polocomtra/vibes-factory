@@ -9,9 +9,9 @@ import {
     Check,
     ChevronDown,
     CircleAlert,
-    Clock3,
     Copy,
     Database,
+    Download,
     FileText,
     GitBranch,
     LoaderCircle,
@@ -42,7 +42,8 @@ import { ApprovalDecisionCard } from "../../../../components/approval-decision-c
 import { PrimarySelect } from "../../../../components/primary-select";
 import { fetchApprovals } from "../../../../lib/approvals";
 import {
-    createRun,
+    cancelRun,
+    createAsyncRun,
     createRunStream,
     createSession,
     fetchMessages,
@@ -51,6 +52,8 @@ import {
     fetchSessions,
     fetchRunTrace,
     fetchRunPlan,
+    fetchRunArtifactContent,
+    fetchRunArtifacts,
     fetchSessionTraces,
     fetchSpan,
     fetchTraceSpans,
@@ -59,6 +62,7 @@ import {
     type ChildRun,
     type Run,
     type RunPlan,
+    type RunArtifact,
     type Session,
     type Span,
     type RunTrace,
@@ -548,7 +552,96 @@ function citationsOf(message: Message): Citation[] {
     return Array.isArray(citations) ? (citations as Citation[]) : [];
 }
 
-function SourcesPanel({ citations }: { citations: Citation[] }) {
+function ResearchSourceCard({
+    citation,
+    runId,
+}: {
+    citation: Citation;
+    runId: string | null;
+}) {
+    const [snapshot, setSnapshot] = useState("");
+    const [nextOffset, setNextOffset] = useState(0);
+    const [hasMore, setHasMore] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const loadSnapshot = async (append: boolean) => {
+        if (!runId || !citation.artifact_id || loading) return;
+        setLoading(true);
+        setError(null);
+        try {
+            const result = await fetchRunArtifactContent(
+                runId,
+                citation.artifact_id,
+                append ? nextOffset : 0,
+            );
+            setSnapshot((current) => append ? current + result.content : result.content);
+            setNextOffset(result.next_offset ?? result.offset + result.content.length);
+            setHasMore(result.has_more);
+        } catch {
+            setError("Could not load the stored source. Try again.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <article className="source-card">
+            <span className="source-marker" aria-hidden="true">{citation.marker}</span>
+            <span className="source-card-content">
+                <strong>
+                    {citation.source_name}
+                    {citation.page ? ` · p.${citation.page}` : ""}
+                </strong>
+                <small>{citation.excerpt}</small>
+                {citation.score !== null && citation.score !== undefined ? (
+                    <small>
+                        Score {citation.score.toFixed(3)}
+                        {citation.generation !== null && citation.generation !== undefined
+                            ? ` · generation ${citation.generation}`
+                            : ""}
+                    </small>
+                ) : null}
+                {citation.source_url ? (
+                    <a className="source-url" href={citation.source_url} target="_blank" rel="noreferrer">
+                        Open original source
+                    </a>
+                ) : null}
+                {citation.artifact_id && runId ? (
+                    <div className="source-snapshot">
+                        <button
+                            type="button"
+                            className="source-snapshot-button"
+                            aria-expanded={snapshot.length > 0}
+                            onClick={() => snapshot ? setSnapshot("") : void loadSnapshot(false)}
+                            disabled={loading}
+                        >
+                            {loading ? "Loading source snapshot…" : snapshot ? "Hide inspected snapshot" : "Inspect stored snapshot"}
+                        </button>
+                        {error ? <p className="source-snapshot-error" role="alert">{error}</p> : null}
+                        {snapshot ? (
+                            <>
+                                <pre className="source-snapshot-content">{snapshot}</pre>
+                                {hasMore ? (
+                                    <button
+                                        type="button"
+                                        className="source-snapshot-button"
+                                        onClick={() => void loadSnapshot(true)}
+                                        disabled={loading}
+                                    >
+                                        {loading ? "Loading…" : "Load next section"}
+                                    </button>
+                                ) : null}
+                            </>
+                        ) : null}
+                    </div>
+                ) : null}
+            </span>
+        </article>
+    );
+}
+
+function SourcesPanel({ citations, runId }: { citations: Citation[]; runId: string | null }) {
     if (citations.length === 0) return null;
     return (
         <details className="sources-panel">
@@ -580,41 +673,288 @@ function SourcesPanel({ citations }: { citations: Citation[] }) {
             </summary>
             <div className="sources-list" aria-label="Retrieved sources">
                 {citations.map((citation) => (
-                    <button
-                        className="source-card"
-                        type="button"
-                        key={citation.marker}
-                        aria-label={`Source ${citation.marker}: ${citation.source_name}${citation.page ? `, page ${citation.page}` : ""}`}
-                        onClick={() =>
-                            document
-                                .getElementById(`source-${citation.marker}`)
-                                ?.scrollIntoView({
-                                    behavior: "smooth",
-                                    block: "center",
-                                })
-                        }
-                    >
-                        <span
-                            className="source-marker"
-                            id={`source-${citation.marker}`}
-                            aria-hidden="true"
-                        >
-                            {citation.marker}
-                        </span>
-                        <span>
-                            <strong>
-                                {citation.source_name}
-                                {citation.page ? ` · p.${citation.page}` : ""}
-                            </strong>
-                            <small>{citation.excerpt}</small>
-                            <small>
-                                Score {citation.score.toFixed(3)} · generation {citation.generation}
-                            </small>
-                        </span>
-                    </button>
+                    <ResearchSourceCard key={citation.marker} citation={citation} runId={runId} />
                 ))}
             </div>
         </details>
+    );
+}
+
+function RunArtifactsPanel({
+    runId,
+    refreshKey,
+}: {
+    runId: string | null;
+    refreshKey: string;
+}) {
+    const [artifacts, setArtifacts] = useState<RunArtifact[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
+    const [contents, setContents] = useState<Record<string, string>>({});
+    const [nextOffsets, setNextOffsets] = useState<Record<string, number>>({});
+    const [hasMore, setHasMore] = useState<Record<string, boolean>>({});
+    const [contentLoading, setContentLoading] = useState<string | null>(null);
+    const [downloadingId, setDownloadingId] = useState<string | null>(null);
+    const [fullViewArtifact, setFullViewArtifact] = useState<RunArtifact | null>(null);
+    const [fullViewContent, setFullViewContent] = useState<string | null>(null);
+    const [fullViewLoading, setFullViewLoading] = useState(false);
+    const fullViewCloseRef = useRef<HTMLButtonElement>(null);
+    const fullViewDialogRef = useRef<HTMLElement>(null);
+    const previousFullViewFocusRef = useRef<HTMLElement | null>(null);
+
+    const fetchCompleteContent = async (artifactId: string) => {
+        if (!runId) throw new Error("No run is selected.");
+        const chunks: string[] = [];
+        let offset = 0;
+        let hasNext = true;
+        while (hasNext) {
+            const result = await fetchRunArtifactContent(runId, artifactId, offset, 16_000);
+            chunks.push(result.content);
+            hasNext = result.has_more;
+            const nextOffset = result.next_offset ?? offset + result.content.length;
+            if (nextOffset <= offset && hasNext) {
+                throw new Error("Artifact content could not be read completely.");
+            }
+            offset = nextOffset;
+        }
+        return chunks.join("");
+    };
+
+    const openFullView = async (artifact: RunArtifact) => {
+        setFullViewArtifact(artifact);
+        setFullViewContent(null);
+        setFullViewLoading(true);
+        try {
+            setFullViewContent(await fetchCompleteContent(artifact.id));
+        } catch {
+            setError("Could not load the complete artifact. Try again.");
+            setFullViewArtifact(null);
+        } finally {
+            setFullViewLoading(false);
+        }
+    };
+
+    const downloadArtifact = async (artifact: RunArtifact) => {
+        if (downloadingId) return;
+        setDownloadingId(artifact.id);
+        setError(null);
+        try {
+            const content = await fetchCompleteContent(artifact.id);
+            const mediaType = artifact.mime_type.split(";", 1)[0].trim().toLowerCase();
+            const extension = mediaType === "text/markdown"
+                ? ".md"
+                : mediaType === "application/pdf"
+                  ? ".pdf"
+                  : mediaType === "text/html"
+                    ? ".html"
+                    : ".txt";
+            const safeTitle = artifact.title
+                .normalize("NFKD")
+                .replace(/[\u0300-\u036f]/g, "")
+                .replace(/[^a-zA-Z0-9._-]+/g, "-")
+                .replace(/^[.-]+|[.-]+$/g, "") || "artifact";
+            const filename = /\.(md|txt|html|pdf)$/i.test(safeTitle)
+                ? safeTitle
+                : `${safeTitle}${extension}`;
+            const blob = new Blob([content], { type: artifact.mime_type || "text/plain" });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = filename;
+            document.body.append(link);
+            link.click();
+            link.remove();
+            window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+        } catch {
+            setError("Could not download this artifact. Try again.");
+        } finally {
+            setDownloadingId(null);
+        }
+    };
+
+    const closeFullView = useCallback(() => setFullViewArtifact(null), []);
+
+    useEffect(() => {
+        if (!fullViewArtifact) return;
+        previousFullViewFocusRef.current = document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : null;
+        const previousBodyOverflow = document.body.style.overflow;
+        const previousBodyPaddingRight = document.body.style.paddingRight;
+        const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+        document.body.style.overflow = "hidden";
+        if (scrollbarWidth > 0) document.body.style.paddingRight = `${scrollbarWidth}px`;
+        const focusFrame = window.requestAnimationFrame(() => fullViewCloseRef.current?.focus({ preventScroll: true }));
+        function onKeyDown(event: KeyboardEvent) {
+            if (event.key === "Escape") {
+                event.preventDefault();
+                closeFullView();
+                return;
+            }
+            if (event.key !== "Tab" || !fullViewDialogRef.current) return;
+            const focusable = Array.from(fullViewDialogRef.current.querySelectorAll<HTMLElement>("button:not(:disabled), [href], [tabindex]:not([tabindex='-1'])"));
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+                event.preventDefault();
+                last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+                event.preventDefault();
+                first?.focus();
+            }
+        }
+        document.addEventListener("keydown", onKeyDown);
+        return () => {
+            window.cancelAnimationFrame(focusFrame);
+            document.removeEventListener("keydown", onKeyDown);
+            document.body.style.overflow = previousBodyOverflow;
+            document.body.style.paddingRight = previousBodyPaddingRight;
+            previousFullViewFocusRef.current?.focus({ preventScroll: true });
+            previousFullViewFocusRef.current = null;
+        };
+    }, [closeFullView, fullViewArtifact]);
+
+    useEffect(() => {
+        let cancelled = false;
+        setArtifacts([]);
+        setContents({});
+        setExpandedId(null);
+        setError(null);
+        if (!runId) return;
+        setLoading(true);
+        void fetchRunArtifacts(runId)
+            .then((result) => {
+                if (!cancelled) setArtifacts(result);
+            })
+            .catch(() => {
+                if (!cancelled) setError("Could not load artifacts for this run.");
+            })
+            .finally(() => {
+                if (!cancelled) setLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [runId, refreshKey]);
+
+    const loadContent = async (artifact: RunArtifact, append = false) => {
+        if (!runId || contentLoading) return;
+        setContentLoading(artifact.id);
+        try {
+            const result = await fetchRunArtifactContent(
+                runId,
+                artifact.id,
+                append ? (nextOffsets[artifact.id] ?? 0) : 0,
+                4_000,
+            );
+            setContents((current) => ({
+                ...current,
+                [artifact.id]: append
+                    ? (current[artifact.id] ?? "") + result.content
+                    : result.content,
+            }));
+            setNextOffsets((current) => ({
+                ...current,
+                [artifact.id]: result.next_offset ?? result.offset + result.content.length,
+            }));
+            setHasMore((current) => ({ ...current, [artifact.id]: result.has_more }));
+        } catch {
+            setError("Could not load artifact content. Try again.");
+        } finally {
+            setContentLoading(null);
+        }
+    };
+
+    if (!runId) return null;
+    return (
+        <section className="run-artifacts-panel" aria-label="Run artifacts">
+            <div className="panel-heading">
+                <div>
+                    <span className="panel-kicker">Research output</span>
+                    <h2>Artifacts</h2>
+                </div>
+                <span className="session-trace-count">{artifacts.length}</span>
+            </div>
+            {loading ? <p className="panel-copy" role="status">Loading artifacts…</p> : null}
+            {error ? <p className="run-artifacts-error" role="alert">{error}</p> : null}
+            {!loading && !error && artifacts.length === 0 ? (
+                <p className="panel-copy">No artifacts were saved for this run.</p>
+            ) : null}
+            <ul className="run-artifact-list">
+                {artifacts.map((artifact) => {
+                    const open = expandedId === artifact.id;
+                    const content = contents[artifact.id];
+                    const sourceUrl = artifact.metadata.source_url;
+                    return (
+                        <li className="run-artifact" key={artifact.id}>
+                            <button
+                                className="run-artifact-toggle"
+                                type="button"
+                                aria-expanded={open}
+                                onClick={() => {
+                                    if (open) {
+                                        setExpandedId(null);
+                                    } else {
+                                        setExpandedId(artifact.id);
+                                        if (content === undefined) void loadContent(artifact);
+                                    }
+                                }}
+                            >
+                                <FileText size={15} aria-hidden="true" />
+                                <span>
+                                    <strong>{artifact.title}</strong>
+                                    <small>{artifact.artifact_type.replaceAll("_", " ")}</small>
+                                </span>
+                                <ChevronDown size={14} aria-hidden="true" />
+                            </button>
+                            {open ? (
+                                <div className="run-artifact-detail">
+                                    {typeof sourceUrl === "string" && sourceUrl ? (
+                                        <a href={sourceUrl} target="_blank" rel="noreferrer">Open original source</a>
+                                    ) : null}
+                                    {content === undefined || contentLoading === artifact.id ? (
+                                        <p className="panel-copy" role="status">Loading saved content…</p>
+                                    ) : (
+                                        <pre>{content}</pre>
+                                    )}
+                                    <div className="run-artifact-actions">
+                                        <button className="button secondary-button" type="button" disabled={contentLoading === artifact.id} onClick={() => void openFullView(artifact)}>
+                                            <Maximize2 size={14} aria-hidden="true" />Open full view
+                                        </button>
+                                        <button className="button secondary-button" type="button" disabled={downloadingId !== null} onClick={() => void downloadArtifact(artifact)}>
+                                            <Download size={14} aria-hidden="true" />{downloadingId === artifact.id ? "Preparing…" : "Download"}
+                                        </button>
+                                    </div>
+                                    {content !== undefined && hasMore[artifact.id] ? (
+                                        <button
+                                            className="source-snapshot-button"
+                                            type="button"
+                                            disabled={contentLoading !== null}
+                                            onClick={() => void loadContent(artifact, true)}
+                                        >
+                                            {contentLoading === artifact.id ? "Loading…" : "Load next section"}
+                                        </button>
+                                    ) : null}
+                                </div>
+                            ) : null}
+                        </li>
+                    );
+                })}
+            </ul>
+            {fullViewArtifact ? createPortal(
+                <div className="trace-modal-backdrop workflow-output-modal-backdrop artifact-full-view-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeFullView(); }}>
+                    <section className="workflow-output-modal artifact-full-view-modal" role="dialog" aria-modal="true" aria-labelledby={`artifact-full-view-${fullViewArtifact.id}`} ref={fullViewDialogRef}>
+                        <header className="workflow-output-modal-header">
+                            <div><span className="eyebrow">Artifact · {fullViewArtifact.artifact_type.replaceAll("_", " ")}</span><h2 id={`artifact-full-view-${fullViewArtifact.id}`}>{fullViewArtifact.title}</h2></div>
+                            <button ref={fullViewCloseRef} className="icon-button" type="button" aria-label="Close artifact full view" onClick={closeFullView}><X size={17} aria-hidden="true" /></button>
+                        </header>
+                        <div className="workflow-output-modal-body">
+                            {fullViewLoading ? <p className="panel-copy" role="status">Loading complete artifact…</p> : fullViewContent !== null ? fullViewArtifact.mime_type.includes("markdown") ? <article className="message-content workflow-output-expanded-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{fullViewContent}</ReactMarkdown></article> : <pre className="artifact-full-view-plain">{fullViewContent}</pre> : null}
+                        </div>
+                    </section>
+                </div>,
+                document.body,
+            ) : null}
+        </section>
     );
 }
 
@@ -697,12 +1037,20 @@ function PlaygroundMessage({
     const usedExternalResearch = tools.some(
         (tool) => tool.name.trim().toLowerCase() === "web_search",
     );
+    const messageCitations = citationsOf(message);
+    const researchCitations = messageCitations.filter(
+        (citation) => Boolean(citation.artifact_id),
+    );
     const citations =
-        message.role === "ASSISTANT" && !usedExternalResearch
-            ? citationsOf(message).length > 0
-                ? citationsOf(message)
-                : fallbackCitations
-            : [];
+        message.role !== "ASSISTANT"
+            ? []
+            : researchCitations.length > 0
+              ? messageCitations
+              : !usedExternalResearch
+                ? messageCitations.length > 0
+                    ? messageCitations
+                    : fallbackCitations
+                : [];
     return (
         <div
             className={`playground-message-wrap ${message.role.toLowerCase()}`}
@@ -744,7 +1092,7 @@ function PlaygroundMessage({
                 ) : null}
                 <CopyButton text={content} />
             </div>
-            {citations.length > 0 ? <SourcesPanel citations={citations} /> : null}
+            {citations.length > 0 ? <SourcesPanel citations={citations} runId={message.run_id} /> : null}
             {expandedOutputOpen
                 ? createPortal(
                       <div
@@ -1221,11 +1569,12 @@ export default function PlaygroundPage() {
     const [composer, setComposer] = useState("");
     const [lastRun, setLastRun] = useState<Run | null>(null);
     const [runPlan, setRunPlan] = useState<RunPlan | null>(null);
+    const [runDetailsView, setRunDetailsView] = useState<"overview" | "plan" | "artifacts">("overview");
     const [sessionTraces, setSessionTraces] = useState<TraceListItem[]>([]);
     const [tracesLoading, setTracesLoading] = useState(false);
     const [traceRunId, setTraceRunId] = useState<string | null>(null);
     const [status, setStatus] = useState<
-        "READY" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED"
+        "READY" | "RUNNING" | "CANCELLING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED" | "CANCELLED"
     >("READY");
     const [streamingText, setStreamingText] = useState("");
     const [showJumpToLatest, setShowJumpToLatest] = useState(false);
@@ -1287,8 +1636,8 @@ export default function PlaygroundPage() {
         [],
     );
 
-    const restoreLatestRun = useCallback(async (history: Message[]) => {
-        const latestRunId = [...history]
+    const restoreLatestRun = useCallback(async (history: Message[], requestedRunId?: string | null) => {
+        const latestRunId = requestedRunId ?? [...history]
             .reverse()
             .find((message) => message.run_id)?.run_id;
         if (!latestRunId) {
@@ -1305,10 +1654,25 @@ export default function PlaygroundPage() {
                     ? "COMPLETED"
                     : run.status === "FAILED"
                       ? "FAILED"
+                      : run.status === "CANCELLED"
+                        ? "CANCELLED"
                       : run.status === "WAITING_APPROVAL"
                         ? "WAITING_APPROVAL"
                       : "RUNNING",
             );
+            if (
+                run.execution_mode === "async" &&
+                !["COMPLETED", "FAILED", "CANCELLED"].includes(run.status)
+            ) {
+                setStreamRunId(run.id);
+            }
+            if (run.execution_mode === "async") {
+                try {
+                    setRunPlan(await fetchRunPlan(run.id));
+                } catch {
+                    setRunPlan(null);
+                }
+            }
             const [children, spans] = await Promise.all([
                 fetchRunChildren(run.id),
                 fetchTraceSpans(run.trace_id),
@@ -1408,7 +1772,7 @@ export default function PlaygroundPage() {
     }, []);
 
     useEffect(() => {
-        if (!busy || !streamRunId) return;
+        if (!streamRunId || (status !== "RUNNING" && status !== "CANCELLING")) return;
         let cancelled = false;
 
         const syncPersistedRun = async () => {
@@ -1419,8 +1783,22 @@ export default function PlaygroundPage() {
                 ]);
                 if (cancelled) return;
 
+                if (run.execution_mode === "async" && run.status !== "FAILED" && run.status !== "COMPLETED" && run.status !== "CANCELLED") {
+                    setLastRun(run);
+                    setStatus(run.cancellation_requested_at ? "CANCELLING" : "RUNNING");
+                    setToolActivity(run.status === "QUEUED"
+                        ? "Queued for background execution…"
+                        : run.cancellation_requested_at
+                          ? "Stopping the run safely…"
+                          : "Research is running in the background…");
+                    try {
+                        setRunPlan(await fetchRunPlan(run.id));
+                    } catch {
+                        // The plan is not available until the planner checkpoint commits.
+                    }
+                }
                 const terminalRun =
-                    run.status === "COMPLETED" || run.status === "FAILED";
+                    run.status === "COMPLETED" || run.status === "FAILED" || run.status === "CANCELLED";
                 if (terminalRun) {
                     setLastRun(run);
                     setToolActivity(null);
@@ -1428,6 +1806,9 @@ export default function PlaygroundPage() {
                     if (run.status === "COMPLETED") {
                         setStatus("COMPLETED");
                         setStreamingText("");
+                    } else if (run.status === "CANCELLED") {
+                        setStatus("CANCELLED");
+                        setError(null);
                     } else {
                         setStatus("FAILED");
                         setError(
@@ -1471,7 +1852,15 @@ export default function PlaygroundPage() {
                     });
                 }
                 if (terminalRun) {
-                    if (sessionId) void reloadMessages(sessionId);
+                    if (sessionId) {
+                        void reloadMessages(sessionId);
+                        void refreshSessionTraces(sessionId);
+                    }
+                    if (run.execution_mode === "async") {
+                        void fetchRunPlan(run.id)
+                            .then(setRunPlan)
+                            .catch(() => setRunPlan(null));
+                    }
                     setBusy(false);
                     abortControllerRef.current?.abort();
                 }
@@ -1489,7 +1878,7 @@ export default function PlaygroundPage() {
             cancelled = true;
             window.clearInterval(interval);
         };
-    }, [busy, streamRunId, reloadMessages, sessionId]);
+    }, [busy, status, streamRunId, reloadMessages, refreshSessionTraces, sessionId]);
 
     useEffect(() => {
         let cancelled = false;
@@ -1518,7 +1907,12 @@ export default function PlaygroundPage() {
                     setSessionId(selected.id);
                     void refreshSessionTraces(selected.id);
                     const history = await reloadMessages(selected.id);
-                    if (!cancelled) await restoreLatestRun(history);
+                    if (!cancelled) {
+                        const requestedRunId = new URLSearchParams(
+                            window.location.search,
+                        ).get("run_id");
+                        await restoreLatestRun(history, requestedRunId);
+                    }
                 }
             } catch (reason: unknown) {
                 if (!cancelled)
@@ -1647,15 +2041,28 @@ export default function PlaygroundPage() {
             const versionConfig = await fetchVersion(agentId, selectedVersionId);
             if (versionConfig.runtime_config.execution_strategy === "PLAN_AND_EXECUTE") {
                 setToolActivity("Planning tasks and assessing progress…");
-                const run = await createRun(
+                const run = await createAsyncRun(
                     agentId,
                     sessionId,
                     selectedVersionId,
                     text,
+                    crypto.randomUUID(),
                     controller.signal,
                 );
                 activeRunId = run.id;
                 setStreamRunId(run.id);
+                setLastRun(run);
+                setStatus(
+                    run.status === "COMPLETED"
+                        ? "COMPLETED"
+                        : run.status === "FAILED"
+                          ? "FAILED"
+                          : "RUNNING",
+                );
+                router.replace(
+                    `/agents/${agentId}/playground?session_id=${sessionId}&run_id=${run.id}`,
+                    { scroll: false },
+                );
                 terminal = run.status === "COMPLETED" ? "COMPLETED" : run.status === "FAILED" ? "FAILED" : null;
                 failureMessage = run.error?.message ?? null;
                 setStreamingText(run.output?.text ?? "");
@@ -2050,13 +2457,45 @@ export default function PlaygroundPage() {
                                 </div>
                                 <div className="run-status-area">
                                     <StatusBadge status={status} />
+                                {lastRun?.execution_mode === "async" &&
+                                (status === "RUNNING" || status === "CANCELLING") ? (
+                                    <button
+                                        className="button danger-button playground-stop-run-button"
+                                        type="button"
+                                        disabled={status === "CANCELLING"}
+                                        onClick={() => {
+                                            if (!lastRun) return;
+                                            setStatus("CANCELLING");
+                                            setToolActivity("Stopping the run safely…");
+                                            void cancelRun(lastRun.id)
+                                                .then((run) => {
+                                                    setLastRun(run);
+                                                    if (run.status === "CANCELLED") {
+                                                        setStatus("CANCELLED");
+                                                        setBusy(false);
+                                                        setToolActivity(null);
+                                                    }
+                                                })
+                                                .catch((reason: unknown) => {
+                                                    setStatus("RUNNING");
+                                                    setError(
+                                                        reason instanceof Error
+                                                            ? reason.message
+                                                            : "Unable to cancel this run.",
+                                                    );
+                                                });
+                                        }}
+                                    >
+                                        {status === "CANCELLING" ? "Stopping…" : "Stop run"}
+                                    </button>
+                                ) : null}
                                     <span
                                         className="sr-only"
                                         role="status"
                                         aria-live="polite"
                                         aria-atomic="true"
                                     >
-                                        {busy
+                                        {busy || status === "RUNNING" || status === "CANCELLING"
                                             ? (toolActivity ??
                                               (streamingText
                                                   ? "Generating response"
@@ -2130,7 +2569,7 @@ export default function PlaygroundPage() {
                                         ),
                                     )
                                 )}
-                                {toolActivity && busy && status === "RUNNING" ? (
+                                {toolActivity && (busy || status === "RUNNING" || status === "CANCELLING") ? (
                                     <div
                                         className="tool-runtime-panel tool-runtime-live"
                                         role="status"
@@ -2173,7 +2612,7 @@ export default function PlaygroundPage() {
                                     </article>
                                 ) : null}
                                 {showJumpToLatest ? <button className="button subtle-button playground-jump-to-latest" type="button" onClick={jumpToLatest}><ArrowDown size={14} aria-hidden="true" />Jump to latest</button> : null}
-                                {busy && !streamingText && !toolActivity ? (
+                                {(busy || status === "RUNNING" || status === "CANCELLING") && !streamingText && !toolActivity ? (
                                     <article className="playground-message assistant processing-message">
                                         <div className="message-meta">
                                             <span>{agent.name}</span>
@@ -2257,81 +2696,36 @@ export default function PlaygroundPage() {
                             </div>
                         </section>
                         <aside className="playground-side-column">
-                            <section className="panel runtime-summary-panel">
-                                <div className="panel-heading">
-                                    <div>
-                                        <span className="panel-kicker">
-                                            Runtime context
-                                        </span>
-                                        <h2>Execution summary</h2>
-                                    </div>
-                                    <Clock3 size={17} aria-hidden="true" />
-                                </div>
-                                <dl className="runtime-summary-list">
-                                    <div>
-                                        <dt>Version</dt>
-                                        <dd>
-                                            v{selectedVersion.version_number}
-                                        </dd>
-                                    </div>
-                                    <div>
-                                        <dt>Version ID</dt>
-                                        <dd>
-                                            {selectedVersion.id.slice(0, 8)}…
-                                        </dd>
-                                    </div>
-                                    <div>
-                                        <dt>Session</dt>
-                                        <dd>{sessionId.slice(0, 8)}…</dd>
-                                    </div>
-                                    <div>
-                                        <dt>Usage</dt>
-                                        <dd>
-                                            {lastRun?.usage?.total_tokens?.toLocaleString() ??
-                                                "—"}{" "}
-                                            tokens
-                                        </dd>
-                                    </div>
-                                    <div>
-                                        <dt>Child runs</dt>
-                                        <dd>
-                                            {lastRun?.usage?.child_runs ?? "—"}
-                                        </dd>
-                                    </div>
-                                    <div>
-                                        <dt>Estimated cost</dt>
-                                        <dd>
-                                            {lastRun?.estimated_cost ?? "—"}
-                                        </dd>
-                                    </div>
-                                </dl>
-                            </section>
-                            {runPlan ? (
-                                <section className="panel planned-run-panel" aria-label="Execution plan">
-                                    <div className="panel-heading">
+                            <section className="panel run-details-panel" aria-label="Run details">
+                                <header className="run-details-header">
+                                    <div className="run-details-title">
                                         <div>
-                                            <span className="panel-kicker">Plan &amp; Execute</span>
-                                            <h2>Task progress</h2>
+                                            <span className="panel-kicker">Run details</span>
+                                            <h2>{lastRun ? "Execution inspector" : "Playground overview"}</h2>
                                         </div>
-                                        <StatusBadge status={runPlan.status} />
+                                        {lastRun ? <StatusBadge status={lastRun.result_status === "PARTIAL" ? "PARTIAL" : lastRun.status} /> : null}
                                     </div>
-                                    <p className="panel-copy">
-                                        {runPlan.tasks.filter((task) => task.status === "COMPLETED").length} of {runPlan.tasks.length} tasks completed
-                                        {runPlan.replan_count ? ` · ${runPlan.replan_count} replans` : ""}
-                                    </p>
-                                    <ol className="planned-task-list">
-                                        {runPlan.tasks.map((task) => (
-                                            <li key={task.id} className={`planned-task ${task.status.toLowerCase()}`}>
-                                                <span className="planned-task-status">{task.status.replaceAll("_", " ")}</span>
-                                                <strong>{task.description}</strong>
-                                                {task.result?.summary ? <small>{task.result.summary}</small> : null}
-                                            </li>
-                                        ))}
-                                    </ol>
-                                </section>
-                            ) : null}
+                                    <dl className="run-details-summary">
+                                        <div><dt>Version</dt><dd>v{selectedVersion.version_number}</dd></div>
+                                        <div><dt>Usage</dt><dd>{lastRun?.usage?.total_tokens?.toLocaleString() ?? "—"} tokens</dd></div>
+                                        <div><dt>Cost</dt><dd>{lastRun?.estimated_cost ?? "—"}</dd></div>
+                                    </dl>
+                                    <div className="run-details-nav" role="group" aria-label="Run detail views">
+                                        <button type="button" aria-pressed={runDetailsView === "overview"} className={runDetailsView === "overview" ? "active" : ""} onClick={() => setRunDetailsView("overview")}>Overview <span>{sessionTraces.length}</span></button>
+                                        <button type="button" aria-pressed={runDetailsView === "plan"} className={runDetailsView === "plan" ? "active" : ""} onClick={() => setRunDetailsView("plan")}>Plan{runPlan ? <span>{runPlan.tasks.filter((task) => task.status === "COMPLETED").length}/{runPlan.tasks.length}</span> : null}</button>
+                                        <button type="button" aria-pressed={runDetailsView === "artifacts"} className={runDetailsView === "artifacts" ? "active" : ""} onClick={() => setRunDetailsView("artifacts")}>Artifacts</button>
+                                    </div>
+                                </header>
+                                <div className="run-details-content">
+                                    {runDetailsView === "overview" ? (
+                                        <div className="run-details-overview">
+                                            <dl className="run-details-extra">
+                                                <div><dt>Version ID</dt><dd title={selectedVersion.id}>{selectedVersion.id.slice(0, 8)}…</dd></div>
+                                                <div><dt>Session</dt><dd title={sessionId}>{sessionId.slice(0, 8)}…</dd></div>
+                                                <div><dt>Child runs</dt><dd>{lastRun?.usage?.child_runs ?? "—"}</dd></div>
+                                            </dl>
                             <section
-                                className="panel recent-run-panel"
+                                className="recent-run-panel"
                                 aria-busy={tracesLoading}
                             >
                                 <div className="panel-heading">
@@ -2539,6 +2933,46 @@ export default function PlaygroundPage() {
                                         trace and spans.
                                     </p>
                                 )}
+                            </section>
+                                        </div>
+                                    ) : null}
+                                    {runDetailsView === "plan" ? (
+                                    runPlan ? (
+                                <section className="planned-run-panel" aria-label="Execution plan">
+                                    <div className="panel-heading">
+                                        <div>
+                                            <span className="panel-kicker">Plan &amp; Execute</span>
+                                            <h2>Task progress</h2>
+                                        </div>
+                                        <StatusBadge status={runPlan.status} />
+                                    </div>
+                                    <p className="panel-copy">
+                                        {runPlan.tasks.filter((task) => task.status === "COMPLETED").length} of {runPlan.tasks.length} tasks completed
+                                        {runPlan.replan_count ? ` · ${runPlan.replan_count} replans` : ""}
+                                    </p>
+                                    <ol className="planned-task-list">
+                                        {runPlan.tasks.map((task) => (
+                                            <li key={task.id} className={`planned-task ${task.status.toLowerCase()}`}>
+                                                <span className="planned-task-status">{task.status.replaceAll("_", " ")}</span>
+                                                <strong>{task.description}</strong>
+                                                {task.result?.summary ? (
+                                                    <small className="planned-task-output">
+                                                        {task.result.summary}
+                                                    </small>
+                                                ) : null}
+                                            </li>
+                                        ))}
+                                    </ol>
+                                </section>
+                                    ) : <p className="panel-copy">Plan details will appear when a run starts.</p>
+                                    ) : null}
+                                    {runDetailsView === "artifacts" ? (
+                                        lastRun ? <RunArtifactsPanel
+                                runId={lastRun?.id ?? null}
+                                refreshKey={`${lastRun?.status ?? "none"}:${lastRun?.completed_at ?? ""}`}
+                            /> : <p className="panel-copy">Artifacts will appear here after a run produces saved research output.</p>
+                                    ) : null}
+                                </div>
                             </section>
                         </aside>
                     </main>

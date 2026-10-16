@@ -177,7 +177,9 @@ def test_budget_tracker_accumulates_model_rounds_and_tool_calls() -> None:
     assert tracker.usage().total_tokens == 6
 
 
-def test_shared_execution_context_accumulates_tree_counters_and_reports_limits() -> None:
+def test_shared_execution_context_accumulates_tree_counters_and_reports_limits() -> (
+    None
+):
     context = ExecutionContext(
         budget={
             "max_steps": 3,
@@ -191,9 +193,7 @@ def test_shared_execution_context_accumulates_tree_counters_and_reports_limits()
         },
         trace_id=uuid4(),
     )
-    child = context.fork(
-        parent_run_id=uuid4(), parent_span_id=uuid4(), agent_depth=1
-    )
+    child = context.fork(parent_run_id=uuid4(), parent_span_id=uuid4(), agent_depth=1)
 
     context.increment("agent_runs", limit_name="max_agent_runs")
     child.increment("child_runs", limit_name="max_child_runs")

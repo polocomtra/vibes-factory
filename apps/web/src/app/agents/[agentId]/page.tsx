@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Sparkles,
   Plus,
+  RefreshCw,
   Trash2,
   Users,
   X,
@@ -185,6 +186,7 @@ export default function AgentDetailPage() {
     Set<string>
   >(new Set());
   const [catalogTools, setCatalogTools] = useState<Tool[]>([]);
+  const [catalogRefreshing, setCatalogRefreshing] = useState(false);
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [knowledgeBindings, setKnowledgeBindings] = useState<KnowledgeBinding[]>([]);
   const [memoryStores, setMemoryStores] = useState<MemoryStore[]>([]);
@@ -216,6 +218,22 @@ export default function AgentDetailPage() {
     window.addEventListener("popstate", readTab);
     return () => window.removeEventListener("popstate", readTab);
   }, []);
+
+  const refreshToolCatalog = useCallback(async () => {
+    if (!agent?.workspace_id) return;
+    setCatalogRefreshing(true);
+    try {
+      setCatalogTools(await fetchTools(agent.workspace_id));
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : "Unable to refresh tools.");
+    } finally {
+      setCatalogRefreshing(false);
+    }
+  }, [agent?.workspace_id]);
+
+  useEffect(() => {
+    if (tab === "tools") void refreshToolCatalog();
+  }, [refreshToolCatalog, tab]);
 
   function selectTab(nextTab: AgentTab) {
     setTab(nextTab);
@@ -989,6 +1007,20 @@ export default function AgentDetailPage() {
               <h2>Tools for this draft</h2>
             </div>
             <div className="agent-tools-heading-actions">
+              <button
+                className="button secondary-button"
+                type="button"
+                onClick={() => void refreshToolCatalog()}
+                disabled={catalogRefreshing}
+                aria-label="Refresh tool catalog"
+              >
+                <RefreshCw
+                  size={14}
+                  aria-hidden="true"
+                  className={catalogRefreshing ? "spin" : undefined}
+                />
+                Refresh catalog
+              </button>
               <span
                 className={
                   "tool-binding-state " +

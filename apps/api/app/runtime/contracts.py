@@ -124,15 +124,17 @@ class Citation(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     marker: str
-    chunk_id: UUID
-    document_id: UUID
-    knowledge_base_id: UUID
+    chunk_id: UUID | None = None
+    document_id: UUID | None = None
+    knowledge_base_id: UUID | None = None
     source_name: str
     page: int | None = None
     section: str | None = None
-    score: float
-    generation: int
+    score: float | None = None
+    generation: int | None = None
     excerpt: str = Field(max_length=500)
+    artifact_id: UUID | None = None
+    source_url: str | None = None
 
 
 class AgentVersionRuntimeConfig(BaseModel):
@@ -182,6 +184,7 @@ class AgentRunRequest(BaseModel):
     memory_results: tuple[RuntimeMemoryResult, ...] = ()
     resume_run_id: UUID | None = None
     resume_approval_id: UUID | None = None
+    execution_run_id: UUID | None = None
     deployment_id: UUID | None = None
     public_invocation_id: UUID | None = None
     metadata: dict[str, str] = Field(default_factory=dict)

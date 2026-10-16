@@ -1,0 +1,35 @@
+{
+  "objective": "Compare Cloud Run and AWS ECS Fargate for hosting an Agentic AI runtime.",
+  "initial_tasks": [
+    {"key": "cloud_run", "description": "Read official Cloud Run scaling and networking sources", "dependencies": []},
+    {"key": "fargate", "description": "Read official ECS Fargate scaling and networking sources", "dependencies": []},
+    {"key": "compare", "description": "Compare operational limits and costs", "dependencies": ["cloud_run", "fargate"]}
+  ],
+  "gap": "Comparable cost cannot be calculated without region, CPU, memory, traffic, and task duration.",
+  "follow_up_task": {"key": "cost_inputs", "description": "List deployment inputs required for a comparable cost estimate", "dependencies": ["compare"]},
+  "sources": [
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "title": "Cloud Run autoscaling documentation",
+      "url": "https://cloud.google.com/run/docs/about-instance-autoscaling",
+      "content": "Cloud Run automatically scales the number of instances based on incoming requests and configured concurrency. Minimum instances can reduce cold starts, while maximum instances can cap scale out.",
+      "inspected_excerpt": "Cloud Run automatically scales the number of instances based on incoming requests and configured concurrency."
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000002",
+      "title": "Amazon ECS Fargate documentation",
+      "url": "https://docs.aws.amazon.com/AmazonECS/latest/developerguide/AWS_Fargate.html",
+      "content": "AWS Fargate is a serverless, pay-as-you-go compute engine for running containers with Amazon ECS. Capacity and task configuration affect the resources billed.",
+      "inspected_excerpt": "AWS Fargate is a serverless, pay-as-you-go compute engine for running containers with Amazon ECS."
+    }
+  ],
+  "report": "Cloud Run scales instances based on incoming requests and configured concurrency [S1]. Fargate runs ECS containers with task resources that affect billing [S2]. A direct cost comparison needs deployment-specific inputs.",
+  "failure_scenarios": {
+    "inaccessible_source": {"tool_error": "RESOURCE_FETCH_FAILED", "expected": "continue_with_gap"},
+    "conflicting_sources": {"source_ids": ["S1", "S2"], "expected": "cite_both_and_state_conflict"},
+    "invalid_citation": {"source_id": "S99", "expected": "omit_and_mark_partial"},
+    "timeout": {"error": "RUN_TIMEOUT", "expected": "preserve_completed_findings"},
+    "worker_restart": {"checkpoint": "TASK_READY", "expected": "resume_without_repeating_completed_task"},
+    "partial_report": {"expected": "include_known_gaps_and_partial_status"}
+  }
+}

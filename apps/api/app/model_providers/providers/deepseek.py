@@ -138,7 +138,10 @@ class DeepSeekProvider:
         client: AsyncOpenAI | None = None
         try:
             client = self.client_factory(
-                api_key=api_key, base_url=self.base_url, timeout=self.timeout
+                api_key=api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+                max_retries=0,
             )
             messages = self._messages(request)
             kwargs: dict[str, object] = {
@@ -213,7 +216,10 @@ class DeepSeekProvider:
         client: AsyncOpenAI | None = None
         try:
             client = self.client_factory(
-                api_key=api_key, base_url=self.base_url, timeout=self.timeout
+                api_key=api_key,
+                base_url=self.base_url,
+                timeout=self.timeout,
+                max_retries=0,
             )
             kwargs: dict[str, object] = {
                 "model": request.model,

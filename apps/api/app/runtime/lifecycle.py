@@ -28,7 +28,7 @@ from ..models import (
 )
 from .budget import ExecutionContext
 from .context import ContextBuildResult
-from .contracts import AgentRunRequest, AgentRunResult, TextInput, TokenUsage
+from .contracts import AgentRunRequest, AgentRunResult, Citation, TextInput, TokenUsage
 from .errors import RuntimeExecutionError
 
 logger = structlog.get_logger(__name__)
@@ -72,7 +72,54 @@ class RunLifecycle:
         self,
         request: AgentRunRequest,
         execution_context: ExecutionContext | None = None,
+        *,
+        queued: bool = False,
+        idempotency_key_hash: str | None = None,
+        request_fingerprint: str | None = None,
+        timeout_seconds: int | None = None,
     ) -> tuple[Run, Trace, Span, Message]:
+        if request.execution_run_id is not None:
+            run = await self.session.scalar(
+                select(Run)
+                .where(
+                    Run.id == request.execution_run_id,
+                    Run.workspace_id == request.workspace_id,
+                )
+                .with_for_update()
+            )
+            if (
+                run is None
+                or run.agent_version_id != request.agent_version.id
+                or run.status != RunStatus.RUNNING
+                or execution_context is None
+                or run.execution_epoch
+                != execution_context.counters.get(
+                    "execution_epoch", run.execution_epoch
+                )
+            ):
+                raise RuntimeExecutionError(
+                    "RUN_EXECUTION_OWNERSHIP_LOST",
+                    "The execution no longer owns this run.",
+                    status_code=409,
+                )
+            trace = await self.session.get(Trace, run.trace_id)
+            root_span = await self.session.scalar(
+                select(Span).where(
+                    Span.run_id == run.id, Span.span_type == SpanType.RUN
+                )
+            )
+            user_message = await self.session.scalar(
+                select(Message)
+                .where(Message.run_id == run.id, Message.role == MessageRole.USER)
+                .order_by(Message.sequence_no.asc())
+            )
+            if trace is None or root_span is None or user_message is None:
+                raise RuntimeExecutionError(
+                    "RUN_STATE_INVALID",
+                    "The queued run is missing execution state.",
+                    status_code=409,
+                )
+            return run, trace, root_span, user_message
         if request.resume_run_id is not None:
             run = await self.session.get(
                 Run, request.resume_run_id, with_for_update=True
@@ -207,8 +254,28 @@ class RunLifecycle:
                     "currency": "USD",
                 },
             },
-            started_at=now,
+            started_at=None if queued else now,
         )
+        if queued:
+            if (
+                idempotency_key_hash is None
+                or request_fingerprint is None
+                or timeout_seconds is None
+            ):
+                raise RuntimeExecutionError(
+                    "ASYNC_RUN_CONFIGURATION_INVALID",
+                    "Async run queue metadata is incomplete.",
+                    status_code=500,
+                )
+            run.execution_mode = "async"
+            run.idempotency_key_hash = idempotency_key_hash
+            run.request_fingerprint = request_fingerprint
+            run.deadline_at = None
+            run.metadata_json = {
+                **run.metadata_json,
+                "async_request_snapshot_version": 1,
+                "execution_timeout_seconds": max(1, timeout_seconds),
+            }
         root_span = Span(
             id=uuid4(),
             trace_id=trace.id,
@@ -262,9 +329,36 @@ class RunLifecycle:
                 trace.root_run_id = run.id
             await self.session.flush()
             self.session.add_all([root_span, user_message])
+            if queued:
+                from .plan_store import AgentPlanStore
+
+                await AgentPlanStore(self.session).append_event(
+                    run,
+                    "run.queued",
+                    {
+                        "execution_mode": "async",
+                        "agent_version_id": str(request.agent_version.id),
+                    },
+                    deduplication_key="run.queued",
+                )
+                self.session.add(
+                    Job(
+                        workspace_id=request.workspace_id,
+                        job_type=JobType.AGENT_EXECUTION,
+                        status=JobStatus.QUEUED,
+                        resource_type="run",
+                        resource_id=run.id,
+                        generation=1,
+                        payload={
+                            "run_id": str(run.id),
+                            "request_snapshot": request.model_dump(mode="json"),
+                        },
+                    )
+                )
             await self.session.commit()
-            run.status = RunStatus.RUNNING
-            await self.session.commit()
+            if not queued:
+                run.status = RunStatus.RUNNING
+                await self.session.commit()
         except IntegrityError as error:
             await self.session.rollback()
             logger.exception(
@@ -295,8 +389,15 @@ class RunLifecycle:
         usage: TokenUsage,
         *,
         execution_context: ExecutionContext | None = None,
+        citations: tuple[Citation, ...] | None = None,
     ) -> AgentRunResult:
+        if (
+            execution_context is not None
+            and execution_context.counters.get("execution_epoch") is not None
+        ):
+            await self._assert_execution_owner(run, execution_context)
         del user_message
+        output_citations = citations if citations is not None else request.citations
         now = datetime.now(UTC)
         sequence = await self.session.scalar(
             select(func.coalesce(func.max(Message.sequence_no), 0)).where(
@@ -314,7 +415,7 @@ class RunLifecycle:
                 "type": "text",
                 "text": response.content,
                 "citations": [
-                    citation.model_dump(mode="json") for citation in request.citations
+                    citation.model_dump(mode="json") for citation in output_citations
                 ],
             },
             token_count=usage.output_tokens,
@@ -324,7 +425,7 @@ class RunLifecycle:
             "type": "text",
             "text": response.content,
             "citations": [
-                citation.model_dump(mode="json") for citation in request.citations
+                citation.model_dump(mode="json") for citation in output_citations
             ],
         }
         budget_usage = (
@@ -383,6 +484,27 @@ class RunLifecycle:
         if conversation is not None:
             conversation.last_activity_at = now
         self.session.add(assistant)
+        if run.execution_mode == "async":
+            from .plan_store import AgentPlanStore
+
+            await AgentPlanStore(
+                self.session,
+                execution_epoch=execution_context.counters.get("execution_epoch")
+                if execution_context is not None
+                else None,
+                job_id=execution_context.job_id if execution_context else None,
+                execution_owner=(
+                    execution_context.execution_owner if execution_context else None
+                ),
+            ).append_event(
+                run,
+                "run.completed",
+                {
+                    "status": "COMPLETED",
+                    "result_status": run.metadata_json.get("result_status", "COMPLETE"),
+                },
+                deduplication_key="run.terminal",
+            )
         if (
             request.agent_version.memory is not None
             and not request.evaluation_mode
@@ -430,7 +552,7 @@ class RunLifecycle:
             session_id=request.session.id,
             status="COMPLETED",
             output=TextInput(text=response.content),
-            citations=request.citations,
+            citations=output_citations,
             usage=usage,
             estimated_cost=(
                 float(run.estimated_cost) if run.estimated_cost is not None else None
@@ -451,7 +573,28 @@ class RunLifecycle:
         execution_context: ExecutionContext | None = None,
     ) -> None:
         await self.session.rollback()
-        run = await self.session.get(Run, run_id)
+        if execution_context is not None and not await self._job_lease_is_current(
+            execution_context
+        ):
+            await self.session.rollback()
+            return
+        run = await self.session.scalar(
+            select(Run).where(Run.id == run_id).with_for_update()
+        )
+        if (
+            run is not None
+            and execution_context is not None
+            and execution_context.counters.get("execution_epoch") is not None
+            and (
+                execution_context.root_run_id is None
+                or execution_context.root_run_id == run.id
+            )
+            and run.execution_epoch != execution_context.counters["execution_epoch"]
+        ):
+            # A stale worker must never terminalize a run after a newer worker
+            # has acquired its lease and incremented the execution epoch.
+            await self.session.rollback()
+            return
         trace = await self.session.get(Trace, trace_id)
         root_span = await self.session.get(Span, root_span_id)
         context_span = (
@@ -462,7 +605,11 @@ class RunLifecycle:
         )
         now = datetime.now(UTC)
         if run is not None:
-            run.status = RunStatus.FAILED
+            run.status = (
+                RunStatus.CANCELLED
+                if error.code == "RUN_CANCELLED"
+                else RunStatus.FAILED
+            )
             run.error_code = error.code
             run.error_message = error.message
             run.metadata_json = {
@@ -487,15 +634,95 @@ class RunLifecycle:
                 )
             ).all()
         )
+        span_error: dict[str, object] = {
+            "code": error.code,
+            "message": error.message,
+        }
+        if error.code == "STRUCTURED_OUTPUT_INVALID" and error.details:
+            span_error["details"] = error.details
         for span in (root_span, context_span, model_span, *active_spans):
             if span is not None and span.status == SpanStatus.RUNNING:
                 span.status = SpanStatus.FAILED
-                span.error_json = {"code": error.code, "message": error.message}
+                span.error_json = span_error
                 span.completed_at = now
         if trace is not None:
             trace.status = TraceStatus.FAILED
             trace.completed_at = now
+        if run is not None and run.execution_mode == "async":
+            from .plan_store import AgentPlanStore
+
+            await AgentPlanStore(
+                self.session,
+                execution_epoch=execution_context.counters.get("execution_epoch")
+                if execution_context is not None
+                else None,
+                job_id=execution_context.job_id if execution_context else None,
+                execution_owner=(
+                    execution_context.execution_owner if execution_context else None
+                ),
+            ).append_event(
+                run,
+                "run.cancelled" if error.code == "RUN_CANCELLED" else "run.failed",
+                {"status": run.status.value, "error_code": error.code},
+                deduplication_key="run.terminal",
+                allow_cancelled=error.code == "RUN_CANCELLED",
+            )
         await self.session.commit()
+
+    async def _assert_execution_owner(
+        self, run: Run, execution_context: ExecutionContext
+    ) -> None:
+        if not await self._job_lease_is_current(execution_context):
+            raise RuntimeExecutionError(
+                "RUN_EXECUTION_OWNERSHIP_LOST",
+                "The execution no longer owns this run.",
+                status_code=409,
+            )
+        epoch = execution_context.counters.get("execution_epoch")
+        if epoch is None or (
+            execution_context.root_run_id is not None
+            and execution_context.root_run_id != run.id
+        ):
+            return
+        current = await self.session.scalar(
+            select(Run)
+            .where(Run.id == run.id, Run.workspace_id == run.workspace_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if current is None or current.execution_epoch != epoch:
+            raise RuntimeExecutionError(
+                "RUN_EXECUTION_OWNERSHIP_LOST",
+                "The execution no longer owns this run.",
+                status_code=409,
+            )
+        if current.cancellation_requested_at is not None:
+            raise RuntimeExecutionError(
+                "RUN_CANCELLED",
+                "The execution was cancelled.",
+                status_code=409,
+                details={"reason": "cancel_requested"},
+            )
+        run.cancellation_requested_at = current.cancellation_requested_at
+
+    async def _job_lease_is_current(self, execution_context: ExecutionContext) -> bool:
+        if (
+            execution_context.job_id is None
+            or execution_context.execution_owner is None
+        ):
+            return True
+        now = datetime.now(UTC)
+        job_id = await self.session.scalar(
+            select(Job.id)
+            .where(
+                Job.id == execution_context.job_id,
+                Job.status == JobStatus.RUNNING,
+                Job.lease_owner == execution_context.execution_owner,
+                Job.lease_expires_at > now,
+            )
+            .with_for_update()
+        )
+        return job_id is not None
 
     async def cancel(
         self,

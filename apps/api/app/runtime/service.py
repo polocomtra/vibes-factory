@@ -245,6 +245,7 @@ class AgentRuntime:
             started_at=started,
             completed_at=datetime.now(UTC),
         )
+        await self.lifecycle._assert_execution_owner(run, state.execution_context)
         self.session.add(span)
         await self.session.commit()
         if evaluation.triggered and not (

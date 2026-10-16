@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +13,8 @@ from ..models import (
     AgentPlan,
     AgentPlanTask,
     AgentRunState,
+    Job,
+    JobStatus,
     PlanTaskStatus,
     Run,
     RunEvent,
@@ -22,8 +24,18 @@ from .planning import PlanProposal
 
 
 class AgentPlanStore:
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        execution_epoch: int | None = None,
+        job_id: UUID | None = None,
+        execution_owner: str | None = None,
+    ) -> None:
         self.session = session
+        self.execution_epoch = execution_epoch
+        self.job_id = job_id
+        self.execution_owner = execution_owner
 
     async def initialize(
         self,
@@ -96,7 +108,9 @@ class AgentPlanStore:
         payload: dict[str, Any],
         *,
         deduplication_key: str | None = None,
+        allow_cancelled: bool = False,
     ) -> RunEvent:
+        await self._assert_job_lease()
         locked_run = await self.session.scalar(
             select(Run)
             .where(Run.id == run.id, Run.workspace_id == run.workspace_id)
@@ -106,6 +120,25 @@ class AgentPlanStore:
         if locked_run is None:
             raise RuntimeExecutionError(
                 "RESOURCE_NOT_FOUND", "The run was not found.", status_code=404
+            )
+        if (
+            self.execution_epoch is not None
+            and locked_run.execution_epoch != self.execution_epoch
+        ):
+            raise RuntimeExecutionError(
+                "RUN_EXECUTION_OWNERSHIP_LOST",
+                "The execution no longer owns this run.",
+                status_code=409,
+            )
+        if (
+            self.execution_epoch is not None
+            and locked_run.cancellation_requested_at is not None
+            and not allow_cancelled
+        ):
+            raise RuntimeExecutionError(
+                "RUN_CANCELLED",
+                "The execution was cancelled.",
+                status_code=409,
             )
         run.next_event_sequence = locked_run.next_event_sequence
         existing = None
@@ -235,6 +268,7 @@ class AgentPlanStore:
     async def _assert_execution_owner(
         self, run: Run, execution_epoch: int | None
     ) -> None:
+        await self._assert_job_lease()
         if execution_epoch is None:
             return
         current = await self.session.scalar(
@@ -249,4 +283,30 @@ class AgentPlanStore:
                 "The execution no longer owns this run.",
                 status_code=409,
             )
+        if current.cancellation_requested_at is not None:
+            raise RuntimeExecutionError(
+                "RUN_CANCELLED",
+                "The execution was cancelled.",
+                status_code=409,
+            )
         run.execution_epoch = current.execution_epoch
+
+    async def _assert_job_lease(self) -> None:
+        if self.job_id is None or self.execution_owner is None:
+            return
+        lease_job_id = await self.session.scalar(
+            select(Job.id)
+            .where(
+                Job.id == self.job_id,
+                Job.status == JobStatus.RUNNING,
+                Job.lease_owner == self.execution_owner,
+                Job.lease_expires_at > datetime.now(UTC),
+            )
+            .with_for_update()
+        )
+        if lease_job_id is None:
+            raise RuntimeExecutionError(
+                "RUN_EXECUTION_OWNERSHIP_LOST",
+                "The execution no longer owns its worker lease.",
+                status_code=409,
+            )

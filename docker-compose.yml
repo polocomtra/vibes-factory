@@ -16,6 +16,7 @@ services:
             VF_OTEL_SERVICE_NAME: vibesfactory-api
             VF_OTEL_CONSOLE_EXPORTER: "false"
             VF_ENABLE_MCP: ${VF_ENABLE_MCP:-true}
+            VF_ENABLE_ASYNC_AGENT_RUNS: ${VF_ENABLE_ASYNC_AGENT_RUNS:-true}
             VF_MCP_ALLOW_HTTP: ${VF_MCP_ALLOW_HTTP:-false}
             VF_MCP_ALLOWED_PRIVATE_HOSTS: ${VF_MCP_ALLOWED_PRIVATE_HOSTS:-}
             VF_MCP_CONNECT_TIMEOUT_SECONDS: ${VF_MCP_CONNECT_TIMEOUT_SECONDS:-10}
@@ -93,7 +94,7 @@ services:
             VF_BLOB_STORAGE_PATH: /var/lib/vibesfactory/blobs
             VF_EMBEDDING_SERVICE_URL: http://embedding:8100
             VF_EMBEDDING_BATCH_SIZE: ${VF_EMBEDDING_BATCH_SIZE:-8}
-            VF_MODEL_PROVIDER_TIMEOUT_SECONDS: ${VF_MODEL_PROVIDER_TIMEOUT_SECONDS:-60}
+            VF_MODEL_PROVIDER_TIMEOUT_SECONDS: ${VF_MODEL_PROVIDER_TIMEOUT_SECONDS:-240}
             VF_AZURE_OPENAI_DEPLOYMENT_NAME: ${VF_AZURE_OPENAI_DEPLOYMENT_NAME:-gpt-6-luna}
         depends_on:
             postgres:

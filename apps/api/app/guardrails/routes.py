@@ -228,7 +228,9 @@ async def get_draft_guardrails_route(
                 version_number=version.version_number,
                 hook=binding.hook,
                 priority=binding.priority,
-                configuration=GuardrailConfiguration.model_validate(version.configuration),
+                configuration=GuardrailConfiguration.model_validate(
+                    version.configuration
+                ),
             )
             for binding, version, policy in rows
         ],

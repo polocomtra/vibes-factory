@@ -7,6 +7,7 @@ import pytest
 from openai import AsyncOpenAI
 from pydantic import SecretStr
 
+from apps.api.app.config import Settings
 from apps.api.app.model_providers.contracts import (
     ModelMessage,
     ModelRequest,
@@ -38,6 +39,12 @@ def request(provider: str, model: str = "custom-model") -> ModelRequest:
         messages=(ModelMessage(role="user", content="hello"),),
         max_output_tokens=8,
     )
+
+
+def test_default_provider_timeout_fits_plan_execute_run_deadline() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.model_provider_timeout_seconds == 240
 
 
 @pytest.mark.asyncio
@@ -114,7 +121,12 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
         model="gpt-6-luna",
     )
     client = FakeOpenAIClient(response)
-    factory = cast(Callable[..., AsyncOpenAI], lambda **kwargs: client)
+    client_options: dict[str, object] = {}
+
+    def factory(**kwargs: object) -> AsyncOpenAI:
+        client_options.update(kwargs)
+        return cast(AsyncOpenAI, client)
+
     provider = AzureOpenAIProvider(
         base_url="https://resource.services.ai.azure.com/openai/v1",
         client_factory=factory,
@@ -133,6 +145,7 @@ async def test_azure_uses_custom_endpoint_deployment_and_responses_api() -> None
     assert kwargs["store"] is False
     assert kwargs["input"] == "hello"
     assert "temperature" not in kwargs
+    assert client_options["max_retries"] == 0
     client.close.assert_awaited_once()
 
 
@@ -301,6 +314,29 @@ async def test_deepseek_maps_chat_completion_and_forces_non_streaming() -> None:
     assert kwargs["stream"] is False
     assert kwargs["max_tokens"] == 8
     assert kwargs["messages"] == [{"role": "user", "content": "hello"}]
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_disables_sdk_retries_and_uses_configured_timeout() -> (
+    None
+):
+    response = SimpleNamespace(
+        output_text="OK",
+        output=[],
+        status="completed",
+    )
+    client = FakeOpenAIClient(response)
+    client_options: dict[str, object] = {}
+
+    def factory(**kwargs: object) -> AsyncOpenAI:
+        client_options.update(kwargs)
+        return cast(AsyncOpenAI, client)
+
+    provider = OpenAIProvider(timeout=120, client_factory=factory)
+    await provider.generate(request("openai"), "temporary-key")
+
+    assert client_options["max_retries"] == 0
+    assert client_options["timeout"] == 120
 
 
 @pytest.mark.asyncio
